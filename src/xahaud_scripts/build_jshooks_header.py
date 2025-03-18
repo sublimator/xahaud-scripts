@@ -7,6 +7,9 @@ import sys
 import hashlib
 from pathlib import Path
 
+from xahaud_scripts.utils.paths import get_xahaud_root
+
+
 def convert_js_to_carray(js_file):
     """
     Convert a JavaScript file to a C array using qjsc.
@@ -51,8 +54,7 @@ def convert_js_to_carray(js_file):
 
 def main():
     # Get the script directory and set working directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    working_dir = os.path.join(script_dir, "..", "src/test/app")
+    working_dir = os.path.join(get_xahaud_root(), "src/test/app")
     os.chdir(working_dir)
 
     # Set up paths

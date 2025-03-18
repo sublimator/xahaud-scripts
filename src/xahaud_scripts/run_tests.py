@@ -43,7 +43,7 @@ def parse_args() -> Tuple[List[str], bool, bool]:
 def build_jshooks_header() -> None:
     """Build the JS hooks header."""
     print("Building JS hooks header...")
-    run_command(["python", "./.scripts/xahaud_scripts/build_jshooks_header.py"])
+    run_command(["python", "./.scripts/src/xahaud_scripts/build_jshooks_header.py"])
 
 
 def build_rippled() -> None:
