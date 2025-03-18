@@ -7,7 +7,9 @@ import argparse
 import os
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Tuple
+
+from xahaud_scripts.utils.paths import get_xahaud_root
 
 
 def run_command(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -41,7 +43,7 @@ def parse_args() -> Tuple[List[str], bool, bool]:
 def build_jshooks_header() -> None:
     """Build the JS hooks header."""
     print("Building JS hooks header...")
-    run_command(["python", "./.scripts/build-jshooks-header.py"])
+    run_command(["python", "./.scripts/xahaud_scripts/build_jshooks_header.py"])
 
 
 def build_rippled() -> None:
@@ -94,10 +96,11 @@ def run_rippled(args: List[str], use_lldb: bool) -> None:
     # Return the exit code from the process
     sys.exit(process.returncode)
 
-
 def main() -> None:
     """Main function."""
     # Parse arguments
+    os.chdir(get_xahaud_root())
+
     rippled_args, build_header, use_lldb = parse_args()
 
     # Set strict error handling

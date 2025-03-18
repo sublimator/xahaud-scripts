@@ -1,2 +1,4 @@
 generated/
 *.log
+.idea
+__pycache__

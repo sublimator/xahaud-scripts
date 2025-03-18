@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "xahaud-scripts"
+version = "0.1.0"
+description = "Scripts for working in xahaud repo"
+authors = ["Nicholas Dudfield <ndudfield@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+packages = [{ include = "xahaud_scripts", from = "src" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.12"
+click = "^8.1.0"
+requests = "^2.32.3"
+pyperclip = "^1.9.0"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+pytest-cov = "^3.0.0"
+pytest-env = "1.1.3"
+black = "^22.3.0"
+isort = "^5.10.1"
+flake8 = "^4.0.1"
+mypy = "^0.950"
+pre-commit = "^2.17.0"
+typing-extensions = "^4.12.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]                                                           # todo
+include = "\\.pyi?$"
+extend-exclude = "/(\\.eggs|\\.git|\\.hg|\\.mypy_cache|\\.tox|\\.venv|build|dist)/"
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+env = ["TESTING123=1"]
+addopts = "-v --cov=xahaud_scripts --disable-warnings"
+pythonpath = ["src"]
+
+[tool.mypy]
+ignore_missing_imports = true
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = true
+check_untyped_defs = true
+no_implicit_reexport = true
+
+[tool.poetry.scripts]
+get-job = "xahaud_scripts.get_job:main"
+run-tests = "xahaud_scripts.run_tests:main"

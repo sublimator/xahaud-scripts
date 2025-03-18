@@ -5,16 +5,19 @@ No GitHub token required for public repositories.
 """
 
 import argparse
-import requests # practically a standard library ;)
 import json
-import os
 import logging
+import os
 import re
 import sys
-import urllib.request
 import urllib.error
-from typing import Dict, List, Optional, Any, Union
+import urllib.request
 from datetime import datetime
+from typing import Dict, List, Optional, Any
+
+import requests
+
+from xahaud_scripts.utils.clipboard import get_clipboard
 
 
 class GitHubActionsFetcher:
@@ -365,6 +368,8 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     """Main function."""
     args = parse_arguments()
+    if args.url == '<clip>':
+        args.url = get_clipboard()
 
     # Set up logging
     logger = setup_logging(args.log_level)
