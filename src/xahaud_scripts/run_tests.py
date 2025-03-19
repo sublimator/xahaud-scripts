@@ -90,7 +90,12 @@ def build_rippled() -> None:
         llvm_library_dir = os.environ.get("LLVM_LIBRARY_DIR", "")
 
         # Run cmake configuration
-        cmake_cmd = ["cmake", "-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_VERBOSE_MAKEFILE=ON"]
+        cmake_cmd = [
+            "cmake",
+            "-Dsan",
+            "-DCMAKE_BUILD_TYPE=Debug",
+            "-DCMAKE_VERBOSE_MAKEFILE=ON",
+        ]
 
         if llvm_dir:
             cmake_cmd.append(f"-DLLVM_DIR={llvm_dir}")
