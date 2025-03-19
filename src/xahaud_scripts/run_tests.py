@@ -49,28 +49,30 @@ def build_jshooks_header() -> None:
 def build_rippled() -> None:
     """Build the rippled executable."""
     # Create build directory if it doesn't exist
-    os.makedirs("build", exist_ok=True)
-    os.chdir("build")
+    if not os.path.exists("build"):
+        os.makedirs("build", exist_ok=True)
+        os.chdir("build")
+        # Get environment variables
+        llvm_dir = os.environ.get("LLVM_DIR", "")
+        llvm_library_dir = os.environ.get("LLVM_LIBRARY_DIR", "")
 
-    # Get environment variables
-    llvm_dir = os.environ.get("LLVM_DIR", "")
-    llvm_library_dir = os.environ.get("LLVM_LIBRARY_DIR", "")
+        # Run cmake configuration
+        cmake_cmd = [
+            "cmake",
+            "-DCMAKE_BUILD_TYPE=Debug",
+            "-DCMAKE_VERBOSE_MAKEFILE=ON"
+        ]
 
-    # Run cmake configuration
-    cmake_cmd = [
-        "cmake",
-        "-DCMAKE_BUILD_TYPE=Debug",
-        "-DCMAKE_VERBOSE_MAKEFILE=ON"
-    ]
+        if llvm_dir:
+            cmake_cmd.append(f"-DLLVM_DIR={llvm_dir}")
 
-    if llvm_dir:
-        cmake_cmd.append(f"-DLLVM_DIR={llvm_dir}")
+        if llvm_library_dir:
+            cmake_cmd.append(f"-DLLVM_LIBRARY_DIR={llvm_library_dir}")
 
-    if llvm_library_dir:
-        cmake_cmd.append(f"-DLLVM_LIBRARY_DIR={llvm_library_dir}")
-
-    cmake_cmd.append("..")
-    run_command(cmake_cmd)
+        cmake_cmd.append("..")
+        run_command(cmake_cmd)
+    else:
+        os.chdir("build")
 
     # Build rippled
     cpu_count = get_logical_cpu_count()
