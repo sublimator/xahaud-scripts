@@ -41,12 +41,7 @@ class GitHubActionsFetcher:
 
     def parse_github_url(self, url: str) -> Dict[str, Optional[str]]:
         """Parse GitHub URL to extract components."""
-        result = {
-            "owner": None,
-            "repo": None,
-            "run_id": None,
-            "job_id": None
-        }
+        result = {"owner": None, "repo": None, "run_id": None, "job_id": None}
 
         # Extract owner and repo
         repo_pattern = r"github\.com/([^/]+)/([^/]+)"
@@ -69,12 +64,14 @@ class GitHubActionsFetcher:
 
         return result
 
-    def make_request(self, url: str, accept_header: str = "application/vnd.github+json") -> Any:
+    def make_request(
+        self, url: str, accept_header: str = "application/vnd.github+json"
+    ) -> Any:
         """Make a request to the GitHub API using requests library."""
         headers = {
             "Accept": accept_header,
             "User-Agent": "GitHubActionsStepsFetcher/1.0",
-            "X-GitHub-Api-Version": "2022-11-28"
+            "X-GitHub-Api-Version": "2022-11-28",
         }
 
         github_token = os.environ.get("GITHUB_TOKEN")
@@ -91,21 +88,27 @@ class GitHubActionsFetcher:
             response = requests.get(url, headers=headers, allow_redirects=True)
             response.raise_for_status()
 
-            content_type = response.headers.get('Content-Type', '')
+            content_type = response.headers.get("Content-Type", "")
             self.logger.debug(f"Response content type: {content_type}")
 
-            if 'json' in content_type:
+            if "json" in content_type:
                 self.logger.debug("Successfully parsed JSON response")
                 return response.json()
             else:
-                self.logger.debug(f"Received {len(response.content)} bytes of non-JSON data")
+                self.logger.debug(
+                    f"Received {len(response.content)} bytes of non-JSON data"
+                )
                 return response.text
 
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code
             if status_code in (401, 403):
-                self.logger.error(f"Authentication required. GitHub API returned {status} to request {url}.")
-                self.logger.error("This repository might require authentication. Try using a GitHub token.")
+                self.logger.error(
+                    f"Authentication required. GitHub API returned {status} to request {url}."
+                )
+                self.logger.error(
+                    "This repository might require authentication. Try using a GitHub token."
+                )
                 self.logger.debug(f"Error Response Body: {e.response.text}")
                 sys.exit(1)
             else:
@@ -119,12 +122,11 @@ class GitHubActionsFetcher:
             self.logger.error("Invalid JSON response from GitHub API")
             sys.exit(1)
 
-    def make_request_stdlib(self, url: str, accept_header: str = "application/vnd.github+json") -> Any:
+    def make_request_stdlib(
+        self, url: str, accept_header: str = "application/vnd.github+json"
+    ) -> Any:
         """Make a request to the GitHub API."""
-        headers = {
-            "Accept": accept_header,
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
+        headers = {"Accept": accept_header, "X-GitHub-Api-Version": "2022-11-28"}
 
         # Check for GitHub token in environment
         github_token = os.environ.get("GITHUB_TOKEN")
@@ -138,29 +140,37 @@ class GitHubActionsFetcher:
         stripped_headers = {k: v for k, v in headers.items() if k != "Authorization"}
         if "Authorization" in headers:
             auth_header = headers["Authorization"]
-            stripped_headers["Authorization"] = auth_header[:5] + "..." + auth_header[-5:]
+            stripped_headers["Authorization"] = (
+                auth_header[:5] + "..." + auth_header[-5:]
+            )
         self.logger.debug(f"Headers: {headers}")
 
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req) as response:
-                content_type = response.getheader('Content-Type', '')
+                content_type = response.getheader("Content-Type", "")
                 self.logger.debug(f"Response content type: {content_type}")
 
-                if 'json' in content_type:
-                    data = json.loads(response.read().decode('utf-8'))
+                if "json" in content_type:
+                    data = json.loads(response.read().decode("utf-8"))
                     self.logger.debug("Successfully parsed JSON response")
                     return data
                 else:
-                    data = response.read().decode('utf-8')
+                    data = response.read().decode("utf-8")
                     self.logger.debug(f"Received {len(data)} bytes of non-JSON data")
                     return data
         except urllib.error.HTTPError as e:
             if e.code == 401 or e.code == 403:
-                self.logger.error(f"Authentication required. GitHub API returned {e.code} to request {url}.")
-                self.logger.error("This repository might require authentication. Try using a GitHub token.")
+                self.logger.error(
+                    f"Authentication required. GitHub API returned {e.code} to request {url}."
+                )
+                self.logger.error(
+                    "This repository might require authentication. Try using a GitHub token."
+                )
                 try:
-                    self.logger.debug("Error Response Body:" + e.read().decode())  # Print the error response body
+                    self.logger.debug(
+                        "Error Response Body:" + e.read().decode()
+                    )  # Print the error response body
                 except Exception as inner_e:
                     self.logger.error(f"Error reading response body: {inner_e}")
                 sys.exit(1)
@@ -176,7 +186,9 @@ class GitHubActionsFetcher:
 
     def get_run_jobs(self, run_id: str) -> List[Dict[str, Any]]:
         """Get all jobs for a specific workflow run."""
-        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/jobs"
+        url = (
+            f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/jobs"
+        )
         self.logger.info(f"Fetching jobs for run ID: {run_id}")
         response = self.make_request(url)
         jobs = response.get("jobs", [])
@@ -192,7 +204,9 @@ class GitHubActionsFetcher:
     def get_job_logs(self, job_id: str) -> str:
         """Get logs for a specific job."""
         # Note: This endpoint returns raw logs, not JSON
-        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}/logs"
+        url = (
+            f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}/logs"
+        )
         self.logger.info(f"Fetching logs for job ID: {job_id}")
         try:
             # Use different accept header for logs
@@ -210,7 +224,9 @@ class GitHubActionsFetcher:
         current_content = []
 
         # Pattern to detect step headers in GitHub Actions logs
-        step_pattern = re.compile(r"##\[group\](.*?)(Starting|Finishing|Completing|Running|Executing): (.*?)$")
+        step_pattern = re.compile(
+            r"##\[group\](.*?)(Starting|Finishing|Completing|Running|Executing): (.*?)$"
+        )
 
         self.logger.debug("Extracting step logs from full job log")
         line_count = 0
@@ -222,7 +238,9 @@ class GitHubActionsFetcher:
                 # If we were collecting logs for a previous step, save them
                 if current_step:
                     step_logs[current_step] = "\n".join(current_content)
-                    self.logger.debug(f"Extracted {len(current_content)} lines for step: {current_step}")
+                    self.logger.debug(
+                        f"Extracted {len(current_content)} lines for step: {current_step}"
+                    )
                     current_content = []
 
                 action = match.group(2)
@@ -240,9 +258,13 @@ class GitHubActionsFetcher:
         # Save the last step's content
         if current_step and current_content:
             step_logs[current_step] = "\n".join(current_content)
-            self.logger.debug(f"Extracted {len(current_content)} lines for step: {current_step}")
+            self.logger.debug(
+                f"Extracted {len(current_content)} lines for step: {current_step}"
+            )
 
-        self.logger.info(f"Processed {line_count} lines of logs, extracted {len(step_logs)} steps")
+        self.logger.info(
+            f"Processed {line_count} lines of logs, extracted {len(step_logs)} steps"
+        )
         return step_logs
 
     def format_duration(self, start_time: str, end_time: str) -> str:
@@ -285,7 +307,7 @@ class GitHubActionsFetcher:
         job_logs = ""
         step_logs = {}
         if include_logs:
-            job_logs = self.get_job_logs(str(job['id']))
+            job_logs = self.get_job_logs(str(job["id"]))
             if job_logs:
                 step_logs = self.extract_step_logs(job_logs)
 
@@ -296,8 +318,7 @@ class GitHubActionsFetcher:
 
             # Format duration
             duration_str = self.format_duration(
-                step.get("started_at"),
-                step.get("completed_at")
+                step.get("started_at"), step.get("completed_at")
             )
 
             print(f"\nStep {step_number}: {step_name}")
@@ -326,7 +347,7 @@ def setup_logging(level_name: str) -> logging.Logger:
         "info": logging.INFO,
         "warning": logging.WARNING,
         "error": logging.ERROR,
-        "critical": logging.CRITICAL
+        "critical": logging.CRITICAL,
     }
 
     # Default to ERROR if level is not recognized
@@ -339,7 +360,9 @@ def setup_logging(level_name: str) -> logging.Logger:
     # Create console handler with formatting
     handler = logging.StreamHandler()
     handler.setLevel(level)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     handler.setFormatter(formatter)
 
     # Add handler to logger
@@ -358,17 +381,21 @@ def parse_arguments() -> argparse.Namespace:
         "--log-level",
         choices=["debug", "info", "warning", "error", "critical"],
         default="error",
-        help="Set logging level (default: error)"
+        help="Set logging level (default: error)",
     )
-    parser.add_argument("--raw-logs", action="store_true", help="Output raw logs without parsing")
-    parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN environment variable)")
+    parser.add_argument(
+        "--raw-logs", action="store_true", help="Output raw logs without parsing"
+    )
+    parser.add_argument(
+        "--token", help="GitHub API token (overrides GITHUB_TOKEN environment variable)"
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     """Main function."""
     args = parse_arguments()
-    if args.url == '<clip>':
+    if args.url == "<clip>":
         args.url = get_clipboard()
 
     # Set up logging

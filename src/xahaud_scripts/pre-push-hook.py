@@ -14,20 +14,19 @@ log_file = os.path.join(log_dir, "git_push_attempts.log")
 logging.basicConfig(
     filename=log_file,
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
 # Define branches you're allowed to push to
-ALLOWED_BRANCHES = [
-    "jshooks"
-]
+ALLOWED_BRANCHES = ["jshooks"]
+
 
 def get_current_branch():
     """Get the name of the current branch."""
     return subprocess.check_output(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        universal_newlines=True
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], universal_newlines=True
     ).strip()
+
 
 def main():
     # Get the remote and branch being pushed to
@@ -39,8 +38,7 @@ def main():
     # Get username for logging
     try:
         username = subprocess.check_output(
-            ["git", "config", "user.name"],
-            universal_newlines=True
+            ["git", "config", "user.name"], universal_newlines=True
         ).strip()
     except:
         username = "unknown"
@@ -49,7 +47,7 @@ def main():
     logging.info(f"User {username} attempting to push {current_branch} to {remote}")
 
     # Only apply this check for pushes to 'origin'
-    if remote != 'origin':
+    if remote != "origin":
         logging.info(f"Push to non-origin remote {remote} allowed")
         sys.exit(0)  # Allow pushing to other remotes
 
@@ -65,6 +63,7 @@ def main():
     logging.info(f"Push of {current_branch} to origin allowed")
     print(f"Pushing {current_branch} to origin...")
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
