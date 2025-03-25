@@ -24,7 +24,7 @@ def get_qjsc_hash(qjsc_path):
         return "unknown"
 
 
-def convert_js_to_carray(js_file):
+def convert_js_to_carray(js_file, js_content):
     """
     Convert a JavaScript file to a C array using qjsc.
     Extracts just the hex bytes from the qjsc output.
@@ -61,7 +61,7 @@ def convert_js_to_carray(js_file):
         return c_array
 
     except subprocess.CalledProcessError as e:
-        logging.error(f"Error executing qjsc: {e}")
+        logging.error(f"Error executing qjsc: {e}, content: {js_content}")
         if e.stderr:
             logging.error(f"stderr: {e.stderr.decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -94,7 +94,7 @@ def main(canonical, log_level):
     wasmjs_dir = "generated/qjsb"
     input_file = "SetJSHook_test.cpp"
     output_file = "SetJSHook_wasm.h"
-    qjsc_path = "./qjsc"
+    qjsc_path = "./qjsc"  # TODO
 
     # Determine header comment based on canonical mode
     header_comment = "build_test_jshooks.sh" if canonical else "build_test_jshooks.py"
@@ -207,7 +207,7 @@ std::map<std::string, std::vector<uint8_t>> jswasm = {{"""
 
             try:
                 # Use our internal function instead of the external script
-                c_array_output = convert_js_to_carray(js_file)
+                c_array_output = convert_js_to_carray(js_file, js_content)
 
                 # Cache the result if not in canonical mode
                 if not canonical and cache_file:

@@ -76,7 +76,13 @@ def get_logical_cpu_count() -> int:
 def do_build_jshooks_header() -> None:
     """Build the JS hooks header."""
     print("Building JS hooks header...")
-    run_command(["python", "./.scripts/src/xahaud_scripts/build_jshooks_header.py"])
+    run_command(
+        [
+            "python",
+            "./.scripts/src/xahaud_scripts/build_jshooks_header.py",
+            "--canonical",
+        ]
+    )
 
 
 def build_rippled() -> None:
