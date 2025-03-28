@@ -8,180 +8,30 @@ Features include:
 - LLDB debugging
 - Comprehensive logging
 """
-import json
 
-import click
 import os
-import subprocess
-import sys
-import shutil
-import logging
-import tempfile
 import random
 import string
-from typing import List, Optional, Dict, Any
-from contextlib import contextmanager
+import subprocess
+import sys
+import time
+from typing import List, Optional
 
+import click
+
+from xahaud_scripts.utils.logging import setup_logging, make_logger
 from xahaud_scripts.utils.paths import get_xahaud_root
+from xahaud_scripts.utils.shell_utils import (
+    check_tool_exists,
+    get_llvm_tool_command,
+    run_command,
+    get_logical_cpu_count,
+    change_directory,
+    create_lldb_script,
+)
 
 # Set up logger
-logger = logging.getLogger("run_tests")
-
-GDB_SCRIPT = """
-# Set breakpoints
-breakpoint set --name malloc_error_break
-breakpoint set --name abort
-
-# Run the program
-run
-
-# Check process status after run completes or crashes
-process status
-
-# Use Python script to conditionally execute backtrace
-script
-import lldb
-import sys
-import os
-
-lldb.debugger.SetOutputFileHandle(sys.stdout, True)
-
-def log(s, *args):
-    print('\n' + s, *args)
-
-process = lldb.debugger.GetSelectedTarget().GetProcess()
-
-exit_desc = process.GetExitDescription()
-exit_status = process.GetExitStatus()
-state = process.GetState()
-
-if exit_desc:
-    log(f"Process exited with status {exit_status}: {exit_desc}")
-else:
-    log(f"Process state: {state} stopped={lldb.eStateStopped}")
-
-if state == lldb.eStateStopped:
-    log("Getting backtrace:")
-    lldb.debugger.HandleCommand('bt')
-else:
-    log("Process not stopped, can't get backtrace")
-    log('Exiting')
-    lldb.debugger.HandleCommand('quit')
-    os._exit(0)
-
-log('End of script')
-"""
-
-
-def setup_logging(log_level: str) -> None:
-    """Set up logging with the specified level."""
-    numeric_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        raise ValueError(f"Invalid log level: {log_level}")
-
-    # Configure the root logger
-    logging.basicConfig(
-        level=numeric_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Set our module logger level
-    logger.setLevel(numeric_level)
-    logger.info(f"Logging initialized at level {log_level.upper()}")
-
-
-def get_llvm_tool_command(tool_name: str) -> List[str]:
-    """Get the command to run an LLVM tool, using xcrun on macOS if available."""
-    if sys.platform == "darwin" and check_tool_exists("xcrun"):
-        logger.debug(f"Using xcrun to invoke {tool_name} on macOS")
-        return ["xcrun", tool_name]
-    else:
-        return [tool_name]
-
-
-def run_command(
-    cmd: List[str],
-    check: bool = True,
-    capture_output: bool = False,
-    env: Optional[Dict[str, str]] = None,
-) -> subprocess.CompletedProcess:
-    """Run a command and return the result."""
-    cmd_str = json.dumps(cmd)
-    logger.info(f"Running command: {cmd_str}")
-
-    try:
-        if capture_output:
-            result = subprocess.run(
-                cmd, check=check, capture_output=True, text=True, env=env
-            )
-            if result.stdout:
-                logger.debug(f"Command stdout: {result.stdout}")
-            if result.stderr:
-                logger.debug(f"Command stderr: {result.stderr}")
-        else:
-            result = subprocess.run(cmd, check=check, env=env)
-
-        logger.info(f"Command completed with return code: {result.returncode}")
-        return result
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed with return code: {e.returncode}")
-        if hasattr(e, "output") and e.output:
-            logger.error(f"Command output: {e.output}")
-        if hasattr(e, "stderr") and e.stderr:
-            logger.error(f"Command stderr: {e.stderr}")
-        if check:
-            raise
-        # Create a proper CompletedProcess object with the exception data
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=e.returncode,
-            stdout=e.stdout if hasattr(e, "stdout") else None,
-            stderr=e.stderr if hasattr(e, "stderr") else None,
-        )
-    except FileNotFoundError as e:
-        logger.error(f"Command not found: {cmd[0]}")
-        raise
-
-
-def check_tool_exists(tool_name: str) -> bool:
-    """Check if a command-line tool exists."""
-    exists = shutil.which(tool_name) is not None
-    if exists:
-        logger.debug(f"Tool '{tool_name}' is available")
-    else:
-        logger.warning(f"Tool '{tool_name}' not found in PATH")
-    return exists
-
-
-def get_logical_cpu_count() -> int:
-    """Get the number of logical CPUs."""
-    try:
-        if sys.platform == "darwin":
-            count = int(
-                subprocess.check_output(["sysctl", "-n", "hw.logicalcpu"]).strip()
-            )
-        else:
-            count = os.cpu_count() or 4  # Default to 4 if we can't determine
-
-        logger.debug(f"Detected {count} logical CPU cores")
-        return count
-    except Exception as e:
-        logger.warning(f"Could not determine CPU count: {e}. Using default of 4.")
-        return 4
-
-
-@contextmanager
-def change_directory(path: str):
-    """Context manager for changing directories safely."""
-    old_dir = os.getcwd()
-    logger.debug(f"Changing directory from {old_dir} to {path}")
-    try:
-        os.chdir(path)
-        yield
-    finally:
-        logger.debug(f"Changing directory back to {old_dir}")
-        os.chdir(old_dir)
+logger = make_logger("run_tests")
 
 
 def do_build_jshooks_header() -> None:
@@ -218,7 +68,7 @@ def detect_previous_build_config(build_dir: str) -> dict:
             cache_content = f.read()
 
             # Check for coverage
-            if "coverage:BOOL=ON" in cache_content:
+            if "coverage:STRING=ON" in cache_content:
                 config["coverage"] = True
                 logger.debug("Detected previous build with coverage enabled")
 
@@ -250,8 +100,8 @@ def detect_previous_build_config(build_dir: str) -> dict:
 
 def generate_random_prefix() -> str:
     """Generate a random prefix for coverage files to identify specific test runs."""
-    chars = string.ascii_lowercase + string.digits
-    return "rip_" + "".join(random.choice(chars) for _ in range(8))
+    timestamp_ms = int(time.time() * 1000)
+    return "coverage_run_" + str(timestamp_ms)
 
 
 def build_rippled(
@@ -468,17 +318,6 @@ def build_rippled(
         except Exception as e:
             logger.error(f"Build failed: {e}")
             return False
-
-
-def create_lldb_script() -> str:
-    """Create a temporary file with LLDB commands."""
-    fd, path = tempfile.mkstemp(suffix=".lldb")
-    logger.debug(f"Creating temporary LLDB script at {path}")
-
-    with os.fdopen(fd, "w") as f:
-        f.write(GDB_SCRIPT)
-
-    return path
 
 
 def run_rippled(
@@ -844,7 +683,7 @@ def main(
         run_tests.py --times 5 --no-stop-on-fail unit_test_hook
     """
     # Set up logging first
-    setup_logging(log_level)
+    setup_logging(log_level, logger)
 
     logger.info("Starting run_tests.py")
     logger.debug(f"Command line arguments: {' '.join(sys.argv[1:])}")
