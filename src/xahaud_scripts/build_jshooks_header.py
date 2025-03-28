@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
+import hashlib
+import logging
 import os
 import re
 import subprocess
 import sys
-import hashlib
-import logging
 from pathlib import Path
+
 import click
 
 from xahaud_scripts.utils.paths import get_xahaud_root

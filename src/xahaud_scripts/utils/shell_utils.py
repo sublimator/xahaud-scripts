@@ -10,7 +10,7 @@ from typing import List, Optional, Dict
 from xahaud_scripts.consts import GDB_SCRIPT
 from xahaud_scripts.utils.logging import make_logger
 
-logger = make_logger("utils.shell_utils")
+logger = make_logger(__name__)
 
 
 def check_tool_exists(tool_name: str) -> bool:

@@ -24,4 +24,4 @@ def setup_logging(log_level: str, logger: logging.Logger) -> None:
 
 def make_logger(name: str) -> logging.Logger:
     """Create a logger with the specified name."""
-    return package_logger.getChild(name)
+    return logging.getLogger(name)
