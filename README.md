@@ -1,70 +1,32 @@
- # Xahaud Scripts
+# Xahaud Scripts
 
- Scripts for working in xahaud repo
+Scripts for working in xahaud repo
 
- ## Installation
+## Installation
 
- This project uses [Poetry](https://python-poetry.org/) for dependency management. Make sure you have Poetry installed before proceeding.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
- 1. Clone the repository:
-    ```
-    git clone https://github.com/your-username/xahaud_scripts.git
-    cd xahaud_scripts
-    ```
+```bash
+uv sync --dev
+```
 
- 2. Install dependencies:
-    ```
-    poetry install
-    ```
+## Available Commands
 
- ## Usage
+- `run-tests` - Run xahaud tests with coverage support
+- `testnet` - Launch and manage local test networks
+- `get-job` - Fetch GitHub Actions job details
+- `build-jshooks-header` - Build JS hooks header file
+- `format-changed` - Format changed files in git
 
- Activate the virtual environment:
+## Development
 
- ```
- poetry shell
- ```
+```bash
+uv run ruff check    # lint
+uv run ruff format   # format
+uv run mypy          # type check
+uv run pytest        # test
+```
 
- Then you can run the project:
+## License
 
- ```
- python -m xahaud_scripts
- ```
-
- ## Development
-
- This project uses several development tools managed by Poetry:
-
- - **pytest**: For running tests
- - **black**: For code formatting
- - **isort**: For import sorting
- - **flake8**: For linting
- - **mypy**: For static type checking
-
- To run tests:
-
- ```
- poetry run pytest
- ```
-
- To format code:
-
- ```
- poetry run black .
- poetry run isort .
- ```
-
- To run linters:
-
- ```
- poetry run flake8
- poetry run mypy .
- ```
-
- ## Contributing
-
- Contributions are welcome! Please feel free to submit a Pull Request.
-
- ## License
-
- This project is licensed under the MIT License.
+MIT
