@@ -20,11 +20,11 @@ uv tool install --force --editable .
 
 ## Available Commands
 
-- `run-tests` - Run xahaud tests with coverage support
-- `testnet` - Launch and manage local test networks
-- `get-job` - Fetch GitHub Actions job details
-- `build-jshooks-header` - Build JS hooks header file
-- `format-changed` - Format changed files in git
+- `x-run-tests` - Run xahaud tests with coverage support
+- `x-testnet` - Launch and manage local test networks
+- `x-get-job` - Fetch GitHub Actions job details
+- `x-build-jshooks-header` - Build JS hooks header file
+- `x-format-changed` - Format changed files in git
 
 ## Development
 

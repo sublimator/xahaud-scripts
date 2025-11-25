@@ -22,11 +22,11 @@ dependencies = [
 ]
 
 [project.scripts]
-get-job = "xahaud_scripts.get_job:main"
-run-tests = "xahaud_scripts.run_tests:main"
-build-jshooks-header = "xahaud_scripts.build_jshooks_header:main"
-format-changed = "xahaud_scripts.format_changed:main"
-testnet = "xahaud_scripts.testnet.cli:main"
+x-get-job = "xahaud_scripts.get_job:main"
+x-run-tests = "xahaud_scripts.run_tests:main"
+x-build-jshooks-header = "xahaud_scripts.build_jshooks_header:main"
+x-format-changed = "xahaud_scripts.format_changed:main"
+x-testnet = "xahaud_scripts.testnet.cli:main"
 
 [dependency-groups]
 dev = [
