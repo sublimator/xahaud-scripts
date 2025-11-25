@@ -1,6 +1,5 @@
 """Conan package manager integration."""
 
-
 from xahaud_scripts.utils.logging import make_logger
 from xahaud_scripts.utils.shell_utils import (
     change_directory,
