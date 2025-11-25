@@ -13,6 +13,54 @@ import click
 from xahaud_scripts.utils.paths import get_xahaud_root
 
 
+def resolve_qjsc_path(cli_option, working_dir):
+    """Resolve the qjsc binary path from CLI option, environment variable, or default.
+
+    Priority: CLI option > QJSC_BINARY env var > ./qjsc default
+
+    Args:
+        cli_option: Path provided via --qjsc-binary CLI option
+        working_dir: Working directory to resolve relative paths from
+
+    Returns:
+        Absolute path to the qjsc binary
+
+    Raises:
+        FileNotFoundError: If the binary doesn't exist
+        PermissionError: If the binary is not executable
+    """
+    # Determine source and path with priority
+    if cli_option:
+        qjsc_path = cli_option
+        source = "CLI option"
+    elif os.environ.get("QJSC_BINARY"):
+        qjsc_path = os.environ.get("QJSC_BINARY")
+        source = "QJSC_BINARY environment variable"
+    else:
+        qjsc_path = "./qjsc"
+        source = "default"
+
+    # Resolve relative paths from working directory
+    if not os.path.isabs(qjsc_path):
+        qjsc_path = os.path.join(working_dir, qjsc_path)
+
+    # Normalize the path
+    qjsc_path = os.path.abspath(qjsc_path)
+
+    # Check if binary exists
+    if not os.path.exists(qjsc_path):
+        raise FileNotFoundError(f"qjsc binary not found at {qjsc_path} (from {source})")
+
+    # Check if binary is executable
+    if not os.access(qjsc_path, os.X_OK):
+        raise PermissionError(
+            f"qjsc binary at {qjsc_path} is not executable (from {source})"
+        )
+
+    logging.info(f"Using qjsc binary from {source}: {qjsc_path}")
+    return qjsc_path
+
+
 def get_qjsc_hash(qjsc_path):
     """Generate a hash of the qjsc binary to include in the cache key."""
     try:
@@ -25,18 +73,17 @@ def get_qjsc_hash(qjsc_path):
         return "unknown"
 
 
-def convert_js_to_carray(js_file, js_content):
+def convert_js_to_carray(js_file, js_content, qjsc_path):
     """
     Convert a JavaScript file to a C array using qjsc.
     Extracts just the hex bytes from the qjsc output.
+
+    Args:
+        js_file: Path to the JavaScript file to compile
+        js_content: Content of the JavaScript file (for error reporting)
+        qjsc_path: Path to the qjsc binary
     """
     try:
-        # Check if qjsc exists
-        qjsc_path = "./qjsc"
-        if not os.path.exists(qjsc_path) or not os.access(qjsc_path, os.X_OK):
-            logging.error(f"Error: {qjsc_path} not found or not executable.")
-            sys.exit(1)
-
         # Run qjsc to compile the JavaScript file to C code
         result = subprocess.run(
             [qjsc_path, "-c", "-o", "/dev/stdout", js_file],
@@ -70,8 +117,9 @@ def convert_js_to_carray(js_file, js_content):
 
 @click.command()
 @click.option(
-    "--canonical",
+    "--canonical/--no-canonical",
     is_flag=True,
+    default=True,
     help="Use canonical mode: output .sh in header and disable cache",
 )
 @click.option(
@@ -82,7 +130,12 @@ def convert_js_to_carray(js_file, js_content):
     ),
     help="Set logging level (default: error)",
 )
-def main(canonical, log_level):
+@click.option(
+    "--qjsc-binary",
+    default=None,
+    help="Path to qjsc binary (overrides QJSC_BINARY env var)",
+)
+def main(canonical, log_level, qjsc_binary):
     # Configure logging
     numeric_level = getattr(logging, log_level.upper(), None)
     logging.basicConfig(level=numeric_level, format="%(levelname)s: %(message)s")
@@ -91,11 +144,17 @@ def main(canonical, log_level):
     working_dir = os.path.join(get_xahaud_root(), "src/test/app")
     os.chdir(working_dir)
 
+    # Resolve qjsc binary path
+    try:
+        qjsc_path = resolve_qjsc_path(qjsc_binary, working_dir)
+    except (FileNotFoundError, PermissionError) as e:
+        logging.error(str(e))
+        sys.exit(1)
+
     # Set up paths
     wasmjs_dir = "generated/qjsb"
     input_file = "SetJSHook_test.cpp"
     output_file = "SetJSHook_wasm.h"
-    qjsc_path = "./qjsc"  # TODO
 
     # Determine header comment based on canonical mode
     header_comment = "build_test_jshooks.sh" if canonical else "build_test_jshooks.py"
@@ -136,7 +195,7 @@ std::map<std::string, std::vector<uint8_t>> jswasm = {{"""
         sys.exit(1)
 
     # Read input file content and convert newlines to form feeds as in the original script
-    with open(input_file, "r", encoding="utf-8") as f:
+    with open(input_file, encoding="utf-8") as f:
         content = f.read()
 
     content_with_form_feeds = content.replace("\n", "\f")
@@ -186,14 +245,14 @@ std::map<std::string, std::vector<uint8_t>> jswasm = {{"""
         if not canonical and cache_dir:
             # Include qjsc hash in the cache key
             content_hash = hashlib.sha256(
-                f"{qjsc_hash}:{hook_content}".encode("utf-8")
+                f"{qjsc_hash}:{hook_content}".encode()
             ).hexdigest()
             cache_file = os.path.join(cache_dir, f"hook-{content_hash}.c_array")
 
         # Check if we have a cached version and not in canonical mode
         if not canonical and cache_file and os.path.exists(cache_file):
             logging.info(f"Using cached version for hook {counter}")
-            with open(cache_file, "r") as cache:
+            with open(cache_file) as cache:
                 c_array = cache.read()
                 with open(output_file, "a") as f:
                     f.write(c_array)
@@ -208,7 +267,7 @@ std::map<std::string, std::vector<uint8_t>> jswasm = {{"""
 
             try:
                 # Use our internal function instead of the external script
-                c_array_output = convert_js_to_carray(js_file, js_content)
+                c_array_output = convert_js_to_carray(js_file, js_content, qjsc_path)
 
                 # Cache the result if not in canonical mode
                 if not canonical and cache_file:

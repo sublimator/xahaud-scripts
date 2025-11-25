@@ -1,13 +1,12 @@
 import os
 import sys
-from typing import Optional
 
 from xahaud_scripts.utils.logging import make_logger
 from xahaud_scripts.utils.paths import get_xahaud_root
 from xahaud_scripts.utils.shell_utils import (
+    change_directory,
     check_tool_exists,
     get_llvm_tool_command,
-    change_directory,
     run_command,
 )
 
@@ -15,7 +14,7 @@ logger = make_logger(__name__)
 
 
 def do_generate_coverage_report(
-    build_dir: str, specific_file: Optional[str] = None, prefix: Optional[str] = None
+    build_dir: str, specific_file: str | None = None, prefix: str | None = None
 ) -> bool:
     """Generate a coverage report if the build was instrumented for coverage.
 
@@ -35,7 +34,7 @@ def do_generate_coverage_report(
         return False
 
     try:
-        with open(cmake_cache, "r") as f:
+        with open(cmake_cache) as f:
             if "coverage:STRING=ON" not in f.read():
                 logger.warning(
                     "Cannot generate coverage report: This was not a coverage build"

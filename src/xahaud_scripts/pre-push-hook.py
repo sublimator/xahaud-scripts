@@ -40,7 +40,7 @@ def main():
         username = subprocess.check_output(
             ["git", "config", "user.name"], universal_newlines=True
         ).strip()
-    except:
+    except Exception:
         username = "unknown"
 
     # Log the attempt

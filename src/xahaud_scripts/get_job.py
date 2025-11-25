@@ -13,7 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 import requests
 
@@ -39,9 +39,14 @@ class GitHubActionsFetcher:
         self.logger.info(f"Repository: {self.owner}/{self.repo}")
         self.logger.info(f"Run ID: {self.run_id}, Job ID: {self.job_id}")
 
-    def parse_github_url(self, url: str) -> Dict[str, Optional[str]]:
+    def parse_github_url(self, url: str) -> dict[str, str | None]:
         """Parse GitHub URL to extract components."""
-        result = {"owner": None, "repo": None, "run_id": None, "job_id": None}
+        result: dict[str, str | None] = {
+            "owner": None,
+            "repo": None,
+            "run_id": None,
+            "job_id": None,
+        }
 
         # Extract owner and repo
         repo_pattern = r"github\.com/([^/]+)/([^/]+)"
@@ -104,7 +109,7 @@ class GitHubActionsFetcher:
             status_code = e.response.status_code
             if status_code in (401, 403):
                 self.logger.error(
-                    f"Authentication required. GitHub API returned {status} to request {url}."
+                    f"Authentication required. GitHub API returned {status_code} to request {url}."
                 )
                 self.logger.error(
                     "This repository might require authentication. Try using a GitHub token."
@@ -184,7 +189,7 @@ class GitHubActionsFetcher:
             self.logger.error("Invalid JSON response from GitHub API")
             sys.exit(1)
 
-    def get_run_jobs(self, run_id: str) -> List[Dict[str, Any]]:
+    def get_run_jobs(self, run_id: str) -> list[dict[str, Any]]:
         """Get all jobs for a specific workflow run."""
         url = (
             f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/jobs"
@@ -195,7 +200,7 @@ class GitHubActionsFetcher:
         self.logger.info(f"Found {len(jobs)} jobs")
         return jobs
 
-    def get_job_details(self, job_id: str) -> Dict[str, Any]:
+    def get_job_details(self, job_id: str) -> dict[str, Any]:
         """Get details for a specific job."""
         url = f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}"
         self.logger.info(f"Fetching details for job ID: {job_id}")
@@ -217,7 +222,7 @@ class GitHubActionsFetcher:
             self.logger.warning(f"Could not fetch logs for job {job_id}: {str(e)}")
             return ""
 
-    def extract_step_logs(self, full_log: str) -> Dict[str, str]:
+    def extract_step_logs(self, full_log: str) -> dict[str, str]:
         """Extract individual step logs from the full job log."""
         step_logs = {}
         current_step = None
@@ -291,7 +296,7 @@ class GitHubActionsFetcher:
             self.logger.debug(f"Error calculating duration: {e}")
             return "N/A"
 
-    def print_steps(self, job: Dict[str, Any], include_logs: bool = True) -> None:
+    def print_steps(self, job: dict[str, Any], include_logs: bool = True) -> None:
         """Print steps information for a job."""
         job_name = job.get("name", "Unknown Job")
         steps = job.get("steps", [])

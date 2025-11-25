@@ -5,7 +5,6 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from typing import List, Optional, Dict
 
 from xahaud_scripts.consts import GDB_SCRIPT
 from xahaud_scripts.utils.logging import make_logger
@@ -23,7 +22,7 @@ def check_tool_exists(tool_name: str) -> bool:
     return exists
 
 
-def get_llvm_tool_command(tool_name: str) -> List[str]:
+def get_llvm_tool_command(tool_name: str) -> list[str]:
     """Get the command to run an LLVM tool, using xcrun on macOS if available."""
     if sys.platform == "darwin" and check_tool_exists("xcrun"):
         logger.debug(f"Using xcrun to invoke {tool_name} on macOS")
@@ -33,11 +32,11 @@ def get_llvm_tool_command(tool_name: str) -> List[str]:
 
 
 def run_command(
-    cmd: List[str],
+    cmd: list[str],
     check: bool = True,
     capture_output: bool = False,
-    env: Optional[Dict[str, str]] = None,
-) -> subprocess.CompletedProcess:
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     cmd_str = json.dumps(cmd)
     logger.info(f"Running command: {cmd_str}")
@@ -52,7 +51,7 @@ def run_command(
             if result.stderr:
                 logger.debug(f"Command stderr: {result.stderr}")
         else:
-            result = subprocess.run(cmd, check=check, env=env)
+            result = subprocess.run(cmd, check=check, env=env, text=True)
 
         logger.info(f"Command completed with return code: {result.returncode}")
         return result
@@ -71,7 +70,7 @@ def run_command(
             stdout=e.stdout if hasattr(e, "stdout") else None,
             stderr=e.stderr if hasattr(e, "stderr") else None,
         )
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         logger.error(f"Command not found: {cmd[0]}")
         raise
 
@@ -106,12 +105,23 @@ def change_directory(path: str):
         os.chdir(old_dir)
 
 
-def create_lldb_script() -> str:
-    """Create a temporary file with LLDB commands."""
+def create_lldb_script(all_threads: bool = False) -> str:
+    """Create a temporary file with LLDB commands.
+
+    Args:
+        all_threads: If True, show backtrace for all threads. If False, only current thread.
+    """
+    from xahaud_scripts.consts import GDB_SCRIPT_ALL_THREADS
+
     fd, path = tempfile.mkstemp(suffix=".lldb")
-    logger.debug(f"Creating temporary LLDB script at {path}")
+    logger.debug(
+        f"Creating temporary LLDB script at {path} (all_threads={all_threads})"
+    )
 
     with os.fdopen(fd, "w") as f:
-        f.write(GDB_SCRIPT)
+        if all_threads:
+            f.write(GDB_SCRIPT_ALL_THREADS)
+        else:
+            f.write(GDB_SCRIPT)
 
     return path

@@ -9,23 +9,31 @@ Features include:
 - Comprehensive logging
 """
 
+import json
 import os
 import subprocess
 import sys
-import time
-from typing import List, Optional
 
 import click
 
+from xahaud_scripts.build import (
+    CMakeOptions,
+    ccache_show_stats,
+    ccache_zero_stats,
+    check_config_mismatch,
+    cmake_build,
+    cmake_configure,
+    conan_install,
+    generate_coverage_prefix,
+)
 from xahaud_scripts.utils.coverage import do_generate_coverage_report
-from xahaud_scripts.utils.logging import setup_logging, make_logger
+from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
 from xahaud_scripts.utils.shell_utils import (
-    check_tool_exists,
-    run_command,
-    get_logical_cpu_count,
     change_directory,
+    check_tool_exists,
     create_lldb_script,
+    run_command,
 )
 
 # Set up logger
@@ -36,94 +44,54 @@ def do_build_jshooks_header() -> None:
     """Build the JS hooks header."""
     logger.info("Building JS hooks header...")
 
-    script_path = os.path.join("./.scripts/src/xahaud_scripts/build_jshooks_header.py")
-    if not os.path.exists(script_path):
-        script_path = "./src/xahaud_scripts/build_jshooks_header.py"
-        if not os.path.exists(script_path):
-            logger.error("Could not find build_jshooks_header.py script")
-            raise FileNotFoundError("Could not find build_jshooks_header.py script")
-
     try:
-        run_command(["python", script_path, "--canonical"])
+        run_command(["build-jshooks-header", "--canonical"])
         logger.info("JS hooks header built successfully")
     except Exception as e:
         logger.error(f"Failed to build JS hooks header: {e}")
         raise
 
 
-def detect_previous_build_config(build_dir: str) -> dict:
-    """Try to detect the previous build configuration."""
-    config = {"coverage": False, "conan": False, "verbose": False, "ccache": False}
-
-    cmake_cache_path = os.path.join(build_dir, "CMakeCache.txt")
-    if not os.path.exists(cmake_cache_path):
-        logger.debug("No previous CMake cache found")
-        return config
-
-    logger.debug(f"Analyzing previous build configuration from {cmake_cache_path}")
-    try:
-        with open(cmake_cache_path, "r") as f:
-            cache_content = f.read()
-
-            # Check for coverage
-            if "coverage:STRING=ON" in cache_content:
-                config["coverage"] = True
-                logger.debug("Detected previous build with coverage enabled")
-
-            # Check for conan toolchain
-            if (
-                "CMAKE_TOOLCHAIN_FILE" in cache_content
-                and "conan_toolchain.cmake" in cache_content
-            ):
-                config["conan"] = True
-                logger.debug("Detected previous build with conan")
-
-            # Check for verbose
-            if "CMAKE_VERBOSE_MAKEFILE:BOOL=ON" in cache_content:
-                config["verbose"] = True
-                logger.debug("Detected previous build with verbose output")
-
-            # Check for ccache
-            if (
-                "CMAKE_CXX_COMPILER_LAUNCHER" in cache_content
-                and "ccache" in cache_content
-            ):
-                config["ccache"] = True
-                logger.debug("Detected previous build with ccache")
-    except Exception as e:
-        logger.warning(f"Could not analyze previous build configuration: {e}")
-
-    return config
-
-
-def generate_coverage_prefix() -> str:
-    """Generate a prefix for coverage files to identify specific test runs."""
-    timestamp_ms = int(time.time() * 1000)
-    return "coverage_run_" + str(timestamp_ms)
-
-
 def build_rippled(
     reconfigure_build: bool = False,
     coverage: bool = False,
     use_conan: bool = False,
+    use_conan_2: bool = False,
     verbose: bool = False,
     use_ccache: bool = False,
+    ccache_basedir: str | None = None,
+    ccache_sloppy: bool = False,
+    ccache_debug: bool = False,
+    target: str = "rippled",
+    log_line_numbers: bool = True,
+    build_type: str = "Debug",
+    dry_run: bool = False,
+    unity: bool = False,
 ) -> bool:
     """Build the rippled executable.
 
     Args:
         reconfigure_build: If True, force CMake reconfiguration even if build directory exists
         coverage: If True, enable code coverage
-        use_conan: If True, use Conan package manager for dependencies
+        use_conan: If True, use Conan 1.x package manager for dependencies
+        use_conan_2: If True, use Conan 2.x package manager for dependencies
         verbose: If True, enable verbose output during build
         use_ccache: If True, use ccache to speed up compilation
+        ccache_basedir: Base directory for ccache path normalization (cache sharing)
+        ccache_sloppy: If True, ignore locale, __DATE__, __TIME__ differences
+        ccache_debug: If True, enable ccache debug logging
+        target: Build target (e.g., rippled, xrpld)
+        log_line_numbers: If True, enable BEAST_ENHANCED_LOGGING
+        build_type: CMake build type (Debug or Release)
+        dry_run: If True, print commands without executing
+        unity: If True, enable unity builds (faster clean builds, slower incremental)
 
     Returns:
         bool: True if build was successful, False otherwise
     """
     xahaud_root = get_xahaud_root()
     build_dir = os.path.join(xahaud_root, "build")
-    logger.info(f"Building rippled in {build_dir}")
+    logger.info(f"Building {target} in {build_dir}")
 
     # Check if build directory exists
     build_dir_exists = os.path.exists(build_dir)
@@ -131,202 +99,70 @@ def build_rippled(
     # Determine if we need to configure
     need_configure = not build_dir_exists or reconfigure_build
 
-    # If build directory exists and we're not reconfiguring, check for configuration mismatch
+    # Check for configuration mismatch if not reconfiguring
     if build_dir_exists and not need_configure:
-        prev_config = detect_previous_build_config(build_dir)
-        config_mismatch = (
-            prev_config["coverage"] != coverage
-            or prev_config["conan"] != use_conan
-            or prev_config["verbose"] != verbose
-            or prev_config["ccache"] != use_ccache
+        check_config_mismatch(
+            build_dir=build_dir,
+            coverage=coverage,
+            use_conan=(use_conan or use_conan_2),
+            verbose=verbose,
+            ccache=use_ccache,
+            build_type=build_type,
         )
 
-        if config_mismatch:
-            logger.warning("Current build configuration differs from previous build.")
-            logger.warning(
-                "Previous build: "
-                + f"coverage={prev_config['coverage']}, "
-                + f"conan={prev_config['conan']}, "
-                + f"verbose={prev_config['verbose']}, "
-                + f"ccache={prev_config['ccache']}"
-            )
-            logger.warning(
-                f"Current request: coverage={coverage}, conan={use_conan}, verbose={verbose}, ccache={use_ccache}"
-            )
-            logger.warning(
-                "Consider using --reconfigure-build to ensure consistent configuration"
-            )
-            # TODO: prompt user to confirm ?
-            # click.prompt("Need to reconfigure")
-
     # Create build directory if needed
-    os.makedirs(build_dir, exist_ok=True)
+    if not dry_run:
+        os.makedirs(build_dir, exist_ok=True)
 
-    # Check for conan if requested
-    if use_conan:
-        if not check_tool_exists("conan"):
-            logger.error("Conan is required but not found in PATH")
+    # Run conan install if requested
+    if (use_conan or use_conan_2) and need_configure:
+        success = conan_install(
+            xahaud_root=xahaud_root,
+            build_type=build_type,
+            use_v2=use_conan_2,
+            dry_run=dry_run,
+        )
+        if not success:
             return False
-
-        if need_configure:
-            logger.info("Installing dependencies with Conan...")
-            # Determine build type and generator
-            build_type = "Debug"  # Always use Debug build type
-            generator = "Ninja" if check_tool_exists("ninja") else "Unix Makefiles"
-            logger.info(f"Using build type {build_type} with generator {generator}")
-
-            with change_directory(xahaud_root):
-                try:
-                    # Run conan install
-                    run_command(
-                        [
-                            "conan",
-                            "install",
-                            ".",
-                            "--build=missing",
-                            "--install-folder=build",
-                            f"-s",
-                            f"build_type={build_type}",
-                            "-e",
-                            f"CMAKE_GENERATOR={generator}",
-                        ]
-                    )
-                    logger.info("Conan dependencies installed successfully")
-                except Exception as e:
-                    logger.error(f"Failed to install dependencies with Conan: {e}")
-                    return False
 
     # Configure cmake if needed
     if need_configure:
-        logger.info("Configuring CMake build...")
-        with change_directory(build_dir):
-            # Get environment variables
-            llvm_dir = os.environ.get("LLVM_DIR", "")
-            llvm_library_dir = os.environ.get("LLVM_LIBRARY_DIR", "")
-
-            # Build cmake command
-            cmake_cmd = ["cmake"]
-
-            # Add generator if using conan and ninja is available
-            if use_conan and check_tool_exists("ninja"):
-                cmake_cmd.extend(["-G", "Ninja"])
-
-            # Base build type is always Debug
-            build_type = "Debug"
-            cmake_cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
-
-            # Common flags for both regular and coverage builds
-            if verbose:
-                cmake_cmd.append("-DCMAKE_VERBOSE_MAKEFILE=ON")
-
-            cmake_cmd.append("-Dassert=TRUE")
-
-            # Add ccache if requested
-            if use_ccache:
-                if check_tool_exists("ccache"):
-                    logger.info("Using ccache to speed up compilation")
-                    cmake_cmd.extend(
-                        [
-                            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
-                            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-                        ]
-                    )
-                else:
-                    logger.warning(
-                        "ccache requested but not found in PATH, continuing without it"
-                    )
-
-            # Add coverage settings if requested
-            if coverage:
-                logger.info("Configuring build with coverage instrumentation")
-                cmake_cmd.extend(
-                    [
-                        "-Dcoverage=ON",
-                        "-Dcoverage_core_only=ON",
-                        "-DCMAKE_CXX_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
-                        "-DCMAKE_C_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
-                    ]
-                )
-            else:
-                # Standard debug build settings
-                logger.info("Configuring standard debug build")
-                # cmake_cmd.insert(1, "-Dsan") # just after `cmake`
-
-            # Add conan toolchain if using conan
-            if use_conan:
-                toolchain_path = "generators/conan_toolchain.cmake"
-                logger.debug(f"Using Conan toolchain at {toolchain_path}")
-                cmake_cmd.append(f"-DCMAKE_TOOLCHAIN_FILE={toolchain_path}")
-                cmake_cmd.append("-Dunity=OFF")  # Disable unity builds when using conan
-
-            # Add LLVM settings if provided
-            if llvm_dir:
-                logger.debug(f"Using LLVM directory: {llvm_dir}")
-                cmake_cmd.append(f"-DLLVM_DIR={llvm_dir}")
-
-            if llvm_library_dir:
-                logger.debug(f"Using LLVM library directory: {llvm_library_dir}")
-                cmake_cmd.append(f"-DLLVM_LIBRARY_DIR={llvm_library_dir}")
-
-            # Add source directory
-            cmake_cmd.append("..")  # We're already in the build directory
-
-            try:
-                # Run cmake configuration
-                run_command(cmake_cmd)
-                logger.info("CMake configuration completed successfully")
-            except Exception as e:
-                logger.error(f"CMake configuration failed: {e}")
-                return False
-
-    # Build rippled
-    logger.info("Building rippled...")
-    with change_directory(build_dir):
-        cpu_count = get_logical_cpu_count()
-        build_cmd = ["cmake", "--build", "."]
-
-        # Add target
-        build_cmd.extend(["--target", "rippled"])
-
-        # Add parallel flag
-        build_cmd.extend(["--parallel", f"{cpu_count}"])
-
-        # Add verbose flag if requested
-        if verbose:
-            # Not all generators support --verbose, so we use CMAKE_VERBOSE_MAKEFILE instead
-            # This was set during configuration if verbose was enabled
-            logger.debug(
-                "Build will use verbose output if configured with CMAKE_VERBOSE_MAKEFILE=ON"
-            )
-
-        try:
-            run_command(build_cmd)
-            logger.info("Build completed successfully")
-
-            # Verify the build output exists
-            rippled_path = os.path.join(build_dir, "rippled")
-            if not os.path.exists(rippled_path):
-                # On some platforms the executable might have a different name or location
-                logger.warning(f"Could not find rippled executable at {rippled_path}")
-                rippled_path = os.path.join(build_dir, "rippled.exe")
-                if not os.path.exists(rippled_path):
-                    logger.error("Could not find rippled executable after build")
-                    return False
-
-            logger.debug(f"Verified rippled executable exists at {rippled_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Build failed: {e}")
+        options = CMakeOptions(
+            build_type=build_type,
+            coverage=coverage,
+            verbose=verbose,
+            ccache=use_ccache,
+            ccache_basedir=ccache_basedir,
+            ccache_sloppy=ccache_sloppy,
+            ccache_debug=ccache_debug,
+            log_line_numbers=log_line_numbers,
+            use_conan=(use_conan or use_conan_2),
+            conan_v2=use_conan_2,
+            unity=unity,
+        )
+        if not cmake_configure(build_dir, options, dry_run=dry_run):
             return False
+
+    # Build the target
+    return cmake_build(
+        build_dir,
+        target=target,
+        verbose=verbose,
+        dry_run=dry_run,
+        ccache=use_ccache,
+        ccache_basedir=ccache_basedir,
+        ccache_sloppy=ccache_sloppy,
+    )
 
 
 def run_rippled(
-    args: List[str],
+    args: list[str],
     use_lldb: bool,
     times: int = 1,
     stop_on_fail: bool = True,
-    lldb_commands_file: Optional[str] = None,
-    env: Optional[dict] = None,
+    lldb_commands_file: str | None = None,
+    env: dict | None = None,
+    lldb_all_threads: bool = False,
 ) -> int:
     """Run the rippled executable, optionally with lldb, multiple times.
 
@@ -337,9 +173,10 @@ def run_rippled(
         stop_on_fail: Whether to stop on first failure
         lldb_commands_file: Path to LLDB commands file
         env: Environment variables to set for the process
+        lldb_all_threads: Whether to show all threads in LLDB backtrace
 
     Returns:
-        tuple: (exit_code, coverage_prefix) - the exit code of the last run and the coverage file prefix if used
+        int: the exit code of the last run
     """
     build_dir = os.path.join(get_xahaud_root(), "build")
 
@@ -364,9 +201,11 @@ def run_rippled(
 
     # Create a default LLDB script if requested but none provided
     if use_lldb and not lldb_commands_file:
-        temp_lldb_script = create_lldb_script()
+        temp_lldb_script = create_lldb_script(all_threads=lldb_all_threads)
         lldb_commands_file = temp_lldb_script
-        logger.info(f"Created default LLDB script at {lldb_commands_file}")
+        logger.info(
+            f"Created default LLDB script at {lldb_commands_file} (all_threads={lldb_all_threads})"
+        )
 
     try:
         with change_directory(build_dir):
@@ -411,7 +250,7 @@ def run_rippled(
     return exit_code
 
 
-@click.command(context_settings=dict(ignore_unknown_options=True))
+@click.command()
 @click.option(
     "--log-level",
     type=click.Choice(
@@ -427,14 +266,23 @@ def run_rippled(
     help="Build JS hooks header",
 )
 @click.option(
-    "--lldb/--no-lldb", is_flag=True, default=False, help="Run with lldb debugger"
+    "--lldb/--no-lldb",
+    is_flag=True,
+    default=False,
+    help="Run with lldb debugger (shows crashing thread backtrace)",
+)
+@click.option(
+    "--lldb-all-threads/--no-lldb-all-threads",
+    is_flag=True,
+    default=False,
+    help="Run with lldb debugger (shows all threads backtrace)",
 )
 @click.option(
     "--lldb-commands-file",
     default=None,
     help="File containing lldb commands to run before running rippled",
 )
-@click.option("--times", default=1, type=int, help="Number of times to run the command")
+@click.option("--times", default=2, type=int, help="Number of times to run the command")
 @click.option("--build/--no-build", default=True, is_flag=True, help="Build rippled")
 @click.option(
     "--stop-on-fail/--no-stop-on-fail",
@@ -449,6 +297,12 @@ def run_rippled(
     help="Force CMake reconfiguration even if build directory exists",
 )
 @click.option(
+    "--dry-run/--no-dry-run",
+    is_flag=True,
+    default=False,
+    help="Print commands without executing them (shows all flags that would be passed)",
+)
+@click.option(
     "--coverage/--no-coverage",
     is_flag=True,
     default=False,
@@ -458,13 +312,25 @@ def run_rippled(
     "--conan/--no-conan",
     is_flag=True,
     default=False,
-    help="Use Conan package manager for dependencies",
+    help="Use Conan 1.x package manager for dependencies (use --no-conan-2 first)",
+)
+@click.option(
+    "--conan-2/--no-conan-2",
+    is_flag=True,
+    default=True,
+    help="Use Conan 2.x package manager for dependencies (default: enabled)",
 )
 @click.option(
     "--verbose/--no-verbose",
     is_flag=True,
     default=False,
     help="Enable verbose output during build",
+)
+@click.option(
+    "--unity/--no-unity",
+    is_flag=True,
+    default=False,
+    help="Enable unity builds (faster clean builds, slower incremental; default: off)",
 )
 @click.option(
     "--generate-coverage-report/--no-generate-coverage-report",
@@ -480,49 +346,128 @@ def run_rippled(
 @click.option(
     "--ccache/--no-ccache",
     is_flag=True,
-    default=False,
+    default=None,
     help="Use ccache to speed up compilation",
+)
+@click.option(
+    "--ccache-basedir",
+    default=".",
+    help="Base directory for ccache path normalization (default: . for worktree sharing)",
+)
+@click.option(
+    "--ccache-sloppy/--no-ccache-sloppy",
+    is_flag=True,
+    default=True,
+    help="Ignore locale and __DATE__/__TIME__ differences in ccache (default: on)",
+)
+@click.option(
+    "--ccache-debug/--no-ccache-debug",
+    is_flag=True,
+    default=False,
+    help="Enable ccache debug logging to ~/.config/xahaud-scripts/ccache-<timestamp>.log",
+)
+@click.option(
+    "--ccache-stats/--no-ccache-stats",
+    is_flag=True,
+    default=True,
+    help="Show ccache stats after build (default: on when using --ccache)",
+)
+@click.option(
+    "--target",
+    default="rippled",
+    help="Build target (e.g., rippled, xrpld)",
+)
+@click.option(
+    "--log-line-numbers/--no-log-line-numbers",
+    is_flag=True,
+    default=True,
+    help="Enable/disable log line numbers (default: enabled)",
+)
+@click.option(
+    "--build-type",
+    type=click.Choice(["Debug", "Release"], case_sensitive=False),
+    default="Debug",
+    help="CMake build type (default: Debug)",
 )
 @click.argument("rippled_args", nargs=-1, type=click.UNPROCESSED)
 def main(
     log_level,
     build_jshooks_header,
     lldb,
+    lldb_all_threads,
     lldb_commands_file,
     times,
     stop_on_fail,
     rippled_args,
     build,
     reconfigure_build,
+    dry_run,
     coverage,
     conan,
+    conan_2,
     verbose,
+    unity,
     generate_coverage_report,
     coverage_file,
     ccache,
+    ccache_basedir,
+    ccache_sloppy,
+    ccache_debug,
+    ccache_stats,
+    target,
+    log_line_numbers,
+    build_type,
 ):
     """Build and run rippled tests with support for debugging and coverage analysis.
 
+    Use -- to separate run-tests options from rippled arguments.
+
     Examples:
         # Run a basic unit test
-        run_tests.py unit_test_hook
+        run-tests -- unit_test_hook
 
         # Build with coverage and generate report
-        run_tests.py --coverage --generate-coverage-report unit_test_hook
+        run-tests --coverage --generate-coverage-report -- unit_test_hook
 
         # Run with debugger
-        run_tests.py --lldb unit_test_hook
+        run-tests --lldb -- unit_test_hook
 
-        # Build with conan and ccache
-        run_tests.py --conan --ccache --reconfigure-build unit_test_hook
+        # Build with ccache (cache sharing between worktrees enabled by default)
+        run-tests --ccache --reconfigure-build -- unit_test_hook
 
         # Run multiple times
-        run_tests.py --times 5 --no-stop-on-fail unit_test_hook
+        run-tests --times 5 --no-stop-on-fail -- unit_test_hook
+
+        # Build xrpld target instead of rippled
+        run-tests --target xrpld -- unit_test_hook
+
+        # Build with Release build type
+        run-tests --build-type Release -- unit_test_hook
+
+        # Dry run - show all commands without executing
+        run-tests --dry-run --reconfigure-build -- unit_test_hook
+
+        # Just build, no tests
+        run-tests --times=0 --build-type Release --reconfigure-build
     """
     # Set up logging first
     setup_logging(log_level, logger)
 
-    logger.info("Starting run_tests.py")
+    # Check environment variable for ccache if not explicitly set
+    if ccache is None:
+        ccache = os.environ.get("RUN_TESTS_CCACHE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if ccache:
+            logger.info("Enabled ccache from RUN_TESTS_CCACHE environment variable")
+
+    logger.info(
+        f"Starting run_tests.py, running cmd with {json.dumps(locals(), indent=2)}"
+    )
+
     logger.debug(f"Command line arguments: {' '.join(sys.argv[1:])}")
 
     try:
@@ -542,10 +487,11 @@ def main(
                 logger.error(f"LLDB commands file not found: {lldb_commands_file}")
                 raise click.ClickException(f"File not found: {lldb_commands_file}")
 
-            lldb = True  # automatically enable lldb if a commands file is provided
-            logger.debug(
-                "Automatically enabled lldb mode due to lldb_commands_file being specified"
-            )
+            if not lldb and not lldb_all_threads:
+                lldb = True  # automatically enable lldb if a commands file is provided
+                logger.debug(
+                    "Automatically enabled lldb mode due to lldb_commands_file being specified"
+                )
 
         # Change to xahaud root directory
         xahaud_root = get_xahaud_root()
@@ -559,19 +505,49 @@ def main(
                 do_build_jshooks_header()
 
             # Build rippled
-            if build:
+            if build or dry_run:
                 logger.info("Building rippled...")
+
+                # Resolve ccache_basedir to absolute path if provided
+                resolved_ccache_basedir = None
+                if ccache_basedir:
+                    resolved_ccache_basedir = os.path.abspath(ccache_basedir)
+                    logger.debug(
+                        f"Resolved ccache_basedir to: {resolved_ccache_basedir}"
+                    )
+
+                # Zero ccache stats before build if requested
+                if ccache_stats and ccache and not dry_run:
+                    ccache_zero_stats()
+
                 build_successful = build_rippled(
-                    reconfigure_build=reconfigure_build,
+                    reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
                     use_conan=conan,
+                    use_conan_2=conan_2,
                     verbose=verbose,
                     use_ccache=ccache,
+                    ccache_basedir=resolved_ccache_basedir,
+                    ccache_sloppy=ccache_sloppy,
+                    ccache_debug=ccache_debug,
+                    target=target,
+                    log_line_numbers=log_line_numbers,
+                    build_type=build_type,
+                    dry_run=dry_run,
+                    unity=unity,
                 )
+
+                # Show ccache stats after build if requested
+                if ccache_stats and ccache and not dry_run:
+                    ccache_show_stats()
 
                 if not build_successful:
                     logger.error("Build failed, cannot run tests")
                     sys.exit(1)
+
+                if dry_run:
+                    logger.info("Dry run complete - no commands were executed")
+                    sys.exit(0)
             else:
                 logger.info("Skipping build as requested")
 
@@ -587,13 +563,17 @@ def main(
                 env["LLVM_PROFILE_FILE"] = f"{coverage_prefix}.%p.profraw"
                 logger.debug(f"Set LLVM_PROFILE_FILE={env['LLVM_PROFILE_FILE']}")
 
+            # Determine which lldb mode to use
+            use_lldb = lldb or lldb_all_threads
+
             exit_code = run_rippled(
                 list(rippled_args),
-                lldb,
+                use_lldb,
                 times,
                 stop_on_fail,
                 lldb_commands_file,
                 env=env,
+                lldb_all_threads=lldb_all_threads,
             )
 
             # Generate coverage report if requested

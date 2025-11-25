@@ -2,3 +2,4 @@ generated/
 *.log
 .idea
 __pycache__
+.claude
