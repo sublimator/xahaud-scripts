@@ -10,6 +10,14 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 uv sync --dev
 ```
 
+### Global Install
+
+To install commands globally (available everywhere):
+
+```bash
+uv tool install --force --editable .
+```
+
 ## Available Commands
 
 - `run-tests` - Run xahaud tests with coverage support
