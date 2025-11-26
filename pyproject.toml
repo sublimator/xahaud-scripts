@@ -25,6 +25,7 @@ dependencies = [
 x-get-job = "xahaud_scripts.get_job:main"
 x-run-tests = "xahaud_scripts.run_tests:main"
 x-build-jshooks-header = "xahaud_scripts.build_jshooks_header:main"
+x-build-test-hooks = "xahaud_scripts.build_test_hooks:main"
 x-format-changed = "xahaud_scripts.format_changed:main"
 x-testnet = "xahaud_scripts.testnet.cli:main"
 

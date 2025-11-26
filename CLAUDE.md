@@ -54,6 +54,17 @@ Build the JS hooks header file using qjsc.
 x-build-jshooks-header --canonical
 ```
 
+### x-build-test-hooks
+Generate SetHook_wasm.h from SetHook_test.cpp. Compiles WASM test blocks.
+
+```bash
+x-build-test-hooks                    # Build with caching
+x-build-test-hooks -j 4               # Use 4 workers
+x-build-test-hooks --force-write      # Force regenerate
+```
+
+Requires: wasmcc, hook-cleaner, wat2wasm, clang-format
+
 ### x-format-changed
 Format changed files (cpp, python, cmake, shell) in git.
 
