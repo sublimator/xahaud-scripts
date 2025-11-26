@@ -3,3 +3,4 @@ generated/
 .idea
 __pycache__
 .claude
+.coverage

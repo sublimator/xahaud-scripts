@@ -27,12 +27,12 @@ from xahaud_scripts.build import (
     generate_coverage_prefix,
 )
 from xahaud_scripts.utils.coverage import do_generate_coverage_report
+from xahaud_scripts.utils.lldb import create_lldb_script
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
 from xahaud_scripts.utils.shell_utils import (
     change_directory,
     check_tool_exists,
-    create_lldb_script,
     run_command,
 )
 

@@ -3,10 +3,8 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from contextlib import contextmanager
 
-from xahaud_scripts.consts import GDB_SCRIPT
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -103,25 +101,3 @@ def change_directory(path: str):
     finally:
         logger.debug(f"Changing directory back to {old_dir}")
         os.chdir(old_dir)
-
-
-def create_lldb_script(all_threads: bool = False) -> str:
-    """Create a temporary file with LLDB commands.
-
-    Args:
-        all_threads: If True, show backtrace for all threads. If False, only current thread.
-    """
-    from xahaud_scripts.consts import GDB_SCRIPT_ALL_THREADS
-
-    fd, path = tempfile.mkstemp(suffix=".lldb")
-    logger.debug(
-        f"Creating temporary LLDB script at {path} (all_threads={all_threads})"
-    )
-
-    with os.fdopen(fd, "w") as f:
-        if all_threads:
-            f.write(GDB_SCRIPT_ALL_THREADS)
-        else:
-            f.write(GDB_SCRIPT)
-
-    return path
