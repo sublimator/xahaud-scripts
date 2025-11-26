@@ -45,15 +45,13 @@ class CMakeOptions:
     ccache_sloppy: bool = False  # Ignore locale, __DATE__, __TIME__
     ccache_debug: bool = False  # Enable ccache debug logging
     log_line_numbers: bool = True
-    use_conan: bool = False
-    conan_v2: bool = False
+    use_conan: bool = True
     unity: bool = False  # OFF for faster incremental builds during development
 
     @property
     def toolchain_file(self) -> str | None:
         """Get the toolchain file path if using conan."""
         if self.use_conan:
-            # Both Conan 1.x and 2.x place the toolchain in generators subfolder
             return "generators/conan_toolchain.cmake"
         return None
 

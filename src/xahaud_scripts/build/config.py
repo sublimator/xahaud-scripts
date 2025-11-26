@@ -14,19 +14,13 @@ class BuildConfig:
     """Configuration options for building xahaud."""
 
     coverage: bool = False
-    conan: bool = False
-    conan_2: bool = False
+    conan: bool = True
     verbose: bool = False
     ccache: bool = False
     build_type: str = "Debug"
     target: str = "rippled"
     log_line_numbers: bool = True
     reconfigure: bool = False
-
-    @property
-    def use_conan(self) -> bool:
-        """Return True if any conan version is enabled."""
-        return self.conan or self.conan_2
 
 
 def detect_previous_build_config(build_dir: str) -> dict:

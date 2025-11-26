@@ -55,8 +55,7 @@ def do_build_jshooks_header() -> None:
 def build_rippled(
     reconfigure_build: bool = False,
     coverage: bool = False,
-    use_conan: bool = False,
-    use_conan_2: bool = False,
+    use_conan: bool = True,
     verbose: bool = False,
     use_ccache: bool = False,
     ccache_basedir: str | None = None,
@@ -73,8 +72,7 @@ def build_rippled(
     Args:
         reconfigure_build: If True, force CMake reconfiguration even if build directory exists
         coverage: If True, enable code coverage
-        use_conan: If True, use Conan 1.x package manager for dependencies
-        use_conan_2: If True, use Conan 2.x package manager for dependencies
+        use_conan: If True, use Conan package manager for dependencies
         verbose: If True, enable verbose output during build
         use_ccache: If True, use ccache to speed up compilation
         ccache_basedir: Base directory for ccache path normalization (cache sharing)
@@ -104,7 +102,7 @@ def build_rippled(
         check_config_mismatch(
             build_dir=build_dir,
             coverage=coverage,
-            use_conan=(use_conan or use_conan_2),
+            use_conan=use_conan,
             verbose=verbose,
             ccache=use_ccache,
             build_type=build_type,
@@ -115,11 +113,10 @@ def build_rippled(
         os.makedirs(build_dir, exist_ok=True)
 
     # Run conan install if requested
-    if (use_conan or use_conan_2) and need_configure:
+    if use_conan and need_configure:
         success = conan_install(
             xahaud_root=xahaud_root,
             build_type=build_type,
-            use_v2=use_conan_2,
             dry_run=dry_run,
         )
         if not success:
@@ -136,8 +133,7 @@ def build_rippled(
             ccache_sloppy=ccache_sloppy,
             ccache_debug=ccache_debug,
             log_line_numbers=log_line_numbers,
-            use_conan=(use_conan or use_conan_2),
-            conan_v2=use_conan_2,
+            use_conan=use_conan,
             unity=unity,
         )
         if not cmake_configure(build_dir, options, dry_run=dry_run):
@@ -311,14 +307,8 @@ def run_rippled(
 @click.option(
     "--conan/--no-conan",
     is_flag=True,
-    default=False,
-    help="Use Conan 1.x package manager for dependencies (use --no-conan-2 first)",
-)
-@click.option(
-    "--conan-2/--no-conan-2",
-    is_flag=True,
     default=True,
-    help="Use Conan 2.x package manager for dependencies (default: enabled)",
+    help="Use Conan package manager for dependencies (default: enabled)",
 )
 @click.option(
     "--verbose/--no-verbose",
@@ -404,7 +394,6 @@ def main(
     dry_run,
     coverage,
     conan,
-    conan_2,
     verbose,
     unity,
     generate_coverage_report,
@@ -524,7 +513,6 @@ def main(
                     reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
                     use_conan=conan,
-                    use_conan_2=conan_2,
                     verbose=verbose,
                     use_ccache=ccache,
                     ccache_basedir=resolved_ccache_basedir,

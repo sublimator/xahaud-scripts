@@ -202,7 +202,7 @@ def generate_node_config(
 # See: src/ripple/peerfinder/impl/Counts.h:70-83 (can_activate)
 # See: src/ripple/overlay/impl/OverlayImpl.cpp:272-284 (slots full error)
 [peers_max]
-21
+10
 
 [network_id]
 {network_config.network_id}
