@@ -122,7 +122,9 @@ class GitHubActionsFetcher:
 
     def get_run_jobs(self, run_id: str) -> list[dict[str, Any]]:
         """Get all jobs for a specific workflow run."""
-        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/jobs"
+        url = (
+            f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/jobs"
+        )
         logger.info(f"Fetching jobs for run ID: {run_id}")
         response = self._make_request(url)
         jobs = response.get("jobs", [])
@@ -137,7 +139,9 @@ class GitHubActionsFetcher:
 
     def get_job_logs(self, job_id: str) -> str:
         """Get logs for a specific job."""
-        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}/logs"
+        url = (
+            f"{self.base_url}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}/logs"
+        )
         logger.info(f"Fetching logs for job ID: {job_id}")
         try:
             logs = self._make_request(url)
