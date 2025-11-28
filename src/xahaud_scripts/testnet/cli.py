@@ -214,7 +214,7 @@ def generate(ctx: click.Context, node_count: int) -> None:
     default="rcl",
     help="Injection type",
 )
-@click.option("--no-delays/--delays", default=False, help="Skip startup delays")
+@click.option("--no-delays/--delays", default=True, help="Skip startup delays (default: no delays)")
 @click.option(
     "--slave-delay",
     type=int,

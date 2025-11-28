@@ -93,7 +93,7 @@ class LaunchConfig:
     inject_type: str = "rcl"
     flood: int | None = None
     n_txns: int | None = None
-    no_delays: bool = False
+    no_delays: bool = True
     slave_delay: int = 2
     slave_net: bool = False
     no_check_local: bool = False
@@ -165,7 +165,7 @@ class ConfigBuilder:
         self._inject_type: str = "rcl"
         self._flood: int | None = None
         self._n_txns: int | None = None
-        self._no_delays: bool = False
+        self._no_delays: bool = True
         self._slave_delay: int = 2
         self._slave_net: bool = False
         self._no_check_local: bool = False
