@@ -214,7 +214,11 @@ def generate(ctx: click.Context, node_count: int) -> None:
     default="rcl",
     help="Injection type",
 )
-@click.option("--no-delays/--delays", default=True, help="Skip startup delays (default: no delays)")
+@click.option(
+    "--no-delays/--delays",
+    default=True,
+    help="Skip startup delays (default: no delays)",
+)
 @click.option(
     "--slave-delay",
     type=int,
@@ -240,9 +244,9 @@ def generate(ctx: click.Context, node_count: int) -> None:
 )
 @click.option(
     "--launcher",
-    type=click.Choice(["tmux", "iterm"]),
+    type=click.Choice(["iterm-panes", "iterm", "tmux"]),
     default=None,
-    help="Launcher type (default: tmux if available, else iterm)",
+    help="Launcher type (default: iterm-panes)",
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
