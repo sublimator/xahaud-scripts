@@ -44,6 +44,14 @@ class Launcher(Protocol):
         """
         ...
 
+    def finalize(self) -> None:
+        """Called after all nodes have been launched.
+
+        Use this for any cleanup or final actions like attaching to
+        a tmux session. Default implementation does nothing.
+        """
+        ...
+
 
 @runtime_checkable
 class RPCClient(Protocol):

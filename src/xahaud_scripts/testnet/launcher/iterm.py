@@ -84,6 +84,10 @@ end tell
                 logger.error(f"  AppleScript error: {e.stderr.decode()}")
             return False
 
+    def finalize(self) -> None:
+        """No-op for iTerm launcher - each node already has its own window."""
+        pass
+
     def _build_env_vars(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build environment variable exports for the node.
 

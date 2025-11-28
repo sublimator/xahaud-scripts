@@ -75,7 +75,11 @@ def _parse_node_list(specs: str) -> list[int]:
     return [_parse_node_spec(s.strip()) for s in specs.split(",")]
 
 
-def _create_network(ctx: click.Context, node_count: int | None = None) -> TestNetwork:
+def _create_network(
+    ctx: click.Context,
+    node_count: int | None = None,
+    launcher_type: str | None = None,
+) -> TestNetwork:
     """Create a TestNetwork instance from context."""
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     base_dir = ctx.obj.get("base_dir") or (xahaud_root / "testnet")
@@ -89,7 +93,7 @@ def _create_network(ctx: click.Context, node_count: int | None = None) -> TestNe
     return TestNetwork(
         base_dir=base_dir,
         network_config=network_config,
-        launcher=get_launcher(),
+        launcher=get_launcher(launcher_type),
         rpc_client=RequestsRPCClient(network_config.base_port_rpc),
         ws_client=WebSocketClient(network_config.base_port_ws),
         process_manager=UnixProcessManager(),
@@ -234,6 +238,12 @@ def generate(ctx: click.Context, node_count: int) -> None:
     default=None,
     help="Path to genesis ledger file (default: bundled genesis.json)",
 )
+@click.option(
+    "--launcher",
+    type=click.Choice(["tmux", "iterm"]),
+    default=None,
+    help="Launcher type (default: tmux if available, else iterm)",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -250,9 +260,10 @@ def run(
     no_check_local: bool,
     no_check_pseudo_valid: bool,
     genesis_file: Path | None,
+    launcher: str | None,
     extra_args: tuple[str, ...],
 ) -> None:
-    """Launch nodes in iTerm windows and start monitoring.
+    """Launch nodes in terminal windows and start monitoring.
 
     This command launches each node in a separate iTerm window and then
     starts a monitoring loop that displays network status.
@@ -270,8 +281,11 @@ def run(
 
         # Launch without startup delays (faster but may be unstable)
         testnet run --no-delays
+
+        # Launch with specific launcher
+        testnet run --launcher tmux
     """
-    network = _create_network(ctx, node_count=node_count)
+    network = _create_network(ctx, node_count=node_count, launcher_type=launcher)
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     rippled_path = ctx.obj.get("rippled_path") or (xahaud_root / "build" / "rippled")

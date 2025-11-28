@@ -156,6 +156,9 @@ class TestNetwork:
                     )
                     time.sleep(launch_config.slave_delay)
 
+        # Finalize launcher (e.g., attach to tmux session)
+        self._launcher.finalize()
+
         logger.info("Network launched!")
         logger.info(f"  Node 0 RPC: http://127.0.0.1:{self._config.base_port_rpc}")
         logger.info(f"  Node 0 WS:  ws://127.0.0.1:{self._config.base_port_ws}")
