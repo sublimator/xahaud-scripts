@@ -26,6 +26,9 @@ from xahaud_scripts.build import (
     conan_install,
     generate_coverage_prefix,
 )
+from xahaud_scripts.build import (
+    ccache_show_config as _ccache_show_config,
+)
 from xahaud_scripts.utils.coverage import do_generate_coverage_report
 from xahaud_scripts.utils.lldb import create_lldb_script
 from xahaud_scripts.utils.logging import make_logger, setup_logging
@@ -363,6 +366,12 @@ def run_rippled(
     help="Show ccache stats after build (default: on when using --ccache)",
 )
 @click.option(
+    "--ccache-show-config",
+    is_flag=True,
+    default=False,
+    help="Show ccache config after build stats",
+)
+@click.option(
     "--target",
     default="rippled",
     help="Build target (e.g., rippled, xrpld)",
@@ -403,6 +412,7 @@ def main(
     ccache_sloppy,
     ccache_debug,
     ccache_stats,
+    ccache_show_config,
     target,
     log_line_numbers,
     build_type,
@@ -528,6 +538,8 @@ def main(
                 # Show ccache stats after build if requested
                 if ccache_stats and ccache and not dry_run:
                     ccache_show_stats()
+                    if ccache_show_config:
+                        _ccache_show_config()
 
                 if not build_successful:
                     logger.error("Build failed, cannot run tests")

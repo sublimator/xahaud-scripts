@@ -180,6 +180,17 @@ def ccache_show_stats() -> None:
         print()
 
 
+def ccache_show_config() -> None:
+    """Show ccache configuration."""
+    result = run_ccache(["--show-config"], capture=True)
+    if result and result.stdout:
+        print("\n" + "=" * 50)
+        print("CCACHE CONFIG")
+        print("=" * 50)
+        print(result.stdout.strip())
+        print("=" * 50 + "\n")
+
+
 def get_ccache_launcher(
     basedir: str | None = None,
     sloppy: bool = False,

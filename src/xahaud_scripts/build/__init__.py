@@ -2,6 +2,7 @@
 
 from xahaud_scripts.build.ccache import (
     CCACHE_CONFIG_PATH,
+    ccache_show_config,
     ccache_show_stats,
     ccache_zero_stats,
     get_ccache_debug_logfile,
@@ -34,6 +35,7 @@ __all__ = [
     "CMakeOptions",
     "ccache_zero_stats",
     "ccache_show_stats",
+    "ccache_show_config",
     "setup_ccache_config",
     "get_ccache_launcher",
     "get_ccache_debug_logfile",
