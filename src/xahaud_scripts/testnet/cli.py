@@ -30,6 +30,7 @@ from xahaud_scripts.testnet.config import (
     LaunchConfig,
     NetworkConfig,
     get_bundled_genesis_file,
+    prepare_genesis_file,
 )
 from xahaud_scripts.testnet.launcher import get_launcher
 from xahaud_scripts.testnet.monitor import (
@@ -243,6 +244,12 @@ def generate(ctx: click.Context, node_count: int) -> None:
     help="Path to genesis ledger file (default: bundled genesis.json)",
 )
 @click.option(
+    "--feature",
+    "features",
+    multiple=True,
+    help="Amendment hash to enable. Prefix with '-' to disable. Can be repeated.",
+)
+@click.option(
     "--launcher",
     type=click.Choice(["iterm-panes", "iterm", "tmux"]),
     default=None,
@@ -264,6 +271,7 @@ def run(
     no_check_local: bool,
     no_check_pseudo_valid: bool,
     genesis_file: Path | None,
+    features: tuple[str, ...],
     launcher: str | None,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -294,10 +302,21 @@ def run(
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     rippled_path = ctx.obj.get("rippled_path") or (xahaud_root / "build" / "rippled")
 
+    # Prepare genesis file with feature modifications
+    base_genesis = genesis_file or get_bundled_genesis_file()
+    effective_genesis = prepare_genesis_file(base_genesis, list(features))
+
+    # Log if modifications were made
+    if features:
+        logger.info(f"Created modified genesis with {len(features)} feature change(s)")
+        for f in features:
+            action = "disabled" if f.startswith("-") else "enabled"
+            logger.info(f"  {action}: {f.lstrip('-')[:16]}...")
+
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
-        genesis_file=genesis_file or get_bundled_genesis_file(),
+        genesis_file=effective_genesis,
         amendment_id=amendment_id,
         quorum=quorum,
         flood=flood,

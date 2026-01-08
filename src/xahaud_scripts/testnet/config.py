@@ -10,7 +10,10 @@ This module provides:
 from __future__ import annotations
 
 import importlib.resources
+import json
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +34,61 @@ def get_bundled_genesis_file() -> Path:
             )
         )
     )
+
+
+def prepare_genesis_file(
+    base_genesis: Path,
+    features: list[str],
+) -> Path:
+    """Create a modified genesis.json with custom amendments.
+
+    Args:
+        base_genesis: Path to the base genesis.json file
+        features: List of amendment hashes. Prefix with '-' to remove.
+
+    Returns:
+        Path to the (possibly modified) genesis file.
+        If no features specified, returns base_genesis unchanged.
+    """
+    if not features:
+        return base_genesis
+
+    # Load base genesis
+    with open(base_genesis) as f:
+        genesis = json.load(f)
+
+    # Find Amendments entry in accountState
+    amendments_entry = None
+    for entry in genesis["ledger"]["accountState"]:
+        if entry.get("LedgerEntryType") == "Amendments":
+            amendments_entry = entry
+            break
+
+    if amendments_entry is None:
+        raise ValueError("No Amendments entry found in genesis.json")
+
+    current_amendments = set(amendments_entry.get("Amendments", []))
+
+    # Process feature modifications
+    for feature in features:
+        feature = feature.upper()  # Normalize to uppercase
+        if feature.startswith("-"):
+            # Remove amendment
+            hash_to_remove = feature[1:]
+            current_amendments.discard(hash_to_remove)
+        else:
+            # Add amendment
+            current_amendments.add(feature)
+
+    # Update amendments array (sorted for deterministic output)
+    amendments_entry["Amendments"] = sorted(current_amendments)
+
+    # Write to temp file
+    fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="genesis_")
+    with os.fdopen(fd, "w") as f:
+        json.dump(genesis, f, indent=2)
+
+    return Path(temp_path)
 
 
 @dataclass
