@@ -11,6 +11,8 @@ This module provides:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
@@ -50,6 +52,7 @@ def display_network_status(
     table.add_column("State", style="green")
     table.add_column("Ledger", justify="right", style="yellow")
     table.add_column("Hash", style="dim", no_wrap=True)
+    table.add_column("Txns", justify="right", style="magenta")
     table.add_column("Peers", justify="right", style="blue")
     table.add_column("Props", justify="right", style="blue")
     table.add_column("Quorum", justify="right", style="blue")
@@ -64,6 +67,7 @@ def display_network_status(
             table.add_row(
                 str(node_id),
                 f"ERROR: {data['error']}",
+                "-",
                 "-",
                 "-",
                 "-",
@@ -87,6 +91,7 @@ def display_network_status(
                 "-",
                 "-",
                 "-",
+                "-",
                 f"{data.get('response_time', 0):.3f}s",
             )
             continue
@@ -95,6 +100,7 @@ def display_network_status(
         last_close = state.get("last_close", {})
         proposers = last_close.get("proposers", "N/A")
         converge_time = last_close.get("converge_time_s", "N/A")
+        txn_count = last_close.get("transactions", "N/A")
         validation_quorum = state.get("validation_quorum", "N/A")
         validated_ledger = state.get("validated_ledger", {})
         ledger_seq = validated_ledger.get("seq", "N/A")
@@ -132,6 +138,7 @@ def display_network_status(
             state.get("server_state", "unknown"),
             str(ledger_seq),
             ledger_hash_display,
+            str(txn_count),
             str(state.get("peers", 0)),
             str(proposers),
             str(validation_quorum),
@@ -141,6 +148,15 @@ def display_network_status(
         )
 
     console.print(table)
+
+    # Debug: dump last_close for node 0 if DEBUG=1
+    if os.environ.get("DEBUG") == "1":
+        node0_data = node_data.get(0, {})
+        server_info = node0_data.get("server_info", {})
+        info = server_info.get("info", {})
+        last_close = info.get("last_close", {})
+        console.print("\n[dim]DEBUG: last_close (node 0):[/dim]")
+        console.print(json.dumps(last_close, indent=2))
 
 
 def display_amendment_status(
