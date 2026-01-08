@@ -131,6 +131,10 @@ end tell
         if config.no_check_pseudo_valid:
             parts.append("export CHECK_PSEUDO_VALIDITY=0")
 
+        # Extra environment variables from CLI
+        for key, value in config.extra_env.items():
+            parts.append(f"export {key}={value}")
+
         return " && ".join(parts)
 
     def _build_startup_flags(self, node: NodeInfo, config: LaunchConfig) -> str:

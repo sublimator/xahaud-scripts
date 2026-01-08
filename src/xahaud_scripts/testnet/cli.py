@@ -251,6 +251,12 @@ def generate(ctx: click.Context, node_count: int) -> None:
     help="Amendment hash to enable. Prefix with '-' to disable. Can be repeated.",
 )
 @click.option(
+    "--env",
+    "env_vars",
+    multiple=True,
+    help="Environment variable (NAME or NAME=VALUE). No value means =1.",
+)
+@click.option(
     "--launcher",
     type=click.Choice(["iterm-panes", "iterm", "tmux"]),
     default=None,
@@ -273,6 +279,7 @@ def run(
     no_check_pseudo_valid: bool,
     genesis_file: Path | None,
     features: tuple[str, ...],
+    env_vars: tuple[str, ...],
     launcher: str | None,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -320,6 +327,20 @@ def run(
             else:
                 logger.info(f"  {action}: {spec[:16]}...")
 
+    # Parse environment variables
+    extra_env: dict[str, str] = {}
+    for env_spec in env_vars:
+        if "=" in env_spec:
+            key, value = env_spec.split("=", 1)
+            extra_env[key] = value
+        else:
+            extra_env[env_spec] = "1"
+
+    if extra_env:
+        logger.info(f"Extra environment variables: {len(extra_env)}")
+        for key, value in extra_env.items():
+            logger.info(f"  {key}={value}")
+
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
@@ -335,6 +356,7 @@ def run(
         no_check_local=no_check_local,
         no_check_pseudo_valid=no_check_pseudo_valid,
         extra_args=list(extra_args),
+        extra_env=extra_env,
     )
 
     network.run(launch_config)

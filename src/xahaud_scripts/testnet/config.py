@@ -166,6 +166,7 @@ class LaunchConfig:
         no_check_local: Disable CHECK_LOCAL_PSEUDO env var
         no_check_pseudo_valid: Disable CHECK_PSEUDO_VALIDITY env var
         extra_args: Additional arguments for rippled
+        extra_env: Additional environment variables for rippled
     """
 
     xahaud_root: Path
@@ -182,6 +183,7 @@ class LaunchConfig:
     no_check_local: bool = False
     no_check_pseudo_valid: bool = False
     extra_args: list[str] = field(default_factory=list)
+    extra_env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
