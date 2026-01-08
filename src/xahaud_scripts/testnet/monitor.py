@@ -35,6 +35,7 @@ def display_network_status(
     node_data: dict[int, dict[str, Any]],
     node_count: int,
     tracked_amendment: str | None = None,
+    ledger_events: dict[int, dict[str, Any]] | None = None,
 ) -> None:
     """Display network status as a rich table.
 
@@ -100,7 +101,11 @@ def display_network_status(
         last_close = state.get("last_close", {})
         proposers = last_close.get("proposers", "N/A")
         converge_time = last_close.get("converge_time_s", "N/A")
-        txn_count = last_close.get("transactions", "N/A")
+        # Get txn_count from ledger_events (WebSocket) if available
+        if ledger_events and node_id in ledger_events:
+            txn_count = ledger_events[node_id].get("txn_count", "N/A")
+        else:
+            txn_count = "?"
         validation_quorum = state.get("validation_quorum", "N/A")
         validated_ledger = state.get("validated_ledger", {})
         ledger_seq = validated_ledger.get("seq", "N/A")
@@ -149,14 +154,13 @@ def display_network_status(
 
     console.print(table)
 
-    # Debug: dump last_close for node 0 if DEBUG=1
+    # Debug: dump server_info for node 0 if DEBUG=1
     if os.environ.get("DEBUG") == "1":
         node0_data = node_data.get(0, {})
         server_info = node0_data.get("server_info", {})
         info = server_info.get("info", {})
-        last_close = info.get("last_close", {})
-        console.print("\n[dim]DEBUG: last_close (node 0):[/dim]")
-        console.print(json.dumps(last_close, indent=2))
+        console.print("\n[dim]DEBUG: server_info.info (node 0):[/dim]")
+        console.print(json.dumps(info, indent=2))
 
 
 def display_amendment_status(
@@ -447,30 +451,43 @@ class NetworkMonitor:
                     )
 
             # Event-driven monitoring phase
+            last_ledger_events: dict[int, dict[str, Any]] | None = None
+
             while True:
-                console.print(
-                    f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
-                )
-
-                node_data = self._fetch_all_node_data()
-                display_network_status(node_data, node_count, self.tracked_amendment)
-
-                # Wait for next ledger close
+                # Wait for next ledger close first
                 next_ledger_index = last_ledger_index + 1
                 ledger_events = await self.ws_client.wait_for_all_nodes_ledger_close(
                     node_count, next_ledger_index, timeout=10.0
                 )
 
                 if ledger_events:
+                    # Debug: dump ledgerClosed event
+                    if os.environ.get("DEBUG") == "1":
+                        first_event = next(iter(ledger_events.values()), {})
+                        console.print("\n[dim]DEBUG: ledgerClosed event:[/dim]")
+                        console.print(json.dumps(first_event, indent=2))
+
                     max_index = max(
                         event.get("ledger_index", 0) for event in ledger_events.values()
                     )
                     last_ledger_index = max_index
+                    last_ledger_events = ledger_events
                 else:
                     console.print(
                         "[yellow]No ledger close events received, polling...[/yellow]"
                     )
                     await asyncio.sleep(5)
+                    continue
+
+                # Display status after receiving events
+                console.print(
+                    f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                )
+
+                node_data = self._fetch_all_node_data()
+                display_network_status(
+                    node_data, node_count, self.tracked_amendment, last_ledger_events
+                )
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")
