@@ -9,6 +9,7 @@ This module provides:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import json
 import os
@@ -36,6 +37,21 @@ def get_bundled_genesis_file() -> Path:
     )
 
 
+def feature_name_to_hash(name: str) -> str:
+    """Convert a feature name to its amendment hash.
+
+    Uses first 256 bits of SHA-512 of the name (uppercase).
+
+    Args:
+        name: Feature name (e.g., "RNG")
+
+    Returns:
+        64-character hex string (256 bits)
+    """
+    digest = hashlib.sha512(name.encode("utf-8")).digest()
+    return digest[:32].hex().upper()  # First 256 bits = 32 bytes
+
+
 def prepare_genesis_file(
     base_genesis: Path,
     features: list[str],
@@ -44,7 +60,8 @@ def prepare_genesis_file(
 
     Args:
         base_genesis: Path to the base genesis.json file
-        features: List of amendment hashes. Prefix with '-' to remove.
+        features: List of amendment hashes or @names. Prefix with '-' to remove.
+                  Use @Name syntax to compute hash from name (e.g., @RNG).
 
     Returns:
         Path to the (possibly modified) genesis file.
@@ -71,14 +88,22 @@ def prepare_genesis_file(
 
     # Process feature modifications
     for feature in features:
-        feature = feature.upper()  # Normalize to uppercase
-        if feature.startswith("-"):
-            # Remove amendment
-            hash_to_remove = feature[1:]
-            current_amendments.discard(hash_to_remove)
+        # Check for removal prefix
+        remove = feature.startswith("-")
+        if remove:
+            feature = feature[1:]
+
+        # Check for @name syntax
+        if feature.startswith("@"):
+            name = feature[1:]
+            amendment_hash = feature_name_to_hash(name)
         else:
-            # Add amendment
-            current_amendments.add(feature)
+            amendment_hash = feature.upper()
+
+        if remove:
+            current_amendments.discard(amendment_hash)
+        else:
+            current_amendments.add(amendment_hash)
 
     # Update amendments array (sorted for deterministic output)
     amendments_entry["Amendments"] = sorted(current_amendments)

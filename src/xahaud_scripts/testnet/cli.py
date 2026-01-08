@@ -29,6 +29,7 @@ import click
 from xahaud_scripts.testnet.config import (
     LaunchConfig,
     NetworkConfig,
+    feature_name_to_hash,
     get_bundled_genesis_file,
     prepare_genesis_file,
 )
@@ -311,7 +312,13 @@ def run(
         logger.info(f"Created modified genesis with {len(features)} feature change(s)")
         for f in features:
             action = "disabled" if f.startswith("-") else "enabled"
-            logger.info(f"  {action}: {f.lstrip('-')[:16]}...")
+            spec = f.lstrip("-")
+            if spec.startswith("@"):
+                name = spec[1:]
+                hash_value = feature_name_to_hash(name)
+                logger.info(f"  {action}: @{name} -> {hash_value[:16]}...")
+            else:
+                logger.info(f"  {action}: {spec[:16]}...")
 
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
