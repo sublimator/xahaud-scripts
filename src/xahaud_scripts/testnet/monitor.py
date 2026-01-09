@@ -486,6 +486,7 @@ class NetworkMonitor:
 
             # Event-driven monitoring phase
             last_ledger_events: dict[int, dict[str, Any]] | None = None
+            missed_events_count = 0
 
             while True:
                 # Wait for next ledger close first
@@ -495,6 +496,7 @@ class NetworkMonitor:
                 )
 
                 if ledger_events:
+                    missed_events_count = 0  # Reset counter on success
                     # Debug: dump ledgerClosed event
                     if os.environ.get("DEBUG") == "1":
                         first_event = next(iter(ledger_events.values()), {})
@@ -507,9 +509,38 @@ class NetworkMonitor:
                     last_ledger_index = max_index
                     last_ledger_events = ledger_events
                 else:
-                    console.print(
-                        "[yellow]No ledger close events received, polling...[/yellow]"
-                    )
+                    missed_events_count += 1
+
+                    # Check if we can still connect to node 0
+                    can_connect = await self.ws_client.check_connection(0)
+                    if can_connect:
+                        console.print(
+                            f"[yellow]No ledger close events received "
+                            f"(waiting for ledger {next_ledger_index}), polling...[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            "[red]WebSocket connection failed, retrying...[/red]"
+                        )
+
+                    # After 3 missed events, resync ledger index from RPC
+                    if missed_events_count >= 3:
+                        server_info = self.rpc_client.server_info(0)
+                        if server_info and "info" in server_info:
+                            validated = server_info["info"].get("validated_ledger", {})
+                            current_seq = validated.get("seq", 0)
+                            if (
+                                isinstance(current_seq, int)
+                                and current_seq > 0
+                                and current_seq != last_ledger_index
+                            ):
+                                console.print(
+                                    f"[cyan]Resyncing: ledger moved from "
+                                    f"{last_ledger_index} to {current_seq}[/cyan]"
+                                )
+                                last_ledger_index = current_seq
+                                missed_events_count = 0
+
                     await asyncio.sleep(5)
                     continue
 
