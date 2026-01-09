@@ -511,6 +511,41 @@ def ports(ctx: click.Context) -> None:
     display_port_status(network._process_mgr, network.nodes)
 
 
+@testnet.command("peer-addrs")
+@click.option(
+    "--node-count",
+    "-n",
+    type=click.IntRange(1, 10),
+    default=None,
+    help="Number of nodes (default: from network.json or 5)",
+)
+@click.option("--host", default="127.0.0.1", help="Host address (default: 127.0.0.1)")
+@click.pass_context
+def peer_addrs(ctx: click.Context, node_count: int | None, host: str) -> None:
+    """Output peer addresses in ip:port format.
+
+    Useful for copy/pasting into ADDITIONAL_PEERS or similar.
+
+    Examples:
+        x-testnet peer-addrs
+        x-testnet peer-addrs -n 3
+        x-testnet peer-addrs --host 79.110.60.121
+    """
+    network = _create_network(ctx, node_count=node_count)
+
+    # Try to load from network.json, fall back to generated ports
+    try:
+        network._load_network_info()
+        for node in network.nodes:
+            click.echo(f"{host}:{node.port_peer}")
+    except FileNotFoundError:
+        # No network.json, use default ports
+        count = node_count or 5
+        base_port = network._config.base_port_peer
+        for i in range(count):
+            click.echo(f"{host}:{base_port + i}")
+
+
 @testnet.command("dump-conf")
 @click.pass_context
 def dump_conf(ctx: click.Context) -> None:
