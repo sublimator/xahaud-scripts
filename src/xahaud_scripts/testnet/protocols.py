@@ -95,13 +95,19 @@ class RPCClient(Protocol):
         ...
 
     def ledger(
-        self, node_id: int, ledger_index: str = "validated"
+        self,
+        node_id: int,
+        ledger_index: str | int = "validated",
+        expand: bool = True,
+        transactions: bool = False,
     ) -> dict[str, Any] | None:
         """Get ledger data from a node.
 
         Args:
             node_id: The node ID (0, 1, 2, etc.)
             ledger_index: Ledger index or "validated", "current", "closed"
+            expand: If True, expand transaction details
+            transactions: If True, include transactions
 
         Returns:
             The ledger result dict, or None if query failed

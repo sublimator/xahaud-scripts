@@ -163,6 +163,40 @@ def display_network_status(
         console.print(json.dumps(info, indent=2))
 
 
+def display_txn_histogram(
+    rpc_client: RPCClient,
+    ledger_index: int,
+) -> None:
+    """Display a transaction type histogram for the given ledger.
+
+    Args:
+        rpc_client: RPC client for queries
+        ledger_index: Ledger index to query
+    """
+    result = rpc_client.ledger(0, ledger_index=ledger_index, transactions=True)
+    if not result:
+        return
+
+    ledger = result.get("ledger", {})
+    transactions = ledger.get("transactions", [])
+
+    if not transactions:
+        return
+
+    # Count transaction types
+    type_counts: dict[str, int] = {}
+    for tx in transactions:
+        tx_type = tx.get("TransactionType", "Unknown")
+        type_counts[tx_type] = type_counts.get(tx_type, 0) + 1
+
+    # Sort by count (descending), then by name
+    sorted_types = sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))
+
+    # Display as compact histogram
+    parts = [f"[cyan]{name}[/cyan]:{count}" for name, count in sorted_types]
+    console.print(f"[dim]Txns:[/dim] {' '.join(parts)}")
+
+
 def display_amendment_status(
     rpc_client: RPCClient,
     nodes: list[NodeInfo],
@@ -488,6 +522,7 @@ class NetworkMonitor:
                 display_network_status(
                     node_data, node_count, self.tracked_amendment, last_ledger_events
                 )
+                display_txn_histogram(self.rpc_client, last_ledger_index)
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")
