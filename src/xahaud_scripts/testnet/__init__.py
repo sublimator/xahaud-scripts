@@ -108,7 +108,6 @@ def create_testnet(
     xahaud_root: Path | None = None,
     launcher: Launcher | None = None,
     rpc_client: RPCClient | None = None,
-    ws_client: WebSocketClient | None = None,
     process_manager: ProcessManager | None = None,
     network_config: NetworkConfig | None = None,
 ) -> TestNetwork:
@@ -121,7 +120,6 @@ def create_testnet(
         xahaud_root: Path to xahaud repository (default: auto-detect via git)
         launcher: Launcher implementation (default: auto-detect best available)
         rpc_client: RPC client (default: RequestsRPCClient)
-        ws_client: WebSocket client (default: WebSocketClient)
         process_manager: Process manager (default: UnixProcessManager)
         network_config: Network configuration (default: NetworkConfig())
 
@@ -169,10 +167,6 @@ def create_testnet(
     if rpc_client is None:
         rpc_client = RequestsRPCClient(network_config.base_port_rpc)
 
-    # Default WebSocket client
-    if ws_client is None:
-        ws_client = WebSocketClient(network_config.base_port_ws)
-
     # Default process manager
     if process_manager is None:
         process_manager = UnixProcessManager()
@@ -182,6 +176,5 @@ def create_testnet(
         network_config=network_config,
         launcher=launcher,
         rpc_client=rpc_client,
-        ws_client=ws_client,
         process_manager=process_manager,
     )

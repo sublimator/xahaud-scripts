@@ -149,6 +149,67 @@ def generate_validators_file(
     return validators_file
 
 
+# Default log levels for testnet nodes (empty = rippled defaults)
+DEFAULT_LOG_LEVELS: dict[str, str] = {}
+
+# Predefined log level suites
+LOG_LEVEL_SUITES: dict[str, dict[str, str]] = {
+    "consensus": {
+        "Validations": "trace",
+        "LedgerConsensus": "trace",
+        "PeerTMProposeSet": "trace",
+    },
+    "network": {
+        "Overlay": "debug",
+        "Peer": "debug",
+        "PeerFinder": "debug",
+    },
+    "verbose": {
+        "Validations": "trace",
+        "LedgerConsensus": "trace",
+        "Overlay": "debug",
+        "Peer": "debug",
+        "PeerFinder": "debug",
+        "PeerTMProposeSet": "trace",
+        "ValidatorListDebug": "trace",
+        "ManifestDebug": "trace",
+    },
+}
+
+
+def _build_rpc_startup_section(log_levels: dict[str, str] | None = None) -> str:
+    """Build the [rpc_startup] section content for log levels.
+
+    Args:
+        log_levels: Optional overrides for default log levels.
+                    Use empty string value to remove a default partition.
+
+    Returns:
+        String content for the [rpc_startup] section
+    """
+    # Start with defaults
+    effective_levels = DEFAULT_LOG_LEVELS.copy()
+
+    # Apply overrides
+    if log_levels:
+        for partition, severity in log_levels.items():
+            if severity:
+                effective_levels[partition] = severity
+            elif partition in effective_levels:
+                # Empty severity = remove from config
+                del effective_levels[partition]
+
+    # Build lines
+    lines = ['{ "command": "log_level", "severity": "warning" }']
+    for partition, severity in sorted(effective_levels.items()):
+        lines.append(
+            f'{{ "command": "log_level", "severity": "{severity}", '
+            f'"partition": "{partition}" }}'
+        )
+
+    return "\n".join(lines)
+
+
 def generate_node_config(
     node_id: int,
     node_dir: Path,
@@ -156,6 +217,7 @@ def generate_node_config(
     validators_file: Path,
     network_config: NetworkConfig,
     is_injector: bool = False,
+    log_levels: dict[str, str] | None = None,
 ) -> Path:
     """Generate xahaud.cfg for a node.
 
@@ -166,6 +228,8 @@ def generate_node_config(
         validators_file: Path to validators.txt
         network_config: Network configuration
         is_injector: True if this is the exploit injector node
+        log_levels: Optional dict of partition -> severity to override defaults.
+                    Use empty string value to remove a default partition.
 
     Returns:
         Path to the generated config file
@@ -268,15 +332,7 @@ time.apple.com
 {chr(10).join(ips_entries)}
 
 [rpc_startup]
-{{ "command": "log_level", "severity": "warn" }}
-{{ "command": "log_level", "severity": "trace", "partition": "Validations" }}
-{{ "command": "log_level", "severity": "trace", "partition": "LedgerConsensus" }}
-{{ "command": "log_level", "severity": "debug", "partition": "Overlay" }}
-{{ "command": "log_level", "severity": "debug", "partition": "Peer" }}
-{{ "command": "log_level", "severity": "debug", "partition": "PeerFinder" }}
-{{ "command": "log_level", "severity": "trace", "partition": "PeerTMProposeSet" }}
-{{ "command": "log_level", "severity": "trace", "partition": "ValidatorListDebug" }}
-{{ "command": "log_level", "severity": "trace", "partition": "ManifestDebug" }}
+{_build_rpc_startup_section(log_levels)}
 """
 
     with open(config_file, "w") as f:
@@ -290,6 +346,7 @@ def generate_all_configs(
     base_dir: Path,
     network_config: NetworkConfig,
     key_generator: ValidatorKeysGenerator | None = None,
+    log_levels: dict[str, str] | None = None,
 ) -> list[NodeInfo]:
     """Generate configurations for all nodes.
 
@@ -297,6 +354,7 @@ def generate_all_configs(
         base_dir: Base directory for node configs
         network_config: Network configuration
         key_generator: Optional key generator (defaults to ValidatorKeysGenerator)
+        log_levels: Optional log level overrides (partition -> severity)
 
     Returns:
         List of NodeInfo for all configured nodes
@@ -335,6 +393,7 @@ def generate_all_configs(
             validators_file=validators_file,
             network_config=network_config,
             is_injector=is_injector,
+            log_levels=log_levels,
         )
 
         # Create NodeInfo

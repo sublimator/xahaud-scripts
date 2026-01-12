@@ -20,12 +20,12 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.table import Table
 
+from xahaud_scripts.testnet.websocket import PersistentWebSocketManager
 from xahaud_scripts.utils.logging import make_logger
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import NetworkConfig, NodeInfo
     from xahaud_scripts.testnet.protocols import ProcessManager, RPCClient
-    from xahaud_scripts.testnet.websocket import WebSocketClient
 
 logger = make_logger(__name__)
 console = Console()
@@ -183,17 +183,41 @@ def display_txn_histogram(
     if not transactions:
         return
 
-    # Count transaction types
+    # Count transaction types and collect Shuffle-specific fields
     type_counts: dict[str, int] = {}
+    shuffle_ledger_seqs: set[int] = set()
+    shuffle_parent_hashes: set[str] = set()
+
     for tx in transactions:
         tx_type = tx.get("TransactionType", "Unknown")
         type_counts[tx_type] = type_counts.get(tx_type, 0) + 1
 
+        # Collect Shuffle-specific fields
+        if tx_type == "Shuffle":
+            if "LedgerSequence" in tx:
+                shuffle_ledger_seqs.add(tx["LedgerSequence"])
+            if "ParentHash" in tx:
+                shuffle_parent_hashes.add(tx["ParentHash"])
+
     # Sort by count (descending), then by name
     sorted_types = sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))
 
-    # Display as compact histogram
-    parts = [f"[cyan]{name}[/cyan]:{count}" for name, count in sorted_types]
+    # Build display parts
+    parts = []
+    for name, count in sorted_types:
+        if name == "Shuffle" and (shuffle_ledger_seqs or shuffle_parent_hashes):
+            # Build Shuffle-specific details
+            details = []
+            if shuffle_ledger_seqs:
+                seqs = ",".join(str(s) for s in sorted(shuffle_ledger_seqs))
+                details.append(f"Seq={seqs}")
+            if shuffle_parent_hashes:
+                hashes = ",".join(h[:12] + "..." for h in sorted(shuffle_parent_hashes))
+                details.append(f"Parent={hashes}")
+            parts.append(f"[cyan]{name}[/cyan]:{count}({' '.join(details)})")
+        else:
+            parts.append(f"[cyan]{name}[/cyan]:{count}")
+
     console.print(f"[dim]Txns:[/dim] {' '.join(parts)}")
 
 
@@ -396,11 +420,13 @@ def dump_configs(nodes: list[NodeInfo]) -> None:
 
 
 class NetworkMonitor:
-    """Async network monitoring with event-driven updates.
+    """Async network monitoring with persistent WebSocket connections.
+
+    Uses long-lived WebSocket connections to each node with automatic
+    reconnection and keepalive for reliable event streaming.
 
     Attributes:
         rpc_client: RPC client for queries
-        ws_client: WebSocket client for ledger streaming
         network_config: Network configuration
         tracked_amendment: Optional amendment ID to track
     """
@@ -408,7 +434,6 @@ class NetworkMonitor:
     def __init__(
         self,
         rpc_client: RPCClient,
-        ws_client: WebSocketClient,
         network_config: NetworkConfig,
         tracked_amendment: str | None = None,
     ) -> None:
@@ -416,144 +441,177 @@ class NetworkMonitor:
 
         Args:
             rpc_client: RPC client for queries
-            ws_client: WebSocket client for ledger streaming
             network_config: Network configuration
             tracked_amendment: Optional amendment ID to track
         """
         self.rpc_client = rpc_client
-        self.ws_client = ws_client
         self.network_config = network_config
         self.tracked_amendment = tracked_amendment
 
-    async def monitor(self) -> None:
-        """Run the monitoring loop.
+        # Create persistent WebSocket manager (started in monitor())
+        self._ws_manager = PersistentWebSocketManager(
+            base_port_ws=network_config.base_port_ws,
+            node_count=network_config.node_count,
+        )
 
-        Polls initially, then switches to event-driven updates
-        once the first ledger close is detected.
+    async def monitor(self) -> None:
+        """Run the monitoring loop with persistent WebSocket connections.
+
+        Uses async context manager for proper connection lifecycle.
+        Connections are maintained in background tasks with auto-reconnect.
         """
         node_count = self.network_config.node_count
         last_ledger_index = 0
 
         try:
-            # Wait for nodes to start
-            connected = False
-            while not connected:
-                try:
-                    connected = await self.ws_client.check_connection(0)
-                    if not connected:
-                        console.print("[yellow]Waiting for nodes to start...[/yellow]")
-                        await asyncio.sleep(5)
-                except Exception:
-                    await asyncio.sleep(5)
+            async with self._ws_manager:
+                # Wait for at least one node to connect
+                console.print("[yellow]Connecting to nodes...[/yellow]")
 
-            console.print(
-                "[green]Connected to network, monitoring ledger closes...[/green]\n"
-            )
+                if not await self._ws_manager.wait_until_ready(timeout=30.0):
+                    console.print("[red]Failed to connect to any nodes[/red]")
+                    return
 
-            # Initial polling phase
-            console.print(
-                "[yellow]Waiting for first ledger close (polling every 3s)...[/yellow]"
-            )
-            first_ledger_received = False
-
-            while not first_ledger_received:
+                # Show connection status
+                status = self._ws_manager.get_connection_status()
+                connected_count = sum(1 for c in status.values() if c)
                 console.print(
-                    f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                    f"[green]Connected to {connected_count}/{node_count} nodes, "
+                    "monitoring ledger closes...[/green]\n"
                 )
 
-                # Fetch node data in parallel
-                node_data = self._fetch_all_node_data()
-                display_network_status(node_data, node_count, self.tracked_amendment)
+                # Initial polling phase
+                console.print(
+                    "[yellow]Waiting for first ledger close (polling every 3s)...[/yellow]"
+                )
+                first_ledger_received = False
 
-                # Check if we've gotten past genesis
-                for data in node_data.values():
-                    server_info = data.get("server_info")
-                    if server_info and "info" in server_info:
-                        validated = server_info["info"].get("validated_ledger", {})
-                        ledger_seq = validated.get("seq", 0)
+                while not first_ledger_received:
+                    console.print(
+                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                    )
+
+                    # Fetch node data in parallel
+                    node_data = self._fetch_all_node_data()
+                    display_network_status(
+                        node_data, node_count, self.tracked_amendment
+                    )
+
+                    # Check buffered events from WebSocket
+                    events = self._ws_manager.get_latest_events()
+                    for event in events.values():
+                        ledger_seq = event.get("ledger_index", 0)
                         if isinstance(ledger_seq, int) and ledger_seq > 1:
                             first_ledger_received = True
                             last_ledger_index = ledger_seq
                             break
 
-                if not first_ledger_received:
-                    await asyncio.sleep(3)
-                else:
-                    console.print(
-                        f"[green]First ledger close detected (index {last_ledger_index}), "
-                        "switching to event-driven updates[/green]\n"
-                    )
-
-            # Event-driven monitoring phase
-            last_ledger_events: dict[int, dict[str, Any]] | None = None
-            missed_events_count = 0
-
-            while True:
-                # Wait for next ledger close first
-                next_ledger_index = last_ledger_index + 1
-                ledger_events = await self.ws_client.wait_for_all_nodes_ledger_close(
-                    node_count, next_ledger_index, timeout=10.0
-                )
-
-                if ledger_events:
-                    missed_events_count = 0  # Reset counter on success
-                    # Debug: dump ledgerClosed event
-                    if os.environ.get("DEBUG") == "1":
-                        first_event = next(iter(ledger_events.values()), {})
-                        console.print("\n[dim]DEBUG: ledgerClosed event:[/dim]")
-                        console.print(json.dumps(first_event, indent=2))
-
-                    max_index = max(
-                        event.get("ledger_index", 0) for event in ledger_events.values()
-                    )
-                    last_ledger_index = max_index
-                    last_ledger_events = ledger_events
-                else:
-                    missed_events_count += 1
-
-                    # Check if we can still connect to node 0
-                    can_connect = await self.ws_client.check_connection(0)
-                    if can_connect:
-                        console.print(
-                            f"[yellow]No ledger close events received "
-                            f"(waiting for ledger {next_ledger_index}), polling...[/yellow]"
-                        )
+                    if not first_ledger_received:
+                        await asyncio.sleep(3)
                     else:
                         console.print(
-                            "[red]WebSocket connection failed, retrying...[/red]"
+                            f"[green]First ledger close detected (index {last_ledger_index}), "
+                            "event-driven monitoring active[/green]\n"
                         )
 
-                    # After 3 missed events, resync ledger index from RPC
-                    if missed_events_count >= 3:
-                        server_info = self.rpc_client.server_info(0)
-                        if server_info and "info" in server_info:
-                            validated = server_info["info"].get("validated_ledger", {})
-                            current_seq = validated.get("seq", 0)
-                            if (
-                                isinstance(current_seq, int)
-                                and current_seq > 0
-                                and current_seq != last_ledger_index
-                            ):
-                                console.print(
-                                    f"[cyan]Resyncing: ledger moved from "
-                                    f"{last_ledger_index} to {current_seq}[/cyan]"
+                # Event-driven monitoring phase
+                last_ledger_events: dict[int, dict[str, Any]] | None = None
+                missed_events_count = 0
+
+                while True:
+                    next_ledger_index = last_ledger_index + 1
+
+                    # Wait for new ledger from buffered events
+                    ledger_events = await self._ws_manager.wait_for_new_ledger(
+                        min_ledger_index=next_ledger_index,
+                        timeout=10.0,
+                    )
+
+                    if ledger_events:
+                        missed_events_count = 0  # Reset counter on success
+
+                        # Debug: dump ledgerClosed event
+                        if os.environ.get("DEBUG") == "1":
+                            first_event = next(iter(ledger_events.values()), {})
+                            console.print("\n[dim]DEBUG: ledgerClosed event:[/dim]")
+                            console.print(json.dumps(first_event, indent=2))
+
+                        max_index = max(
+                            event.get("ledger_index", 0)
+                            for event in ledger_events.values()
+                        )
+                        last_ledger_index = max_index
+                        last_ledger_events = ledger_events
+                    else:
+                        missed_events_count += 1
+
+                        # Show detailed diagnostics
+                        diag = self._ws_manager.get_diagnostics()
+                        connected_count = sum(
+                            1 for n in diag["nodes"].values() if n["connected"]
+                        )
+
+                        # Build diagnostic line showing buffered ledger indices
+                        buffered = []
+                        for nid, info in sorted(diag["nodes"].items()):
+                            if info["latest_index"]:
+                                age = info["time_since_event"]
+                                age_str = f"{age:.0f}s" if age else "?"
+                                buffered.append(
+                                    f"n{nid}={info['latest_index']}({age_str})"
                                 )
-                                last_ledger_index = current_seq
-                                missed_events_count = 0
 
-                    await asyncio.sleep(5)
-                    continue
+                        if connected_count > 0:
+                            msg = (
+                                f"[yellow]No ledger close events received "
+                                f"(waiting for ledger {next_ledger_index}), "
+                                f"connected to {connected_count}/{node_count} nodes"
+                            )
+                            if buffered:
+                                msg += f", buffered: {' '.join(buffered)}"
+                            msg += "[/yellow]"
+                            console.print(msg)
+                        else:
+                            console.print(
+                                "[red]All WebSocket connections lost, reconnecting...[/red]"
+                            )
 
-                # Display status after receiving events
-                console.print(
-                    f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
-                )
+                        # After 3 missed events, resync ledger index from RPC
+                        if missed_events_count >= 3:
+                            server_info = self.rpc_client.server_info(0)
+                            if server_info and "info" in server_info:
+                                validated = server_info["info"].get(
+                                    "validated_ledger", {}
+                                )
+                                current_seq = validated.get("seq", 0)
+                                if (
+                                    isinstance(current_seq, int)
+                                    and current_seq > 0
+                                    and current_seq != last_ledger_index
+                                ):
+                                    console.print(
+                                        f"[cyan]Resyncing: ledger moved from "
+                                        f"{last_ledger_index} to {current_seq}[/cyan]"
+                                    )
+                                    last_ledger_index = current_seq
+                                    missed_events_count = 0
 
-                node_data = self._fetch_all_node_data()
-                display_network_status(
-                    node_data, node_count, self.tracked_amendment, last_ledger_events
-                )
-                display_txn_histogram(self.rpc_client, last_ledger_index)
+                        await asyncio.sleep(5)
+                        continue
+
+                    # Display status after receiving events
+                    console.print(
+                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                    )
+
+                    node_data = self._fetch_all_node_data()
+                    display_network_status(
+                        node_data,
+                        node_count,
+                        self.tracked_amendment,
+                        last_ledger_events,
+                    )
+                    display_txn_histogram(self.rpc_client, last_ledger_index)
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")

@@ -43,7 +43,6 @@ from xahaud_scripts.testnet.monitor import (
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
-from xahaud_scripts.testnet.websocket import WebSocketClient
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 
 logger = make_logger(__name__)
@@ -97,7 +96,6 @@ def _create_network(
         network_config=network_config,
         launcher=get_launcher(launcher_type),
         rpc_client=RequestsRPCClient(network_config.base_port_rpc),
-        ws_client=WebSocketClient(network_config.base_port_ws),
         process_manager=UnixProcessManager(),
     )
 
@@ -176,8 +174,26 @@ def testnet(
     default=5,
     help="Number of nodes (1-10)",
 )
+@click.option(
+    "--log-level-suite",
+    "log_level_suite",
+    type=click.Choice(["consensus", "network", "verbose"]),
+    default=None,
+    help="Predefined log level suite to apply.",
+)
+@click.option(
+    "--log-level",
+    "log_levels",
+    multiple=True,
+    help="Log level override (Partition=severity). Applied on top of suite.",
+)
 @click.pass_context
-def generate(ctx: click.Context, node_count: int) -> None:
+def generate(
+    ctx: click.Context,
+    node_count: int,
+    log_level_suite: str | None,
+    log_levels: tuple[str, ...],
+) -> None:
     """Generate configs for all nodes.
 
     Creates validator keys and configuration files for each node
@@ -186,10 +202,35 @@ def generate(ctx: click.Context, node_count: int) -> None:
     Examples:
         testnet generate
         testnet generate --node-count 3
-        testnet generate -n 3
+        testnet generate --log-level-suite consensus
+        testnet generate --log-level-suite consensus --log-level Shuffle=debug
     """
+    from xahaud_scripts.testnet.generator import LOG_LEVEL_SUITES
+
+    # Build log levels: start with suite, then apply overrides
+    log_level_dict: dict[str, str] | None = None
+
+    if log_level_suite:
+        log_level_dict = LOG_LEVEL_SUITES[log_level_suite].copy()
+        logger.info(f"Using log level suite: {log_level_suite}")
+
+    if log_levels:
+        if log_level_dict is None:
+            log_level_dict = {}
+        for spec in log_levels:
+            if "=" not in spec:
+                raise click.BadParameter(
+                    f"Invalid log-level format: {spec}. Use Partition=severity"
+                )
+            partition, severity = spec.split("=", 1)
+            log_level_dict[partition] = severity
+            if severity:
+                logger.info(f"Log level override: {partition}={severity}")
+            else:
+                logger.info(f"Log level disabled: {partition}")
+
     network = _create_network(ctx, node_count=node_count)
-    network.generate()
+    network.generate(log_levels=log_level_dict)
 
     click.echo(f"\nGenerated configs for {node_count} nodes")
     click.echo(f"  Base directory: {network.base_dir}")
@@ -409,6 +450,49 @@ def server_info(ctx: click.Context, node: str) -> None:
         sys.exit(1)
 
 
+@testnet.command("server-definitions")
+@click.option(
+    "--node",
+    default="n0",
+    help="Node to query (default: n0)",
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output file (default: stdout)",
+)
+@click.pass_context
+def server_definitions(ctx: click.Context, node: str, output: Path | None) -> None:
+    """Fetch server definitions and save to file.
+
+    Queries a node for its server_definitions and writes the result
+    to a file (or stdout). The output is the unwrapped definitions object.
+
+    Examples:
+        x-testnet server-definitions -o definitions.json
+        x-testnet server-definitions --node n1 -o /tmp/defs.json
+    """
+    node_id = _parse_node_spec(node)
+    network = _create_network(ctx)
+
+    result = network.rpc_client.server_definitions(node_id)
+    if not result:
+        raise click.ClickException(f"Failed to get server_definitions from {node}")
+
+    # Remove status field, keep the definitions
+    result.pop("status", None)
+
+    formatted = json.dumps(result, indent=2)
+
+    if output:
+        output.write_text(formatted)
+        click.echo(f"Saved server definitions to {output}")
+    else:
+        click.echo(formatted)
+
+
 @testnet.command()
 @click.argument("node")
 @click.pass_context
@@ -576,6 +660,61 @@ def clean(ctx: click.Context) -> None:
     network = _create_network(ctx)
     network.clean()
     click.echo("Cleaned up generated files")
+
+
+@testnet.command("logs-search")
+@click.argument("pattern")
+@click.option(
+    "--tail",
+    "-t",
+    type=int,
+    default=None,
+    help="Only search last N lines of each log file",
+)
+@click.option(
+    "--no-sort",
+    is_flag=True,
+    help="Don't sort by timestamp (faster for large outputs)",
+)
+@click.option(
+    "--limit",
+    "-l",
+    type=int,
+    default=None,
+    help="Maximum number of results to display",
+)
+@click.pass_context
+def logs_search(
+    ctx: click.Context,
+    pattern: str,
+    tail: int | None,
+    no_sort: bool,
+    limit: int | None,
+) -> None:
+    """Search all node logs for a regex pattern and merge by timestamp.
+
+    Uses a heap-based streaming merge to efficiently handle large log files
+    without loading everything into memory.
+
+    Examples:
+        x-testnet logs-search Shuffle
+        x-testnet logs-search "LedgerConsensus.*accepted"
+        x-testnet logs-search Shuffle --tail 1000
+        x-testnet logs-search Shuffle --no-sort
+        x-testnet logs-search Shuffle --limit 100
+    """
+    from xahaud_scripts.testnet.cli_handlers import logs_search_handler
+
+    xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
+    base_dir = ctx.obj.get("base_dir") or (xahaud_root / "testnet")
+
+    logs_search_handler(
+        base_dir=base_dir,
+        pattern=pattern,
+        tail=tail,
+        no_sort=no_sort,
+        limit=limit,
+    )
 
 
 def main() -> None:

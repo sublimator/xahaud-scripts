@@ -29,7 +29,6 @@ if TYPE_CHECKING:
         ProcessManager,
         RPCClient,
     )
-    from xahaud_scripts.testnet.websocket import WebSocketClient
 
 logger = make_logger(__name__)
 
@@ -53,7 +52,6 @@ class TestNetwork:
         network_config: NetworkConfig,
         launcher: Launcher,
         rpc_client: RPCClient,
-        ws_client: WebSocketClient,
         process_manager: ProcessManager,
     ) -> None:
         """Initialize the TestNetwork.
@@ -63,14 +61,12 @@ class TestNetwork:
             network_config: Network configuration (ports, node count, etc.)
             launcher: Launcher implementation for starting nodes
             rpc_client: RPC client for node queries
-            ws_client: WebSocket client for ledger streaming
             process_manager: Process manager for teardown
         """
         self._base_dir = base_dir
         self._config = network_config
         self._launcher = launcher
         self._rpc = rpc_client
-        self._ws = ws_client
         self._process_mgr = process_manager
         self._nodes: list[NodeInfo] = []
 
@@ -94,7 +90,7 @@ class TestNetwork:
         """Get base directory."""
         return self._base_dir
 
-    def generate(self) -> None:
+    def generate(self, log_levels: dict[str, str] | None = None) -> None:
         """Generate all node configurations.
 
         This creates:
@@ -102,6 +98,9 @@ class TestNetwork:
         - xahaud.cfg for each node
         - validators.txt for each node
         - network.json with network metadata
+
+        Args:
+            log_levels: Optional log level overrides (partition -> severity)
         """
         logger.info(f"Generating configs for {self._config.node_count} nodes")
 
@@ -113,6 +112,7 @@ class TestNetwork:
             base_dir=self._base_dir,
             network_config=self._config,
             key_generator=ValidatorKeysGenerator(),
+            log_levels=log_levels,
         )
 
         # Save network.json
@@ -175,7 +175,6 @@ class TestNetwork:
 
         monitor = NetworkMonitor(
             rpc_client=self._rpc,
-            ws_client=self._ws,
             network_config=self._config,
             tracked_amendment=tracked_amendment,
         )
