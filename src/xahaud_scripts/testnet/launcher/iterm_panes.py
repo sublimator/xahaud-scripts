@@ -167,14 +167,26 @@ tell application "iTerm"
     repeat with w in windows
         if id of w is {window_id} then
             close w
-            delay 0.5
-            tell application "System Events"
-                keystroke return
-            end tell
             return true
         end if
     end repeat
     return false
+end tell
+"""
+        # Separate script to click OK on the "Close Window" confirmation dialog
+        # Only clicks if the dialog text contains "running" (i.e., running processes)
+        confirm_script = """
+delay 0.3
+tell application "System Events"
+    tell process "iTerm2"
+        try
+            set theSheet to sheet 1 of window 1
+            set sheetText to value of static text 2 of theSheet
+            if sheetText contains "running" then
+                click button "OK" of theSheet
+            end if
+        end try
+    end tell
 end tell
 """
         try:
@@ -188,6 +200,11 @@ end tell
 
             if closed:
                 logger.info(f"Closed iTerm window (id={window_id})")
+                # Try to click OK on the confirmation dialog
+                subprocess.run(
+                    ["osascript", "-e", confirm_script],
+                    capture_output=True,
+                )
             else:
                 logger.warning(
                     f"iTerm window (id={window_id}) not found - may already be closed"
