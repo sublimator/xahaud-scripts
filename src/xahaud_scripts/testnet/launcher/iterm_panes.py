@@ -161,12 +161,16 @@ end tell
             window_file.unlink()
             return False
 
-        # Close the specific window by ID
+        # Close the specific window by ID and confirm the dialog
         applescript = f"""
 tell application "iTerm"
     repeat with w in windows
         if id of w is {window_id} then
             close w
+            delay 0.1
+            tell application "System Events"
+                keystroke return
+            end tell
             return true
         end if
     end repeat
