@@ -167,7 +167,7 @@ tell application "iTerm"
     repeat with w in windows
         if id of w is {window_id} then
             close w
-            delay 0.1
+            delay 0.5
             tell application "System Events"
                 keystroke return
             end tell
