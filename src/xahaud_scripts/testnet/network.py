@@ -177,6 +177,7 @@ class TestNetwork:
             rpc_client=self._rpc,
             network_config=self._config,
             tracked_amendment=tracked_amendment,
+            base_dir=self._base_dir,
         )
 
         logger.info("Starting monitoring loop (Ctrl+C to stop)...")
