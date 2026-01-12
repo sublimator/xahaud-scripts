@@ -238,6 +238,12 @@ class TestNetwork:
         else:
             logger.info("No rippled processes found for this test network")
 
+        # Close iTerm window if it was created by iterm-panes launcher
+        from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
+
+        if ITermPanesLauncher.close_window(self._base_dir):
+            logger.info("Closed iTerm window")
+
         # Clean up generated files
         logger.info("Cleaning up generated files...")
         removed_dirs = 0

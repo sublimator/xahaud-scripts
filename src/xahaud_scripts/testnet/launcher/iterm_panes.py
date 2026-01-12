@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xahaud_scripts.utils.logging import make_logger
@@ -18,17 +19,24 @@ if TYPE_CHECKING:
 
 logger = make_logger(__name__)
 
+# File to store the iTerm window ID for teardown
+ITERM_WINDOW_FILE = ".iterm_window"
+
 
 class ITermPanesLauncher:
     """Launch xahaud nodes in iTerm2 panes within a single window.
 
     Uses AppleScript to control iTerm2, creating one window and splitting
     it into panes for each node. Closing the window kills all nodes.
+
+    The window ID is saved to {base_dir}/.iterm_window for precise teardown.
     """
 
     def __init__(self) -> None:
         self._window_created = False
         self._pane_count = 0
+        self._base_dir: Path | None = None
+        self._window_id: str | None = None
 
     def is_available(self) -> bool:
         """Check if iTerm launcher is available on this system."""
@@ -71,24 +79,39 @@ class ITermPanesLauncher:
 
     def _create_window(self, node: NodeInfo, title: str, cmd: str) -> None:
         """Create the iTerm window with the first node."""
+        # Derive base_dir from node directory (node_dir is {base_dir}/n0, etc.)
+        self._base_dir = node.node_dir.parent
+
+        # Create window and return its ID for later teardown
         applescript = f'''
 tell application "iTerm"
     activate
     set newWindow to (create window with default profile)
+    set windowId to id of newWindow
     tell current session of newWindow
         set name to "{title}"
         write text "cd {node.node_dir}"
         write text "{cmd}"
     end tell
+    return windowId
 end tell
 '''
-        subprocess.run(
+        result = subprocess.run(
             ["osascript", "-e", applescript],
             check=True,
             capture_output=True,
+            text=True,
         )
+        self._window_id = result.stdout.strip()
         self._window_created = True
-        logger.info(f"Created iTerm window with node {node.id}")
+
+        # Save window ID to file for teardown
+        if self._window_id:
+            window_file = self._base_dir / ITERM_WINDOW_FILE
+            window_file.write_text(self._window_id)
+            logger.debug(f"Saved iTerm window ID {self._window_id} to {window_file}")
+
+        logger.info(f"Created iTerm window (id={self._window_id}) with node {node.id}")
 
     def _create_pane(self, title: str, cmd: str) -> None:
         """Split and create a new pane for a node."""
@@ -116,6 +139,65 @@ end tell
     def finalize(self) -> None:
         """No-op - window is already visible."""
         pass
+
+    @staticmethod
+    def close_window(base_dir: Path) -> bool:
+        """Close the iTerm window that was created for this testnet.
+
+        Args:
+            base_dir: Base directory containing the .iterm_window file
+
+        Returns:
+            True if window was closed, False if not found or failed
+        """
+        window_file = base_dir / ITERM_WINDOW_FILE
+        if not window_file.exists():
+            logger.debug(f"No iTerm window file found at {window_file}")
+            return False
+
+        window_id = window_file.read_text().strip()
+        if not window_id:
+            logger.warning(f"Empty window ID in {window_file}")
+            window_file.unlink()
+            return False
+
+        # Close the specific window by ID
+        applescript = f"""
+tell application "iTerm"
+    repeat with w in windows
+        if id of w is {window_id} then
+            close w
+            return true
+        end if
+    end repeat
+    return false
+end tell
+"""
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", applescript],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            closed = result.stdout.strip() == "true"
+
+            if closed:
+                logger.info(f"Closed iTerm window (id={window_id})")
+            else:
+                logger.warning(
+                    f"iTerm window (id={window_id}) not found - may already be closed"
+                )
+
+            # Clean up the file
+            window_file.unlink()
+            return closed
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to close iTerm window: {e}")
+            if e.stderr:
+                logger.error(f"  AppleScript error: {e.stderr}")
+            return False
 
     def _build_env_vars(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build environment variable exports for the node."""
