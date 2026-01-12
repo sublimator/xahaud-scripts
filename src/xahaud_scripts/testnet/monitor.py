@@ -15,7 +15,6 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -430,7 +429,6 @@ class NetworkMonitor:
         rpc_client: RPC client for queries
         network_config: Network configuration
         tracked_amendment: Optional amendment ID to track
-        base_dir: Optional base directory for iTerm window cleanup
     """
 
     def __init__(
@@ -438,7 +436,6 @@ class NetworkMonitor:
         rpc_client: RPCClient,
         network_config: NetworkConfig,
         tracked_amendment: str | None = None,
-        base_dir: Path | None = None,
     ) -> None:
         """Initialize the network monitor.
 
@@ -446,12 +443,10 @@ class NetworkMonitor:
             rpc_client: RPC client for queries
             network_config: Network configuration
             tracked_amendment: Optional amendment ID to track
-            base_dir: Optional base directory for iTerm window cleanup on Ctrl+C
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_amendment = tracked_amendment
-        self.base_dir = base_dir
 
         # Create persistent WebSocket manager (started in monitor())
         self._ws_manager = PersistentWebSocketManager(
@@ -620,15 +615,6 @@ class NetworkMonitor:
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")
-
-            # Close iTerm window if we have a base_dir
-            if self.base_dir:
-                from xahaud_scripts.testnet.launcher.iterm_panes import (
-                    ITermPanesLauncher,
-                )
-
-                if ITermPanesLauncher.close_window(self.base_dir):
-                    console.print("[dim]Closed iTerm window[/dim]")
 
     def _fetch_all_node_data(self) -> dict[int, dict[str, Any]]:
         """Fetch data from all nodes in parallel.

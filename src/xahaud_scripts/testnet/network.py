@@ -177,11 +177,18 @@ class TestNetwork:
             rpc_client=self._rpc,
             network_config=self._config,
             tracked_amendment=tracked_amendment,
-            base_dir=self._base_dir,
         )
 
         logger.info("Starting monitoring loop (Ctrl+C to stop)...")
-        asyncio.run(monitor.monitor())
+        try:
+            asyncio.run(monitor.monitor())
+        except KeyboardInterrupt:
+            logger.info("Monitoring stopped by user")
+            # Close iTerm window if it was created for this testnet
+            from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
+
+            if ITermPanesLauncher.close_window(self._base_dir):
+                logger.info("Closed iTerm window")
 
     def teardown(self) -> int:
         """Kill all running test network processes.
