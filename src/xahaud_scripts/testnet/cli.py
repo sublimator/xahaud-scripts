@@ -500,6 +500,63 @@ def server_definitions(ctx: click.Context, node: str, output: Path | None) -> No
 
 
 @testnet.command()
+@click.argument("ledger_index", default="validated")
+@click.option(
+    "--node",
+    default="n0",
+    help="Node to query (default: n0)",
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output file (default: stdout)",
+)
+@click.pass_context
+def ledger(
+    ctx: click.Context,
+    ledger_index: str,
+    node: str,
+    output: Path | None,
+) -> None:
+    """Fetch a ledger with expanded transactions.
+
+    LEDGER_INDEX can be "validated", "current", or a ledger sequence number.
+
+    Examples:
+        x-testnet ledger                    # Latest validated ledger
+        x-testnet ledger 100                # Ledger 100
+        x-testnet ledger validated -o l.json
+    """
+    node_id = _parse_node_spec(node)
+    network = _create_network(ctx)
+
+    # Parse ledger_index - could be "validated", "current", or a number
+    try:
+        ledger_idx: str | int = int(ledger_index)
+    except ValueError:
+        ledger_idx = ledger_index
+
+    result = network.rpc_client.ledger(
+        node_id,
+        ledger_index=ledger_idx,
+        expand=True,
+        transactions=True,
+    )
+    if not result:
+        raise click.ClickException(f"Failed to get ledger from {node}")
+
+    formatted = json.dumps(result, indent=2)
+
+    if output:
+        output.write_text(formatted)
+        click.echo(f"Saved ledger to {output}")
+    else:
+        click.echo(formatted)
+
+
+@testnet.command()
 @click.argument("node")
 @click.pass_context
 def ping(ctx: click.Context, node: str) -> None:
