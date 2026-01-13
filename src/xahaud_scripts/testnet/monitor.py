@@ -619,6 +619,9 @@ class NetworkMonitor:
     def _fetch_all_node_data(self) -> dict[int, dict[str, Any]]:
         """Fetch data from all nodes in parallel.
 
+        If some nodes are slightly behind the majority, re-fetches them
+        after a short delay to reduce race condition noise in the display.
+
         Returns:
             Dict mapping node_id -> node data
         """
@@ -635,5 +638,85 @@ class NetworkMonitor:
             for future in as_completed(futures):
                 data = future.result()
                 node_data[data["node_id"]] = data
+
+            # Find majority ledger and re-fetch lagging nodes (inside with block)
+            node_data = self._refetch_lagging_nodes(node_data, executor)
+
+        return node_data
+
+    def _refetch_lagging_nodes(
+        self,
+        node_data: dict[int, dict[str, Any]],
+        executor: ThreadPoolExecutor,
+    ) -> dict[int, dict[str, Any]]:
+        """Re-fetch nodes that are slightly behind the majority ledger.
+
+        Only re-fetches if:
+        - There's a clear majority (>50% of nodes on same ledger)
+        - Lagging nodes are exactly 1 ledger behind
+        - At least some nodes responded successfully
+
+        Args:
+            node_data: Initial node data from parallel fetch
+            executor: Thread pool executor to reuse
+
+        Returns:
+            Updated node_data with re-fetched lagging nodes
+        """
+        # Extract ledger indices from successful responses
+        ledger_indices: dict[int, int] = {}
+        for node_id, data in node_data.items():
+            if data.get("error"):
+                continue
+            server_info = data.get("server_info", {})
+            info = server_info.get("info", {})
+            validated = info.get("validated_ledger", {})
+            seq = validated.get("seq")
+            if isinstance(seq, int) and seq > 0:
+                ledger_indices[node_id] = seq
+
+        if len(ledger_indices) < 2:
+            return node_data
+
+        # Find the majority ledger
+        from collections import Counter
+
+        counts = Counter(ledger_indices.values())
+        majority_seq, majority_count = counts.most_common(1)[0]
+
+        # Only proceed if there's a clear majority (>50%)
+        if majority_count <= len(ledger_indices) // 2:
+            return node_data
+
+        # Find nodes that are exactly 1 behind
+        lagging_nodes = [
+            node_id
+            for node_id, seq in ledger_indices.items()
+            if seq == majority_seq - 1
+        ]
+
+        if not lagging_nodes:
+            return node_data
+
+        # Wait a short time and re-fetch lagging nodes
+        time.sleep(0.15)
+
+        futures = {
+            executor.submit(
+                self.rpc_client.get_node_data, node_id, self.tracked_amendment
+            ): node_id
+            for node_id in lagging_nodes
+        }
+
+        for future in as_completed(futures):
+            data = future.result()
+            node_id = data["node_id"]
+            # Only update if the node caught up
+            server_info = data.get("server_info", {})
+            info = server_info.get("info", {})
+            validated = info.get("validated_ledger", {})
+            new_seq = validated.get("seq")
+            if isinstance(new_seq, int) and new_seq >= majority_seq:
+                node_data[node_id] = data
 
         return node_data
