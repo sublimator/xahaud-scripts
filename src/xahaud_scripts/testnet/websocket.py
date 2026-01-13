@@ -514,20 +514,26 @@ class PersistentWebSocketManager:
         self,
         min_ledger_index: int,
         timeout: float = 15.0,
+        all_nodes_timeout: float = 0.5,
     ) -> dict[int, dict[str, Any]]:
-        """Wait until we have ledger events >= min_ledger_index.
+        """Wait until we have ledger events >= min_ledger_index from all nodes.
 
         This is the replacement for wait_for_all_nodes_ledger_close().
         It checks the buffered events rather than making new connections.
 
+        Once the first node reports the target ledger, waits up to
+        all_nodes_timeout for remaining nodes before returning.
+
         Args:
             min_ledger_index: Minimum ledger index to wait for
-            timeout: Maximum time to wait in seconds
+            timeout: Maximum time to wait for first event
+            all_nodes_timeout: Time to wait for remaining nodes after first event
 
         Returns:
             Dict mapping node_id -> ledger event for nodes with sufficient index
         """
         start = asyncio.get_event_loop().time()
+        collection_start: float | None = None
 
         while True:
             events = self.get_latest_events()
@@ -539,10 +545,22 @@ class PersistentWebSocketManager:
                 if event.get("ledger_index", 0) >= min_ledger_index
             }
 
-            if matching:
-                return matching
+            now = asyncio.get_event_loop().time()
 
-            if asyncio.get_event_loop().time() - start > timeout:
+            if matching:
+                # Start collection window on first match
+                if collection_start is None:
+                    collection_start = now
+
+                # Check if we have all nodes or collection timeout expired
+                if (
+                    len(matching) >= self.node_count
+                    or now - collection_start >= all_nodes_timeout
+                ):
+                    return matching
+
+            # Check overall timeout (only before first match)
+            if collection_start is None and now - start > timeout:
                 return {}
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)  # Poll faster during collection
