@@ -173,7 +173,16 @@ def display_txn_histogram(
         rpc_client: RPC client for queries
         ledger_index: Ledger index to query
     """
-    result = rpc_client.ledger(0, ledger_index=ledger_index, transactions=True)
+    # Retry a few times if ledger isn't validated yet
+    result = None
+    for _attempt in range(3):
+        result = rpc_client.ledger(
+            0, ledger_index=ledger_index, transactions=True, validated=True
+        )
+        if result and result.get("validated"):
+            break
+        time.sleep(0.1)
+
     if not result:
         return
 

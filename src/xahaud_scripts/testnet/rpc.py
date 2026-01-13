@@ -127,6 +127,7 @@ class RequestsRPCClient:
         ledger_index: str | int = "validated",
         expand: bool = True,
         transactions: bool = False,
+        validated: bool = False,
     ) -> dict[str, Any] | None:
         """Get ledger data from a node.
 
@@ -135,19 +136,19 @@ class RequestsRPCClient:
             ledger_index: Ledger index or "validated", "current", "closed"
             expand: If True, expand transaction details
             transactions: If True, include transactions
+            validated: If True, only return if ledger is validated
 
         Returns:
             The ledger result dict, or None if query failed
         """
-        return self._call(
-            node_id,
-            "ledger",
-            {
-                "ledger_index": ledger_index,
-                "expand": expand,
-                "transactions": transactions,
-            },
-        )
+        params: dict[str, Any] = {
+            "ledger_index": ledger_index,
+            "expand": expand,
+            "transactions": transactions,
+        }
+        if validated:
+            params["validated"] = True
+        return self._call(node_id, "ledger", params)
 
     def ledger_entry(
         self,
