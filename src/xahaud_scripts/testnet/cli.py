@@ -382,6 +382,12 @@ def run(
         for key, value in extra_env.items():
             logger.info(f"  {key}={value}")
 
+    # If --slave-delay was explicitly provided, enable delays
+    from click.core import ParameterSource
+
+    if ctx.get_parameter_source("slave_delay") == ParameterSource.COMMANDLINE:
+        no_delays = False
+
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,

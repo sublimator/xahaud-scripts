@@ -173,20 +173,16 @@ tell application "iTerm"
     return false
 end tell
 """
-        # Separate script to click OK on the "Close Window" confirmation dialog
-        # Only clicks if the dialog text contains "running" (i.e., running processes)
+        # Separate script to confirm the "Close Window" dialog by pressing Return
+        # (OK is the default button, highlighted in blue)
         confirm_script = """
-delay 0.3
+delay 0.5
+tell application "iTerm"
+    activate
+end tell
+delay 0.1
 tell application "System Events"
-    tell process "iTerm2"
-        try
-            set theSheet to sheet 1 of window 1
-            set sheetText to value of static text 2 of theSheet
-            if sheetText contains "running" then
-                click button "OK" of theSheet
-            end if
-        end try
-    end tell
+    key code 36
 end tell
 """
         try:
