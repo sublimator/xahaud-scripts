@@ -668,7 +668,9 @@ class NetworkMonitor:
         for node_id, data in node_data.items():
             if data.get("error"):
                 continue
-            server_info = data.get("server_info", {})
+            server_info = data.get("server_info")
+            if not server_info:
+                continue
             info = server_info.get("info", {})
             validated = info.get("validated_ledger", {})
             seq = validated.get("seq")
@@ -712,7 +714,9 @@ class NetworkMonitor:
             data = future.result()
             node_id = data["node_id"]
             # Only update if the node caught up
-            server_info = data.get("server_info", {})
+            server_info = data.get("server_info")
+            if not server_info:
+                continue
             info = server_info.get("info", {})
             validated = info.get("validated_ledger", {})
             new_seq = validated.get("seq")
