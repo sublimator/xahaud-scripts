@@ -265,8 +265,8 @@ def generate(
 @click.option(
     "--slave-delay",
     type=int,
-    default=2,
-    help="Delay between slave nodes (seconds)",
+    default=1,
+    help="Delay between node launches (seconds)",
 )
 @click.option("--slave-net/--no-slave-net", default=False, help="Add --net to slaves")
 @click.option(

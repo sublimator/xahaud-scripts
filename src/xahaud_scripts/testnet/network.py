@@ -147,8 +147,11 @@ class TestNetwork:
             # Delay between node launches
             if not launch_config.no_delays:
                 if i == 0:
-                    logger.info("  Waiting 10 seconds for first node to initialize...")
-                    time.sleep(10)
+                    logger.info(
+                        f"  Waiting {launch_config.slave_delay} seconds "
+                        "for first node to initialize..."
+                    )
+                    time.sleep(launch_config.slave_delay)
                 elif i < len(self._nodes) - 1:
                     logger.info(
                         f"  Waiting {launch_config.slave_delay} seconds "

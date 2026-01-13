@@ -178,7 +178,7 @@ class LaunchConfig:
     flood: int | None = None
     n_txns: int | None = None
     no_delays: bool = True
-    slave_delay: int = 2
+    slave_delay: int = 1
     slave_net: bool = False
     no_check_local: bool = False
     no_check_pseudo_valid: bool = False
@@ -251,7 +251,7 @@ class ConfigBuilder:
         self._flood: int | None = None
         self._n_txns: int | None = None
         self._no_delays: bool = True
-        self._slave_delay: int = 2
+        self._slave_delay: int = 1
         self._slave_net: bool = False
         self._no_check_local: bool = False
         self._no_check_pseudo_valid: bool = False
