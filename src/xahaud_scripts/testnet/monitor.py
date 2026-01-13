@@ -709,27 +709,38 @@ class NetworkMonitor:
         if not lagging_nodes:
             return node_data
 
-        # Wait a short time and re-fetch lagging nodes
-        time.sleep(0.15)
+        # Retry up to 3 times with increasing delays
+        delays = [0.1, 0.15, 0.25]
+        for delay in delays:
+            if not lagging_nodes:
+                break
 
-        futures = {
-            executor.submit(
-                self.rpc_client.get_node_data, node_id, self.tracked_amendment
-            ): node_id
-            for node_id in lagging_nodes
-        }
+            time.sleep(delay)
 
-        for future in as_completed(futures):
-            data = future.result()
-            node_id = data["node_id"]
-            # Only update if the node caught up
-            server_info = data.get("server_info")
-            if not server_info:
-                continue
-            info = server_info.get("info", {})
-            validated = info.get("validated_ledger", {})
-            new_seq = validated.get("seq")
-            if isinstance(new_seq, int) and new_seq >= majority_seq:
-                node_data[node_id] = data
+            futures = {
+                executor.submit(
+                    self.rpc_client.get_node_data, node_id, self.tracked_amendment
+                ): node_id
+                for node_id in lagging_nodes
+            }
+
+            still_lagging = []
+            for future in as_completed(futures):
+                data = future.result()
+                node_id = data["node_id"]
+                # Only update if the node caught up
+                server_info = data.get("server_info")
+                if not server_info:
+                    still_lagging.append(node_id)
+                    continue
+                info = server_info.get("info", {})
+                validated = info.get("validated_ledger", {})
+                new_seq = validated.get("seq")
+                if isinstance(new_seq, int) and new_seq >= majority_seq:
+                    node_data[node_id] = data
+                else:
+                    still_lagging.append(node_id)
+
+            lagging_nodes = still_lagging
 
         return node_data
