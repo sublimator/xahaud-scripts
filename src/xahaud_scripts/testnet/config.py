@@ -161,7 +161,7 @@ class LaunchConfig:
         flood: Inject every N ledgers (0 for once only)
         n_txns: Number of transactions per injection
         no_delays: Skip startup delays between nodes
-        slave_delay: Delay in seconds between launching slave nodes
+        slave_delay: Delay in seconds between launching nodes
         slave_net: Add --net flag to slave nodes
         no_check_local: Disable CHECK_LOCAL_PSEUDO env var
         no_check_pseudo_valid: Disable CHECK_PSEUDO_VALIDITY env var
@@ -178,7 +178,7 @@ class LaunchConfig:
     flood: int | None = None
     n_txns: int | None = None
     no_delays: bool = True
-    slave_delay: int = 1
+    slave_delay: float = 1.0
     slave_net: bool = False
     no_check_local: bool = False
     no_check_pseudo_valid: bool = False
@@ -251,7 +251,7 @@ class ConfigBuilder:
         self._flood: int | None = None
         self._n_txns: int | None = None
         self._no_delays: bool = True
-        self._slave_delay: int = 1
+        self._slave_delay: float = 1.0
         self._slave_net: bool = False
         self._no_check_local: bool = False
         self._no_check_pseudo_valid: bool = False
@@ -335,8 +335,8 @@ class ConfigBuilder:
         self._no_delays = no_delays
         return self
 
-    def slave_delay(self, delay: int) -> ConfigBuilder:
-        """Set delay between launching slave nodes."""
+    def slave_delay(self, delay: float) -> ConfigBuilder:
+        """Set delay between launching nodes."""
         self._slave_delay = delay
         return self
 

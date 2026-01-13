@@ -264,8 +264,8 @@ def generate(
 )
 @click.option(
     "--slave-delay",
-    type=int,
-    default=1,
+    type=float,
+    default=1.0,
     help="Delay between node launches (seconds)",
 )
 @click.option("--slave-net/--no-slave-net", default=False, help="Add --net to slaves")
@@ -314,7 +314,7 @@ def run(
     n_txns: int | None,
     inject_type: str,
     no_delays: bool,
-    slave_delay: int,
+    slave_delay: float,
     slave_net: bool,
     no_check_local: bool,
     no_check_pseudo_valid: bool,
