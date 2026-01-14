@@ -123,6 +123,23 @@ class TestNetwork:
         logger.info("  Node 0: EXPLOIT INJECTOR")
         logger.info(f"  Nodes 1-{self._config.node_count - 1}: Clean validators")
 
+    def check_ports(self) -> dict[int, list[dict[str, str]]]:
+        """Check if any required ports are in use.
+
+        Returns:
+            Dict mapping port -> list of connections for ports in use
+        """
+        # Collect all ports we'll need
+        ports = []
+        for i in range(self._config.node_count):
+            ports.extend([
+                self._config.port_peer(i),
+                self._config.port_rpc(i),
+                self._config.port_ws(i),
+            ])
+
+        return self._process_mgr.check_ports_free(ports)
+
     def run(self, launch_config: LaunchConfig) -> None:
         """Launch all nodes and start monitoring.
 
@@ -132,6 +149,21 @@ class TestNetwork:
         # Load network info if not already loaded
         if not self._nodes:
             self._load_network_info()
+
+        # Check for ports in use before launching
+        ports_in_use = self.check_ports()
+        if ports_in_use:
+            logger.warning("Some ports are still in use:")
+            for port, connections in sorted(ports_in_use.items()):
+                for conn in connections:
+                    logger.warning(
+                        f"  Port {port}: {conn['process']} "
+                        f"(PID {conn['pid']}, {conn['state']})"
+                    )
+            logger.warning(
+                "This may prevent nodes from starting. "
+                "Try 'x-testnet teardown' or wait for TIME_WAIT to expire."
+            )
 
         logger.info("Launching test network...")
 

@@ -658,6 +658,48 @@ def ports(ctx: click.Context) -> None:
     display_port_status(network._process_mgr, network.nodes)
 
 
+@testnet.command("check-ports")
+@click.option(
+    "--node-count",
+    "-n",
+    type=click.IntRange(1, 10),
+    default=5,
+    help="Number of nodes (1-10)",
+)
+@click.pass_context
+def check_ports(ctx: click.Context, node_count: int) -> None:
+    """Check if required ports are free (all states including TIME_WAIT).
+
+    This shows any ports that may block network startup, including
+    connections in TIME_WAIT, CLOSE_WAIT, etc.
+
+    Examples:
+        x-testnet check-ports
+        x-testnet check-ports -n 7
+    """
+    network = _create_network(ctx, node_count=node_count)
+    ports_in_use = network.check_ports()
+
+    if not ports_in_use:
+        click.echo(f"All {node_count * 3} ports are free")
+        return
+
+    click.echo(f"Ports in use ({len(ports_in_use)} ports):\n")
+    for port, connections in sorted(ports_in_use.items()):
+        for conn in connections:
+            state = conn["state"]
+            # Color code by state
+            if state == "LISTEN":
+                state_str = click.style(state, fg="red", bold=True)
+            elif state in ("TIME_WAIT", "CLOSE_WAIT"):
+                state_str = click.style(state, fg="yellow")
+            else:
+                state_str = state
+            click.echo(
+                f"  {port}: {conn['process']} (PID {conn['pid']}, {state_str})"
+            )
+
+
 @testnet.command("peer-addrs")
 @click.option(
     "--node-count",

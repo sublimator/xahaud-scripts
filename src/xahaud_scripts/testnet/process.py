@@ -162,3 +162,65 @@ class UnixProcessManager:
             subprocess.SubprocessError,
         ):
             return None
+
+    def get_port_state(self, port: int) -> list[dict[str, str]]:
+        """Get all TCP connections using a port (any state).
+
+        Catches LISTEN, TIME_WAIT, CLOSE_WAIT, ESTABLISHED, etc.
+
+        Args:
+            port: Port number to check
+
+        Returns:
+            List of dicts with 'process', 'pid', 'state' keys
+        """
+        results = []
+
+        try:
+            # lsof without state filter to catch all connections
+            result = subprocess.run(
+                ["lsof", "-i", f":{port}", "-P", "-n"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split("\n")
+                for line in lines[1:]:  # Skip header
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        # lsof format: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+                        # NAME contains state in parentheses for TCP
+                        name = parts[-1]
+                        state = "UNKNOWN"
+                        if "(" in name and ")" in name:
+                            state = name.split("(")[-1].rstrip(")")
+                        results.append({
+                            "process": parts[0],
+                            "pid": parts[1],
+                            "state": state,
+                        })
+        except (
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+            subprocess.SubprocessError,
+        ):
+            pass
+
+        return results
+
+    def check_ports_free(self, ports: list[int]) -> dict[int, list[dict[str, str]]]:
+        """Check if ports are free, returning any that are in use.
+
+        Args:
+            ports: List of port numbers to check
+
+        Returns:
+            Dict mapping port -> list of connections (empty dict if all free)
+        """
+        in_use: dict[int, list[dict[str, str]]] = {}
+        for port in ports:
+            connections = self.get_port_state(port)
+            if connections:
+                in_use[port] = connections
+        return in_use

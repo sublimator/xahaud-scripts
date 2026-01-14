@@ -223,6 +223,30 @@ class ProcessManager(Protocol):
         """
         ...
 
+    def get_port_state(self, port: int) -> list[dict[str, str]]:
+        """Get all TCP connections using a port (any state).
+
+        Catches LISTEN, TIME_WAIT, CLOSE_WAIT, ESTABLISHED, etc.
+
+        Args:
+            port: Port number to check
+
+        Returns:
+            List of dicts with 'process', 'pid', 'state' keys
+        """
+        ...
+
+    def check_ports_free(self, ports: list[int]) -> dict[int, list[dict[str, str]]]:
+        """Check if ports are free, returning any that are in use.
+
+        Args:
+            ports: List of port numbers to check
+
+        Returns:
+            Dict mapping port -> list of connections (empty dict if all free)
+        """
+        ...
+
 
 @runtime_checkable
 class KeyGenerator(Protocol):
