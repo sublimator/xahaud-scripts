@@ -303,6 +303,11 @@ def generate(
     default=None,
     help="Launcher type (default: iterm-panes)",
 )
+@click.option(
+    "--reconnect",
+    is_flag=True,
+    help="Reconnect to existing network (skip launching, just monitor)",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -322,6 +327,7 @@ def run(
     features: tuple[str, ...],
     env_vars: tuple[str, ...],
     launcher: str | None,
+    reconnect: bool,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -345,8 +351,17 @@ def run(
 
         # Launch with specific launcher
         testnet run --launcher tmux
+
+        # Reconnect to existing network
+        testnet run --reconnect
     """
     network = _create_network(ctx, node_count=node_count, launcher_type=launcher)
+
+    if reconnect:
+        # Just reconnect to existing network and start monitoring
+        logger.info("Reconnecting to existing network...")
+        network.monitor(tracked_amendment=amendment_id)
+        return
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     rippled_path = ctx.obj.get("rippled_path") or (xahaud_root / "build" / "rippled")
