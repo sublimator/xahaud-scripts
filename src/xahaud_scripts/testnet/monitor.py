@@ -31,11 +31,26 @@ logger = make_logger(__name__)
 console = Console()
 
 
+def format_uptime(seconds: float) -> str:
+    """Format seconds as human-readable uptime."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}h {mins}m"
+
+
 def display_network_status(
     node_data: dict[int, dict[str, Any]],
     node_count: int,
     tracked_amendment: str | None = None,
     ledger_events: dict[int, dict[str, Any]] | None = None,
+    uptime_seconds: float | None = None,
 ) -> None:
     """Display network status as a rich table.
 
@@ -43,6 +58,7 @@ def display_network_status(
         node_data: Dict mapping node_id -> node data from get_node_data()
         node_count: Number of nodes
         tracked_amendment: Optional amendment ID being tracked
+        uptime_seconds: Optional uptime in seconds to display
     """
     title = f"Network Status ({node_count} nodes)"
     if tracked_amendment:
@@ -456,12 +472,19 @@ class NetworkMonitor:
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_amendment = tracked_amendment
+        self._start_time: float | None = None
 
         # Create persistent WebSocket manager (started in monitor())
         self._ws_manager = PersistentWebSocketManager(
             base_port_ws=network_config.base_port_ws,
             node_count=network_config.node_count,
         )
+
+    def _get_uptime(self) -> float | None:
+        """Get seconds since monitoring started."""
+        if self._start_time is None:
+            return None
+        return time.time() - self._start_time
 
     async def monitor(self) -> None:
         """Run the monitoring loop with persistent WebSocket connections.
@@ -471,6 +494,7 @@ class NetworkMonitor:
         """
         node_count = self.network_config.node_count
         last_ledger_index = 0
+        self._start_time = time.time()
 
         try:
             async with self._ws_manager:
@@ -496,14 +520,20 @@ class NetworkMonitor:
                 first_ledger_received = False
 
                 while not first_ledger_received:
+                    uptime = self._get_uptime()
+                    uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
                     console.print(
-                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
+                        f"{uptime_str}[/bold]\n"
                     )
 
                     # Fetch node data in parallel
                     node_data = self._fetch_all_node_data()
                     display_network_status(
-                        node_data, node_count, self.tracked_amendment
+                        node_data,
+                        node_count,
+                        self.tracked_amendment,
+                        uptime_seconds=uptime,
                     )
 
                     # Check buffered events from WebSocket
@@ -609,8 +639,11 @@ class NetworkMonitor:
                         continue
 
                     # Display status after receiving events
+                    uptime = self._get_uptime()
+                    uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
                     console.print(
-                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}[/bold]\n"
+                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
+                        f"{uptime_str}[/bold]\n"
                     )
 
                     node_data = self._fetch_all_node_data()
@@ -619,6 +652,7 @@ class NetworkMonitor:
                         node_count,
                         self.tracked_amendment,
                         last_ledger_events,
+                        uptime_seconds=uptime,
                     )
                     display_txn_histogram(self.rpc_client, last_ledger_index)
 
