@@ -295,7 +295,7 @@ def generate(
     "--env",
     "env_vars",
     multiple=True,
-    help="Environment variable (NAME or NAME=VALUE). No value means =1.",
+    help="Environment variable. Use NAME=VALUE for all nodes, or n0:NAME=VALUE for node-specific.",
 )
 @click.option(
     "--launcher",
@@ -383,9 +383,25 @@ def run(
             else:
                 logger.info(f"  {action}: {spec[:16]}...")
 
-    # Parse environment variables
+    # Parse environment variables (global and node-specific)
+    # Syntax: VAR=value (global) or n0:VAR=value (node-specific)
     extra_env: dict[str, str] = {}
+    node_env: dict[int, dict[str, str]] = {}
     for env_spec in env_vars:
+        # Check for node-specific prefix (n0:, n1:, etc.)
+        if env_spec and env_spec[0] == "n" and ":" in env_spec:
+            prefix, rest = env_spec.split(":", 1)
+            if prefix[1:].isdigit():
+                node_id = int(prefix[1:])
+                if "=" in rest:
+                    key, value = rest.split("=", 1)
+                else:
+                    key, value = rest, "1"
+                if node_id not in node_env:
+                    node_env[node_id] = {}
+                node_env[node_id][key] = value
+                continue
+        # Global env var
         if "=" in env_spec:
             key, value = env_spec.split("=", 1)
             extra_env[key] = value
@@ -393,9 +409,14 @@ def run(
             extra_env[env_spec] = "1"
 
     if extra_env:
-        logger.info(f"Extra environment variables: {len(extra_env)}")
+        logger.info(f"Global environment variables: {len(extra_env)}")
         for key, value in extra_env.items():
             logger.info(f"  {key}={value}")
+    if node_env:
+        logger.info("Node-specific environment variables:")
+        for node_id, env_dict in sorted(node_env.items()):
+            for key, value in env_dict.items():
+                logger.info(f"  n{node_id}: {key}={value}")
 
     # If --slave-delay was explicitly provided, enable delays
     from click.core import ParameterSource
@@ -419,6 +440,7 @@ def run(
         no_check_pseudo_valid=no_check_pseudo_valid,
         extra_args=list(extra_args),
         extra_env=extra_env,
+        node_env=node_env,
     )
 
     network.run(launch_config)

@@ -251,9 +251,14 @@ end tell
         if config.no_check_pseudo_valid:
             parts.append("export CHECK_PSEUDO_VALIDITY=0")
 
-        # Extra environment variables from CLI
+        # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
             parts.append(f"export {key}={value}")
+
+        # Node-specific environment variables (override global)
+        if node.id in config.node_env:
+            for key, value in config.node_env[node.id].items():
+                parts.append(f"export {key}={value}")
 
         return " && ".join(parts)
 
