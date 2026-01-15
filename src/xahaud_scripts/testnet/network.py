@@ -132,11 +132,13 @@ class TestNetwork:
         # Collect all ports we'll need
         ports = []
         for i in range(self._config.node_count):
-            ports.extend([
-                self._config.port_peer(i),
-                self._config.port_rpc(i),
-                self._config.port_ws(i),
-            ])
+            ports.extend(
+                [
+                    self._config.port_peer(i),
+                    self._config.port_rpc(i),
+                    self._config.port_ws(i),
+                ]
+            )
 
         return self._process_mgr.check_ports_free(ports)
 

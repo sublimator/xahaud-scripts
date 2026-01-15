@@ -195,11 +195,13 @@ class UnixProcessManager:
                         state = "UNKNOWN"
                         if "(" in name and ")" in name:
                             state = name.split("(")[-1].rstrip(")")
-                        results.append({
-                            "process": parts[0],
-                            "pid": parts[1],
-                            "state": state,
-                        })
+                        results.append(
+                            {
+                                "process": parts[0],
+                                "pid": parts[1],
+                                "state": state,
+                            }
+                        )
         except (
             FileNotFoundError,
             subprocess.TimeoutExpired,

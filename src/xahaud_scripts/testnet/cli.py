@@ -732,9 +732,7 @@ def check_ports(ctx: click.Context, node_count: int) -> None:
                 state_str = click.style(state, fg="yellow")
             else:
                 state_str = state
-            click.echo(
-                f"  {port}: {conn['process']} (PID {conn['pid']}, {state_str})"
-            )
+            click.echo(f"  {port}: {conn['process']} (PID {conn['pid']}, {state_str})")
 
 
 @testnet.command("peer-addrs")
