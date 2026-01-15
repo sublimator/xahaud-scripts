@@ -156,6 +156,7 @@ class TestNetwork:
         max_wait = 30  # seconds
         wait_interval = 2  # seconds
         waited = 0
+        killed_pids: set[int] = set()
 
         while waited < max_wait:
             ports_in_use = self.check_ports()
@@ -167,20 +168,40 @@ class TestNetwork:
 
             for port, connections in sorted(ports_in_use.items()):
                 for conn in connections:
+                    state = conn["state"]
+                    pid = int(conn["pid"])
                     logger.warning(
                         f"  Port {port}: {conn['process']} "
-                        f"(PID {conn['pid']}, {conn['state']})"
+                        f"(PID {pid}, {state})"
                     )
+                    # Kill processes that are actively using ports (not TIME_WAIT)
+                    killable = ("LISTEN", "ESTABLISHED", "CLOSE_WAIT", "CLOSED")
+                    if state in killable and pid not in killed_pids:
+                        logger.warning(f"  Killing PID {pid}...")
+                        self._process_mgr.kill(pid)
+                        killed_pids.add(pid)
 
             time.sleep(wait_interval)
             waited += wait_interval
 
         if ports_in_use:
-            logger.error(
-                f"Ports still in use after {max_wait}s. "
-                "Try 'x-testnet teardown' or wait longer."
+            # Check if remaining are just TIME_WAIT (can't do anything about those)
+            only_time_wait = all(
+                conn["state"] == "TIME_WAIT"
+                for conns in ports_in_use.values()
+                for conn in conns
             )
-            return
+            if only_time_wait:
+                logger.warning(
+                    f"Ports still in TIME_WAIT after {max_wait}s. "
+                    "Proceeding anyway (may fail to bind)."
+                )
+            else:
+                logger.error(
+                    f"Ports still in use after {max_wait}s. "
+                    "Try 'x-testnet teardown' or wait longer."
+                )
+                return
 
         logger.info("Launching test network...")
 
