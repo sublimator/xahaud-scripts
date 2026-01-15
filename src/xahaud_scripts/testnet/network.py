@@ -152,20 +152,35 @@ class TestNetwork:
         if not self._nodes:
             self._load_network_info()
 
-        # Check for ports in use before launching
-        ports_in_use = self.check_ports()
-        if ports_in_use:
-            logger.warning("Some ports are still in use:")
+        # Wait for ports to become free before launching
+        max_wait = 30  # seconds
+        wait_interval = 2  # seconds
+        waited = 0
+
+        while waited < max_wait:
+            ports_in_use = self.check_ports()
+            if not ports_in_use:
+                break
+
+            if waited == 0:
+                logger.warning("Waiting for ports to become free...")
+
             for port, connections in sorted(ports_in_use.items()):
                 for conn in connections:
                     logger.warning(
                         f"  Port {port}: {conn['process']} "
                         f"(PID {conn['pid']}, {conn['state']})"
                     )
-            logger.warning(
-                "This may prevent nodes from starting. "
-                "Try 'x-testnet teardown' or wait for TIME_WAIT to expire."
+
+            time.sleep(wait_interval)
+            waited += wait_interval
+
+        if ports_in_use:
+            logger.error(
+                f"Ports still in use after {max_wait}s. "
+                "Try 'x-testnet teardown' or wait longer."
             )
+            return
 
         logger.info("Launching test network...")
 
