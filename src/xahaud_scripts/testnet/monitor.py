@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
@@ -182,12 +183,15 @@ def display_network_status(
 def display_txn_histogram(
     rpc_client: RPCClient,
     ledger_index: int,
-) -> None:
+) -> dict[str, int]:
     """Display a transaction type histogram for the given ledger.
 
     Args:
         rpc_client: RPC client for queries
         ledger_index: Ledger index to query
+
+    Returns:
+        Dict mapping transaction type -> count for this ledger
     """
     # Retry a few times if ledger isn't validated yet
     result = None
@@ -200,13 +204,13 @@ def display_txn_histogram(
         time.sleep(0.1)
 
     if not result:
-        return
+        return {}
 
     ledger = result.get("ledger", {})
     transactions = ledger.get("transactions", [])
 
     if not transactions:
-        return
+        return {}
 
     # Count transaction types and collect Shuffle-specific fields
     type_counts: dict[str, int] = {}
@@ -244,6 +248,7 @@ def display_txn_histogram(
             parts.append(f"[cyan]{name}[/cyan]:{count}")
 
     console.print(f"[dim]Txns:[/dim] {' '.join(parts)}")
+    return type_counts
 
 
 def display_amendment_status(
@@ -474,6 +479,28 @@ class NetworkMonitor:
         self.tracked_amendment = tracked_amendment
         self._start_time: float | None = None
 
+        # Convergence tracking
+        self._total_conv_sum: float = 0.0  # Sum of all convergence times
+        self._total_conv_count: int = 0  # Number of data points
+        self._recent_conv_times: deque[list[float]] = deque(
+            maxlen=10
+        )  # Last 10 ledgers
+
+        # Transaction count tracking (per type)
+        self._txn_totals: dict[str, int] = {}  # Total count per type
+        self._txn_ledger_count: int = 0  # Number of ledgers tracked
+        self._recent_txn_counts: deque[dict[str, int]] = deque(
+            maxlen=10
+        )  # Last 10 ledgers
+        # Count distribution: tx_type -> {count: num_ledgers}
+        self._txn_count_dist: dict[str, dict[int, int]] = {}
+
+        # Stall tracking (10+ seconds without ledger close)
+        self._stall_count: int = 0
+        self._in_stall: bool = False
+        self._stall_start: float | None = None
+        self._longest_stall: float = 0.0
+
         # Create persistent WebSocket manager (started in monitor())
         self._ws_manager = PersistentWebSocketManager(
             base_port_ws=network_config.base_port_ws,
@@ -485,6 +512,152 @@ class NetworkMonitor:
         if self._start_time is None:
             return None
         return time.time() - self._start_time
+
+    def _update_convergence_stats(self, node_data: dict[int, dict[str, Any]]) -> None:
+        """Extract convergence times from node data and update tracking stats.
+
+        Args:
+            node_data: Dict mapping node_id -> node data from _fetch_all_node_data()
+        """
+        ledger_conv_times: list[float] = []
+
+        for data in node_data.values():
+            if data.get("error"):
+                continue
+            server_info = data.get("server_info")
+            if not server_info:
+                continue
+            info = server_info.get("info", {})
+            last_close = info.get("last_close", {})
+            converge_time = last_close.get("converge_time_s")
+
+            if isinstance(converge_time, (int, float)) and converge_time > 0:
+                ledger_conv_times.append(float(converge_time))
+                self._total_conv_sum += float(converge_time)
+                self._total_conv_count += 1
+
+        # Add this ledger's times to the rolling window
+        if ledger_conv_times:
+            self._recent_conv_times.append(ledger_conv_times)
+
+    def _display_convergence_averages(self) -> None:
+        """Display convergence averages below the status table."""
+        # Calculate last 10 ledgers average
+        if self._recent_conv_times:
+            all_recent = [t for ledger in self._recent_conv_times for t in ledger]
+            recent_avg = sum(all_recent) / len(all_recent)
+            recent_avg_str = f"{recent_avg:.3f}s"
+            ledger_count = len(self._recent_conv_times)
+        else:
+            recent_avg_str = "N/A"
+            ledger_count = 0
+
+        # Calculate cumulative average
+        if self._total_conv_count > 0:
+            cumul_avg = self._total_conv_sum / self._total_conv_count
+            cumul_avg_str = f"{cumul_avg:.3f}s"
+        else:
+            cumul_avg_str = "N/A"
+
+        # Store for combined display
+        self._last_conv_display = (
+            f"last{ledger_count}={recent_avg_str} "
+            f"cumul={cumul_avg_str} ({self._total_conv_count} samples)"
+        )
+
+    def _display_averages_and_histogram(self) -> None:
+        """Display combined averages and convergence histogram."""
+        # Get conv display (set by _display_convergence_averages)
+        conv_line = getattr(self, "_last_conv_display", "N/A")
+
+        # Get txn averages
+        if self._txn_ledger_count:
+            recent_totals: dict[str, int] = {}
+            for ledger_counts in self._recent_txn_counts:
+                for tx_type, count in ledger_counts.items():
+                    recent_totals[tx_type] = recent_totals.get(tx_type, 0) + count
+
+            ledger_count = len(self._recent_txn_counts)
+            recent_parts = []
+            for tx_type in sorted(recent_totals.keys()):
+                avg = recent_totals[tx_type] / ledger_count
+                recent_parts.append(f"{tx_type}:{avg:.1f}")
+
+            cumul_parts = []
+            for tx_type in sorted(self._txn_totals.keys()):
+                avg = self._txn_totals[tx_type] / self._txn_ledger_count
+                cumul_parts.append(f"{tx_type}:{avg:.1f}")
+
+            txn_line = (
+                f"last{ledger_count}=[{' '.join(recent_parts)}] "
+                f"cumul=[{' '.join(cumul_parts)}]"
+            )
+        else:
+            txn_line = "N/A"
+
+        # Display combined output
+        console.print(f"[dim]Avg Conv:[/dim] {conv_line}")
+        console.print(f"[dim]Avg Txns:[/dim] {txn_line}")
+
+        # Display txn count distributions per type
+        self._display_txn_distributions()
+
+    def _update_txn_stats(self, type_counts: dict[str, int]) -> None:
+        """Update transaction count tracking stats.
+
+        Args:
+            type_counts: Dict mapping transaction type -> count for this ledger
+        """
+        if not type_counts:
+            return
+
+        # Update totals and count distribution
+        for tx_type, count in type_counts.items():
+            self._txn_totals[tx_type] = self._txn_totals.get(tx_type, 0) + count
+            # Track distribution: how many ledgers had this count
+            if tx_type not in self._txn_count_dist:
+                self._txn_count_dist[tx_type] = {}
+            dist = self._txn_count_dist[tx_type]
+            dist[count] = dist.get(count, 0) + 1
+
+        self._txn_ledger_count += 1
+
+        # Add to rolling window
+        self._recent_txn_counts.append(type_counts)
+
+    def _display_txn_distributions(self) -> None:
+        """Display transaction count distributions per type."""
+        if not self._txn_count_dist:
+            return
+
+        for tx_type in sorted(self._txn_count_dist.keys()):
+            dist = self._txn_count_dist[tx_type]
+            # Sort by count descending, show {count: num_ledgers}
+            sorted_dist = sorted(dist.items(), key=lambda x: -x[1])
+            dist_str = ", ".join(f"{count}:{num}" for count, num in sorted_dist)
+            console.print(f"[dim]{tx_type}:[/dim] {{{dist_str}}}")
+
+        # Show stall stats if any
+        if self._stall_count > 0:
+            console.print(
+                f"[yellow]Stalls:[/yellow] {self._stall_count} "
+                f"(longest: {self._longest_stall:.1f}s)"
+            )
+
+    def _enter_stall(self) -> None:
+        """Mark that we've entered a stall (no ledger for 10+ seconds)."""
+        if not self._in_stall:
+            self._in_stall = True
+            self._stall_start = time.time()
+            self._stall_count += 1
+
+    def _exit_stall(self) -> None:
+        """Mark that we've exited a stall (received a ledger)."""
+        if self._in_stall and self._stall_start is not None:
+            stall_duration = time.time() - self._stall_start
+            self._longest_stall = max(self._longest_stall, stall_duration)
+            self._in_stall = False
+            self._stall_start = None
 
     async def monitor(self) -> None:
         """Run the monitoring loop with persistent WebSocket connections.
@@ -529,12 +702,14 @@ class NetworkMonitor:
 
                     # Fetch node data in parallel
                     node_data = self._fetch_all_node_data()
+                    self._update_convergence_stats(node_data)
                     display_network_status(
                         node_data,
                         node_count,
                         self.tracked_amendment,
                         uptime_seconds=uptime,
                     )
+                    self._display_convergence_averages()
 
                     # Check buffered events from WebSocket
                     events = self._ws_manager.get_latest_events()
@@ -568,6 +743,7 @@ class NetworkMonitor:
 
                     if ledger_events:
                         missed_events_count = 0  # Reset counter on success
+                        self._exit_stall()  # End any active stall
 
                         # Debug: dump ledgerClosed event
                         if os.environ.get("DEBUG") == "1":
@@ -583,6 +759,7 @@ class NetworkMonitor:
                         last_ledger_events = ledger_events
                     else:
                         missed_events_count += 1
+                        self._enter_stall()  # Mark stall start (only counts once per stall)
 
                         # Show detailed diagnostics
                         diag = self._ws_manager.get_diagnostics()
@@ -647,6 +824,7 @@ class NetworkMonitor:
                     )
 
                     node_data = self._fetch_all_node_data()
+                    self._update_convergence_stats(node_data)
                     display_network_status(
                         node_data,
                         node_count,
@@ -654,7 +832,17 @@ class NetworkMonitor:
                         last_ledger_events,
                         uptime_seconds=uptime,
                     )
-                    display_txn_histogram(self.rpc_client, last_ledger_index)
+
+                    # Update stats
+                    self._display_convergence_averages()  # Stores result for combined display
+                    txn_counts = display_txn_histogram(
+                        self.rpc_client, last_ledger_index
+                    )
+                    self._update_txn_stats(txn_counts)
+
+                    # Display combined averages and histogram
+                    console.print("[dim]───[/dim]")
+                    self._display_averages_and_histogram()
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")

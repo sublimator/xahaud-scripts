@@ -296,7 +296,9 @@ end tell
                 text=True,
             )
             window_id = result.stdout.strip()
-            logger.info(f"Opened iTerm window (id={window_id}) attached to tmux session")
+            logger.info(
+                f"Opened iTerm window (id={window_id}) attached to tmux session"
+            )
 
             # Save window ID for shutdown
             if window_id and self._base_dir:
@@ -339,7 +341,9 @@ end tell
             logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
         else:
             # Session might not exist (already killed or never created)
-            logger.debug(f"tmux session '{TMUX_SESSION_NAME}' not found or already killed")
+            logger.debug(
+                f"tmux session '{TMUX_SESSION_NAME}' not found or already killed"
+            )
             killed = 0
 
         # Close the iTerm window if one was created

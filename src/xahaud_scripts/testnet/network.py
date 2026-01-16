@@ -184,8 +184,7 @@ class TestNetwork:
                     state = conn["state"]
                     pid = int(conn["pid"])
                     logger.warning(
-                        f"  Port {port}: {conn['process']} "
-                        f"(PID {pid}, {state})"
+                        f"  Port {port}: {conn['process']} (PID {pid}, {state})"
                     )
                     # Kill processes that are actively using ports (not TIME_WAIT)
                     killable = ("LISTEN", "ESTABLISHED", "CLOSE_WAIT", "CLOSED")
@@ -281,9 +280,7 @@ class TestNetwork:
         Returns:
             Number of processes killed
         """
-        logger.info(
-            f"Tearing down test network (base_dir: {self._base_dir})..."
-        )
+        logger.info(f"Tearing down test network (base_dir: {self._base_dir})...")
 
         # Delegate to launcher for process killing + window closing
         killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
