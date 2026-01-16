@@ -168,6 +168,7 @@ class LaunchConfig:
         extra_args: Additional arguments for rippled
         extra_env: Additional environment variables for rippled (all nodes)
         node_env: Node-specific environment variables (node_id -> {key: value})
+        desktop: macOS desktop number to place window on (1-9)
     """
 
     xahaud_root: Path
@@ -186,6 +187,7 @@ class LaunchConfig:
     extra_args: list[str] = field(default_factory=list)
     extra_env: dict[str, str] = field(default_factory=dict)
     node_env: dict[int, dict[str, str]] = field(default_factory=dict)
+    desktop: int | None = None
 
 
 @dataclass(frozen=True)

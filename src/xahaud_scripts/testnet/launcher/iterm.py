@@ -20,6 +20,52 @@ if TYPE_CHECKING:
 
 logger = make_logger(__name__)
 
+# macOS key codes for numbers 1-9 (used for Ctrl+N desktop switching)
+DESKTOP_KEY_CODES = {
+    1: 18,
+    2: 19,
+    3: 20,
+    4: 21,
+    5: 23,
+    6: 22,
+    7: 26,
+    8: 28,
+    9: 25,
+}
+
+
+def switch_to_desktop(desktop: int) -> bool:
+    """Switch to a specific macOS desktop using Ctrl+number.
+
+    Args:
+        desktop: Desktop number (1-9)
+
+    Returns:
+        True if switch succeeded, False otherwise
+    """
+    if desktop not in DESKTOP_KEY_CODES:
+        logger.warning(f"Invalid desktop number: {desktop}")
+        return False
+
+    key_code = DESKTOP_KEY_CODES[desktop]
+    applescript = f"""
+tell application "System Events"
+    key code {key_code} using control down
+end tell
+delay 0.5
+"""
+    try:
+        subprocess.run(
+            ["osascript", "-e", applescript],
+            check=True,
+            capture_output=True,
+        )
+        logger.debug(f"Switched to desktop {desktop}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to switch to desktop {desktop}: {e}")
+        return False
+
 
 class ITermLauncher:
     """Launch xahaud nodes in iTerm2 windows on macOS.
@@ -27,6 +73,9 @@ class ITermLauncher:
     Uses AppleScript to control iTerm2, creating a new window for each
     node with the appropriate environment variables and startup command.
     """
+
+    def __init__(self) -> None:
+        self._switched_desktop = False
 
     def is_available(self) -> bool:
         """Check if iTerm launcher is available on this system.
@@ -46,6 +95,11 @@ class ITermLauncher:
         Returns:
             True if launch succeeded, False otherwise
         """
+        # Switch to target desktop before creating the first window
+        if not self._switched_desktop and config.desktop is not None:
+            switch_to_desktop(config.desktop)
+            self._switched_desktop = True
+
         env_vars = self._build_env_vars(node, config)
         startup_flags = self._build_startup_flags(node, config)
 

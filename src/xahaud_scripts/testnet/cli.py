@@ -317,6 +317,12 @@ def generate(
     help="Launcher type (default: tmux)",
 )
 @click.option(
+    "--desktop",
+    type=click.IntRange(1, 9),
+    default=None,
+    help="macOS desktop number to place window on (1-9)",
+)
+@click.option(
     "--reconnect",
     is_flag=True,
     help="Reconnect to existing network (skip launching, just monitor)",
@@ -340,6 +346,7 @@ def run(
     features: tuple[str, ...],
     env_vars: tuple[str, ...],
     launcher: str | None,
+    desktop: int | None,
     reconnect: bool,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -454,6 +461,7 @@ def run(
         extra_args=list(extra_args),
         extra_env=extra_env,
         node_env=node_env,
+        desktop=desktop,
     )
 
     network.run(launch_config)

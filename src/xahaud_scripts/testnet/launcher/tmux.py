@@ -24,6 +24,52 @@ logger = make_logger(__name__)
 TMUX_SESSION_NAME = "xahaud-testnet"
 ITERM_WINDOW_FILE = ".tmux_iterm_window"
 
+# macOS key codes for numbers 1-9 (used for Ctrl+N desktop switching)
+DESKTOP_KEY_CODES = {
+    1: 18,
+    2: 19,
+    3: 20,
+    4: 21,
+    5: 23,
+    6: 22,
+    7: 26,
+    8: 28,
+    9: 25,
+}
+
+
+def switch_to_desktop(desktop: int) -> bool:
+    """Switch to a specific macOS desktop using Ctrl+number.
+
+    Args:
+        desktop: Desktop number (1-9)
+
+    Returns:
+        True if switch succeeded, False otherwise
+    """
+    if desktop not in DESKTOP_KEY_CODES:
+        logger.warning(f"Invalid desktop number: {desktop}")
+        return False
+
+    key_code = DESKTOP_KEY_CODES[desktop]
+    applescript = f"""
+tell application "System Events"
+    key code {key_code} using control down
+end tell
+delay 0.5
+"""
+    try:
+        subprocess.run(
+            ["osascript", "-e", applescript],
+            check=True,
+            capture_output=True,
+        )
+        logger.debug(f"Switched to desktop {desktop}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to switch to desktop {desktop}: {e}")
+        return False
+
 
 class TmuxLauncher:
     """Launch xahaud nodes in tmux panes.
@@ -36,6 +82,7 @@ class TmuxLauncher:
         self._session_created = False
         self._pane_count = 0
         self._base_dir: Path | None = None
+        self._desktop: int | None = None
 
     def is_available(self) -> bool:
         """Check if tmux is available on this system."""
@@ -68,8 +115,9 @@ class TmuxLauncher:
 
     def _create_session(self, node: NodeInfo, config: LaunchConfig) -> None:
         """Create the tmux session with the first node."""
-        # Track base_dir for saving iTerm window ID later
+        # Track base_dir and desktop for finalize()
         self._base_dir = node.node_dir.parent
+        self._desktop = config.desktop
 
         # Kill any existing session
         subprocess.run(
@@ -223,6 +271,10 @@ class TmuxLauncher:
         """Attach to the tmux session after all nodes are launched."""
         if not self._session_created:
             return
+
+        # Switch to target desktop if specified
+        if self._desktop is not None:
+            switch_to_desktop(self._desktop)
 
         # Open iTerm and attach to the session if on macOS
         if sys.platform == "darwin" and shutil.which("osascript"):
