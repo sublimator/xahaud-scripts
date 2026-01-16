@@ -187,12 +187,19 @@ def testnet(
     multiple=True,
     help="Log level override (Partition=severity). Applied on top of suite.",
 )
+@click.option(
+    "--find-ports/--no-find-ports",
+    "find_ports",
+    default=False,
+    help="Auto-find free ports if defaults are in use (default: error if ports in use).",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
     node_count: int,
     log_level_suite: str | None,
     log_levels: tuple[str, ...],
+    find_ports: bool,
 ) -> None:
     """Generate configs for all nodes.
 
@@ -204,6 +211,7 @@ def generate(
         testnet generate --node-count 3
         testnet generate --log-level-suite consensus
         testnet generate --log-level-suite consensus --log-level Shuffle=debug
+        testnet generate --find-ports  # Auto-find free ports if defaults in use
     """
     from xahaud_scripts.testnet.generator import LOG_LEVEL_SUITES
 
@@ -229,8 +237,13 @@ def generate(
             else:
                 logger.info(f"Log level disabled: {partition}")
 
+    from xahaud_scripts.testnet.generator import PortConflictError
+
     network = _create_network(ctx, node_count=node_count)
-    network.generate(log_levels=log_level_dict)
+    try:
+        network.generate(log_levels=log_level_dict, find_ports=find_ports)
+    except PortConflictError as e:
+        raise click.ClickException(str(e)) from e
 
     click.echo(f"\nGenerated configs for {node_count} nodes")
     click.echo(f"  Base directory: {network.base_dir}")

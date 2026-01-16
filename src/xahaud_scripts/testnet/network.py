@@ -90,7 +90,11 @@ class TestNetwork:
         """Get base directory."""
         return self._base_dir
 
-    def generate(self, log_levels: dict[str, str] | None = None) -> None:
+    def generate(
+        self,
+        log_levels: dict[str, str] | None = None,
+        find_ports: bool = False,
+    ) -> None:
         """Generate all node configurations.
 
         This creates:
@@ -101,19 +105,22 @@ class TestNetwork:
 
         Args:
             log_levels: Optional log level overrides (partition -> severity)
+            find_ports: If True, auto-find free ports if defaults are in use.
+                        If False (default), error if any port is in use.
         """
         logger.info(f"Generating configs for {self._config.node_count} nodes")
 
         # Clean previous configs
         self.clean()
 
-        # Generate all configs (may adjust ports to avoid conflicts)
+        # Generate all configs (may adjust ports to avoid conflicts if find_ports=True)
         self._nodes, self._config = generate_all_configs(
             base_dir=self._base_dir,
             network_config=self._config,
             key_generator=ValidatorKeysGenerator(),
             log_levels=log_levels,
             process_manager=self._process_mgr,
+            find_ports=find_ports,
         )
 
         # Save network.json

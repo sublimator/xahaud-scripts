@@ -398,12 +398,19 @@ def find_free_port_base(
     return network_config
 
 
+class PortConflictError(Exception):
+    """Raised when required ports are in use and find_ports is disabled."""
+
+    pass
+
+
 def generate_all_configs(
     base_dir: Path,
     network_config: NetworkConfig,
     key_generator: ValidatorKeysGenerator | None = None,
     log_levels: dict[str, str] | None = None,
     process_manager: Any | None = None,
+    find_ports: bool = False,
 ) -> tuple[list[NodeInfo], NetworkConfig]:
     """Generate configurations for all nodes.
 
@@ -413,15 +420,44 @@ def generate_all_configs(
         key_generator: Optional key generator (defaults to ValidatorKeysGenerator)
         log_levels: Optional log level overrides (partition -> severity)
         process_manager: Optional process manager for port conflict detection
+        find_ports: If True, auto-find free ports. If False, error if ports in use.
 
     Returns:
         Tuple of (List of NodeInfo, adjusted NetworkConfig with actual ports)
+
+    Raises:
+        PortConflictError: If find_ports=False and ports are in use
     """
     if key_generator is None:
         key_generator = ValidatorKeysGenerator()
 
-    # Find free ports if process_manager provided
-    network_config = find_free_port_base(network_config, process_manager)
+    # Handle port conflicts
+    if process_manager is not None:
+        if find_ports:
+            # Find free ports if any are in use
+            network_config = find_free_port_base(network_config, process_manager)
+        else:
+            # Check for port conflicts and error if any found
+            conflicts = []
+            for node_id in range(network_config.node_count):
+                for port in [
+                    network_config.port_peer(node_id),
+                    network_config.port_rpc(node_id),
+                    network_config.port_ws(node_id),
+                ]:
+                    connections = process_manager.get_port_state(port)
+                    if connections:
+                        for conn in connections:
+                            conflicts.append(
+                                f"  Port {port}: {conn['process']} "
+                                f"(PID {conn['pid']}, {conn['state']})"
+                            )
+            if conflicts:
+                msg = (
+                    "Ports are in use. Use --find-ports to auto-select free ports, "
+                    "or kill the processes:\n" + "\n".join(conflicts)
+                )
+                raise PortConflictError(msg)
 
     logger.info(f"Generating configs for {network_config.node_count} nodes")
 
