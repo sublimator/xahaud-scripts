@@ -535,6 +535,8 @@ class TestNetwork:
                 base_port_rpc=network_info["base_port_rpc"],
                 base_port_ws=network_info["base_port_ws"],
             )
+            # Update RPC client to use the correct ports
+            self._rpc.base_port_rpc = network_info["base_port_rpc"]
 
         logger.info(f"Loaded {len(self._nodes)} nodes from network.json")
         for node in self._nodes:

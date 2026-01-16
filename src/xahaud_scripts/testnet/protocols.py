@@ -61,6 +61,8 @@ class RPCClient(Protocol):
         - RequestsRPCClient: HTTP client using requests library
     """
 
+    base_port_rpc: int
+
     def server_info(self, node_id: int) -> dict[str, Any] | None:
         """Get server_info from a node.
 
