@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 logger = make_logger(__name__)
 
 TMUX_SESSION_NAME = "xahaud-testnet"
+ITERM_WINDOW_FILE = ".tmux_iterm_window"
 
 
 class TmuxLauncher:
@@ -34,6 +35,7 @@ class TmuxLauncher:
     def __init__(self) -> None:
         self._session_created = False
         self._pane_count = 0
+        self._base_dir: Path | None = None
 
     def is_available(self) -> bool:
         """Check if tmux is available on this system."""
@@ -66,6 +68,9 @@ class TmuxLauncher:
 
     def _create_session(self, node: NodeInfo, config: LaunchConfig) -> None:
         """Create the tmux session with the first node."""
+        # Track base_dir for saving iTerm window ID later
+        self._base_dir = node.node_dir.parent
+
         # Kill any existing session
         subprocess.run(
             ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
@@ -223,18 +228,29 @@ class TmuxLauncher:
         if sys.platform == "darwin" and shutil.which("osascript"):
             applescript = f"""
 tell application "iTerm"
-    create window with default profile
-    tell current session of current window
+    activate
+    set newWindow to (create window with default profile)
+    set windowId to id of newWindow
+    tell current session of newWindow
         write text "tmux attach -t {TMUX_SESSION_NAME}"
     end tell
+    return windowId
 end tell
 """
-            subprocess.run(
+            result = subprocess.run(
                 ["osascript", "-e", applescript],
                 check=True,
                 capture_output=True,
+                text=True,
             )
-            logger.info("Opened iTerm and attached to tmux session")
+            window_id = result.stdout.strip()
+            logger.info(f"Opened iTerm window (id={window_id}) attached to tmux session")
+
+            # Save window ID for shutdown
+            if window_id and self._base_dir:
+                window_file = self._base_dir / ITERM_WINDOW_FILE
+                window_file.write_text(window_id)
+                logger.debug(f"Saved iTerm window ID to {window_file}")
         else:
             # Just print instructions
             logger.info(
@@ -245,7 +261,7 @@ end tell
         """Shutdown the tmux session, killing all processes.
 
         Args:
-            base_dir: Base directory containing network.json (unused for tmux)
+            base_dir: Base directory containing network.json
             process_manager: Process manager (unused - tmux handles killing)
 
         Returns:
@@ -274,4 +290,59 @@ end tell
             logger.debug(f"tmux session '{TMUX_SESSION_NAME}' not found or already killed")
             killed = 0
 
+        # Close the iTerm window if one was created
+        self._close_iterm_window(base_dir)
+
         return killed
+
+    def _close_iterm_window(self, base_dir: Path) -> bool:
+        """Close the iTerm window that was created for this tmux session.
+
+        Args:
+            base_dir: Base directory containing the .tmux_iterm_window file
+
+        Returns:
+            True if window was closed, False if not found or failed
+        """
+        window_file = base_dir / ITERM_WINDOW_FILE
+        if not window_file.exists():
+            return False
+
+        window_id = window_file.read_text().strip()
+        if not window_id:
+            window_file.unlink()
+            return False
+
+        # Close the specific window by ID
+        applescript = f"""
+tell application "iTerm"
+    repeat with w in windows
+        if id of w is {window_id} then
+            close w
+            return true
+        end if
+    end repeat
+    return false
+end tell
+"""
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", applescript],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            closed = result.stdout.strip() == "true"
+
+            if closed:
+                logger.info(f"Closed iTerm window (id={window_id})")
+            else:
+                logger.debug(f"iTerm window (id={window_id}) not found")
+
+            # Clean up the file
+            window_file.unlink()
+            return closed
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to close iTerm window: {e}")
+            return False
