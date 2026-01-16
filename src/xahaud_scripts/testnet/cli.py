@@ -312,9 +312,9 @@ def generate(
 )
 @click.option(
     "--launcher",
-    type=click.Choice(["iterm-panes", "iterm", "tmux"]),
+    type=click.Choice(["tmux", "iterm-panes", "iterm"]),
     default=None,
-    help="Launcher type (default: iterm-panes)",
+    help="Launcher type (default: tmux)",
 )
 @click.option(
     "--reconnect",

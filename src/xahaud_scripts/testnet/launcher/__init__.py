@@ -4,9 +4,9 @@ This module provides different launcher implementations for starting
 xahaud nodes in terminal windows or other environments.
 
 Available launchers:
-    - ITermPanesLauncher: Launch in iTerm2 panes (single window, default)
+    - TmuxLauncher: Launch in tmux session (default, best experience)
+    - ITermPanesLauncher: Launch in iTerm2 panes (single window)
     - ITermLauncher: Launch in separate iTerm2 windows
-    - TmuxLauncher: Launch in tmux session
 
 Usage:
     >>> from xahaud_scripts.testnet.launcher import get_launcher
@@ -69,10 +69,10 @@ def get_launcher(launcher_type: str | None = None) -> Launcher:
         logger.debug(f"Using launcher: {launcher.__class__.__name__}")
         return launcher
 
-    # Try launchers in order of preference (iterm-panes first for single-window experience)
+    # Try launchers in order of preference (tmux first - best experience)
     launchers: list[Launcher] = [
-        ITermPanesLauncher(),
         TmuxLauncher(),
+        ITermPanesLauncher(),
         ITermLauncher(),
     ]
 
