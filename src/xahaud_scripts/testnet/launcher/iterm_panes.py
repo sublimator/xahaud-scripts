@@ -16,6 +16,7 @@ from xahaud_scripts.utils.logging import make_logger
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
+    from xahaud_scripts.testnet.protocols import ProcessManager
 
 logger = make_logger(__name__)
 
@@ -147,6 +148,39 @@ end tell
     def finalize(self) -> None:
         """No-op - window is already visible."""
         pass
+
+    def shutdown(self, base_dir: Path, process_manager: ProcessManager) -> int:
+        """Shutdown all nodes and close the iTerm window.
+
+        Args:
+            base_dir: Base directory containing network.json
+            process_manager: Process manager for killing processes
+
+        Returns:
+            Number of processes killed
+        """
+        killed = 0
+
+        # Kill rippled processes by pattern (load node info from network.json)
+        network_file = base_dir / "network.json"
+        if network_file.exists():
+            import json
+
+            with open(network_file) as f:
+                info = json.load(f)
+            for node in info.get("nodes", []):
+                config_path = node.get("config", "")
+                if config_path:
+                    pattern = f"rippled.*--conf {config_path}"
+                    pids = process_manager.find_by_pattern(pattern)
+                    for pid in pids:
+                        if process_manager.kill(pid):
+                            logger.info(f"Killed rippled process (PID {pid})")
+                            killed += 1
+
+        # Close the iTerm window
+        self.close_window(base_dir)
+        return killed
 
     @staticmethod
     def close_window(base_dir: Path) -> bool:

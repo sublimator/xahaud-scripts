@@ -52,6 +52,21 @@ class Launcher(Protocol):
         """
         ...
 
+    def shutdown(self, base_dir: Path, process_manager: ProcessManager) -> int:
+        """Shutdown all nodes launched by this launcher.
+
+        Kills running rippled processes and closes any launcher-specific
+        windows/sessions. Does NOT delete generated files.
+
+        Args:
+            base_dir: Base directory containing network.json and launcher state
+            process_manager: Process manager for killing processes
+
+        Returns:
+            Number of processes killed
+        """
+        ...
+
 
 @runtime_checkable
 class RPCClient(Protocol):

@@ -9,12 +9,14 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xahaud_scripts.utils.logging import make_logger
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
+    from xahaud_scripts.testnet.protocols import ProcessManager
 
 logger = make_logger(__name__)
 
@@ -87,6 +89,38 @@ end tell
     def finalize(self) -> None:
         """No-op for iTerm launcher - each node already has its own window."""
         pass
+
+    def shutdown(self, base_dir: Path, process_manager: ProcessManager) -> int:
+        """Shutdown all nodes (windows are left open but processes killed).
+
+        Args:
+            base_dir: Base directory containing network.json
+            process_manager: Process manager for killing processes
+
+        Returns:
+            Number of processes killed
+        """
+        import json
+
+        killed = 0
+
+        # Kill rippled processes by pattern
+        network_file = base_dir / "network.json"
+        if network_file.exists():
+            with open(network_file) as f:
+                info = json.load(f)
+            for node in info.get("nodes", []):
+                config_path = node.get("config", "")
+                if config_path:
+                    pattern = f"rippled.*--conf {config_path}"
+                    pids = process_manager.find_by_pattern(pattern)
+                    for pid in pids:
+                        if process_manager.kill(pid):
+                            logger.info(f"Killed rippled process (PID {pid})")
+                            killed += 1
+
+        # Note: Individual iTerm windows are left open (no tracking)
+        return killed
 
     def _build_env_vars(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build environment variable exports for the node.

@@ -10,12 +10,14 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xahaud_scripts.utils.logging import make_logger
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
+    from xahaud_scripts.testnet.protocols import ProcessManager
 
 logger = make_logger(__name__)
 
@@ -238,3 +240,38 @@ end tell
             logger.info(
                 f"Attach to tmux session with: tmux attach -t {TMUX_SESSION_NAME}"
             )
+
+    def shutdown(self, base_dir: Path, process_manager: ProcessManager) -> int:
+        """Shutdown the tmux session, killing all processes.
+
+        Args:
+            base_dir: Base directory containing network.json (unused for tmux)
+            process_manager: Process manager (unused - tmux handles killing)
+
+        Returns:
+            Number of processes killed (estimated from network.json)
+        """
+        # Count nodes for return value
+        killed = 0
+        network_file = base_dir / "network.json"
+        if network_file.exists():
+            import json
+
+            with open(network_file) as f:
+                info = json.load(f)
+            killed = len(info.get("nodes", []))
+
+        # Kill the entire tmux session - this terminates all panes and processes
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
+            capture_output=True,
+        )
+
+        if result.returncode == 0:
+            logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
+        else:
+            # Session might not exist (already killed or never created)
+            logger.debug(f"tmux session '{TMUX_SESSION_NAME}' not found or already killed")
+            killed = 0
+
+        return killed

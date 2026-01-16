@@ -270,73 +270,28 @@ class TestNetwork:
             asyncio.run(monitor.monitor())
         except KeyboardInterrupt:
             logger.info("Monitoring stopped by user")
-            # Close iTerm window if it was created for this testnet
-            from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
-
-            if ITermPanesLauncher.close_window(self._base_dir):
-                logger.info("Closed iTerm window")
+            # Shutdown nodes via launcher (kills processes + closes window)
+            killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
+            if killed:
+                logger.info(f"Killed {killed} rippled processes")
 
     def teardown(self) -> int:
-        """Kill all running test network processes.
+        """Kill all running test network processes and clean up.
 
         Returns:
             Number of processes killed
         """
-        # Load network info if not already loaded
-        if not self._nodes:
-            try:
-                self._load_network_info()
-            except FileNotFoundError:
-                logger.warning("No network.json found, using default node count")
-                # Create minimal node list for pattern matching
-                for i in range(self._config.node_count):
-                    config_path = self._base_dir / f"n{i}" / "xahaud.cfg"
-                    self._nodes.append(
-                        NodeInfo(
-                            id=i,
-                            public_key="",
-                            token="",
-                            config_path=config_path,
-                            port_peer=self._config.port_peer(i),
-                            port_rpc=self._config.port_rpc(i),
-                            port_ws=self._config.port_ws(i),
-                            is_injector=(i == 0),
-                        )
-                    )
-
         logger.info(
-            f"Tearing down test network processes (base_dir: {self._base_dir})..."
+            f"Tearing down test network (base_dir: {self._base_dir})..."
         )
-        logger.info(f"Looking for {len(self._nodes)} nodes")
 
-        killed = 0
-        for node in self._nodes:
-            pattern = f"rippled.*--conf {node.config_path}"
-            logger.info(f"  Node {node.id}: searching for pattern: {pattern}")
-            pids = self._process_mgr.find_by_pattern(pattern)
-
-            if not pids:
-                logger.info(f"  Node {node.id}: no processes found")
-            else:
-                logger.info(f"  Node {node.id}: found {len(pids)} process(es): {pids}")
-
-            for pid in pids:
-                if self._process_mgr.kill(pid):
-                    logger.info(f"  Node {node.id}: killed PID {pid}")
-                    killed += 1
-                else:
-                    logger.warning(f"  Node {node.id}: failed to kill PID {pid}")
+        # Delegate to launcher for process killing + window closing
+        killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
 
         if killed > 0:
             logger.info(f"Killed {killed} rippled processes")
         else:
             logger.info("No rippled processes found for this test network")
-
-        # Close iTerm window if it was created by iterm-panes launcher
-        from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
-
-        if ITermPanesLauncher.close_window(self._base_dir):
-            logger.info("Closed iTerm window")
 
         # Clean up generated files
         logger.info("Cleaning up generated files...")
