@@ -118,13 +118,21 @@ end tell
         # Alternate between vertical and horizontal splits for a grid layout
         split_direction = "vertically" if self._pane_count % 2 == 0 else "horizontally"
 
+        # Use the saved window ID to target the correct window
+        window_target = (
+            f"window id {self._window_id}" if self._window_id else "current window"
+        )
+
         applescript = f'''
 tell application "iTerm"
-    tell current session of current window
-        set newSession to (split {split_direction} with default profile)
-        tell newSession
-            set name to "{title}"
-            write text "{cmd}"
+    activate
+    tell {window_target}
+        tell current session
+            set newSession to (split {split_direction} with default profile)
+            tell newSession
+                set name to "{title}"
+                write text "{cmd}"
+            end tell
         end tell
     end tell
 end tell

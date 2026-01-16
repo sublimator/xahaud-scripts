@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from xahaud_scripts.testnet.config import NodeInfo
 from xahaud_scripts.utils.logging import make_logger
@@ -342,12 +342,69 @@ time.apple.com
     return config_file
 
 
+def find_free_port_base(
+    network_config: NetworkConfig,
+    process_manager: Any | None = None,
+    max_offset: int = 100,
+) -> NetworkConfig:
+    """Find free port bases by checking for conflicts.
+
+    If any required port is in use, bumps all base ports until a free range is found.
+
+    Args:
+        network_config: Original network configuration
+        process_manager: Process manager for port checking (optional)
+        max_offset: Maximum offset to try before giving up
+
+    Returns:
+        NetworkConfig with adjusted base ports (or original if all free)
+    """
+    if process_manager is None:
+        return network_config
+
+    from xahaud_scripts.testnet.config import NetworkConfig as NC
+
+    for offset in range(max_offset):
+        # Check all ports with current offset
+        ports_free = True
+        for node_id in range(network_config.node_count):
+            ports_to_check = [
+                network_config.base_port_peer + offset + node_id,
+                network_config.base_port_rpc + offset + node_id,
+                network_config.base_port_ws + offset + node_id,
+            ]
+            for port in ports_to_check:
+                connections = process_manager.get_port_state(port)
+                if connections:
+                    ports_free = False
+                    logger.debug(f"Port {port} in use, trying offset {offset + 1}")
+                    break
+            if not ports_free:
+                break
+
+        if ports_free:
+            if offset > 0:
+                logger.info(f"Using port offset +{offset} to avoid conflicts")
+                return NC(
+                    network_id=network_config.network_id,
+                    node_count=network_config.node_count,
+                    base_port_peer=network_config.base_port_peer + offset,
+                    base_port_rpc=network_config.base_port_rpc + offset,
+                    base_port_ws=network_config.base_port_ws + offset,
+                )
+            return network_config
+
+    logger.warning(f"Could not find free ports within offset {max_offset}")
+    return network_config
+
+
 def generate_all_configs(
     base_dir: Path,
     network_config: NetworkConfig,
     key_generator: ValidatorKeysGenerator | None = None,
     log_levels: dict[str, str] | None = None,
-) -> list[NodeInfo]:
+    process_manager: Any | None = None,
+) -> tuple[list[NodeInfo], NetworkConfig]:
     """Generate configurations for all nodes.
 
     Args:
@@ -355,12 +412,16 @@ def generate_all_configs(
         network_config: Network configuration
         key_generator: Optional key generator (defaults to ValidatorKeysGenerator)
         log_levels: Optional log level overrides (partition -> severity)
+        process_manager: Optional process manager for port conflict detection
 
     Returns:
-        List of NodeInfo for all configured nodes
+        Tuple of (List of NodeInfo, adjusted NetworkConfig with actual ports)
     """
     if key_generator is None:
         key_generator = ValidatorKeysGenerator()
+
+    # Find free ports if process_manager provided
+    network_config = find_free_port_base(network_config, process_manager)
 
     logger.info(f"Generating configs for {network_config.node_count} nodes")
 
@@ -410,4 +471,4 @@ def generate_all_configs(
         nodes.append(node_info)
 
     logger.info(f"Generated configs for {len(nodes)} nodes")
-    return nodes
+    return nodes, network_config

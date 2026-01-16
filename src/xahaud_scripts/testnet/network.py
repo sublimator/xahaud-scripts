@@ -107,12 +107,13 @@ class TestNetwork:
         # Clean previous configs
         self.clean()
 
-        # Generate all configs
-        self._nodes = generate_all_configs(
+        # Generate all configs (may adjust ports to avoid conflicts)
+        self._nodes, self._config = generate_all_configs(
             base_dir=self._base_dir,
             network_config=self._config,
             key_generator=ValidatorKeysGenerator(),
             log_levels=log_levels,
+            process_manager=self._process_mgr,
         )
 
         # Save network.json
@@ -120,6 +121,11 @@ class TestNetwork:
 
         logger.info(f"Generated configs for {len(self._nodes)} nodes")
         logger.info(f"  Network ID: {self._config.network_id}")
+        logger.info(
+            f"  Ports: peer={self._config.base_port_peer}+, "
+            f"rpc={self._config.base_port_rpc}+, "
+            f"ws={self._config.base_port_ws}+"
+        )
         logger.info("  Node 0: EXPLOIT INJECTOR")
         logger.info(f"  Nodes 1-{self._config.node_count - 1}: Clean validators")
 
@@ -464,6 +470,9 @@ class TestNetwork:
         network_info = {
             "network_id": self._config.network_id,
             "node_count": self._config.node_count,
+            "base_port_peer": self._config.base_port_peer,
+            "base_port_rpc": self._config.base_port_rpc,
+            "base_port_ws": self._config.base_port_ws,
             "nodes": [
                 {
                     "id": node.id,
@@ -489,6 +498,8 @@ class TestNetwork:
 
     def _load_network_info(self) -> None:
         """Load network.json and populate nodes list."""
+        from xahaud_scripts.testnet.config import NetworkConfig
+
         network_file = self._base_dir / "network.json"
         logger.info(f"Loading network info from: {network_file}")
 
@@ -514,6 +525,16 @@ class TestNetwork:
             )
             for node in network_info["nodes"]
         ]
+
+        # Update config with saved base ports (may differ from defaults if ports were adjusted)
+        if "base_port_peer" in network_info:
+            self._config = NetworkConfig(
+                network_id=network_info.get("network_id", self._config.network_id),
+                node_count=network_info.get("node_count", len(self._nodes)),
+                base_port_peer=network_info["base_port_peer"],
+                base_port_rpc=network_info["base_port_rpc"],
+                base_port_ws=network_info["base_port_ws"],
+            )
 
         logger.info(f"Loaded {len(self._nodes)} nodes from network.json")
         for node in self._nodes:
