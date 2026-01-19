@@ -284,6 +284,7 @@ tell application "iTerm"
     set newWindow to (create window with default profile)
     set windowId to id of newWindow
     tell current session of newWindow
+        delay 0.3
         write text "tmux attach -t {TMUX_SESSION_NAME}"
     end tell
     return windowId
