@@ -325,7 +325,7 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
 """
 
     def _get_footer(self) -> str:
-        return """}};
+        return """};
 }
 }
 #endif
