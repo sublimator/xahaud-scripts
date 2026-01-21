@@ -83,7 +83,7 @@ def _create_network(
 ) -> TestNetwork:
     """Create a TestNetwork instance from context."""
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
-    base_dir = ctx.obj.get("base_dir") or (xahaud_root / "testnet")
+    base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
 
     # Use provided node_count, or from context, or default to 5
     if node_count is None:
@@ -114,10 +114,11 @@ def _create_network(
     help="Path to rippled binary (default: $xahaud-root/build/rippled)",
 )
 @click.option(
-    "--base-dir",
+    "--testnet-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Directory for generated configs (default: $xahaud-root/testnet)",
+    envvar="X_TESTNET_DIR",
+    help="Directory for generated configs (env: X_TESTNET_DIR, default: $xahaud-root/testnet)",
 )
 @click.option(
     "--log-level",
@@ -130,7 +131,7 @@ def testnet(
     ctx: click.Context,
     xahaud_root: Path | None,
     rippled_path: Path | None,
-    base_dir: Path | None,
+    testnet_dir: Path | None,
     log_level: str,
 ) -> None:
     """Manage a local xahaud test network.
@@ -163,7 +164,7 @@ def testnet(
     ctx.ensure_object(dict)
     ctx.obj["xahaud_root"] = xahaud_root
     ctx.obj["rippled_path"] = rippled_path
-    ctx.obj["base_dir"] = base_dir
+    ctx.obj["testnet_dir"] = testnet_dir
 
 
 @testnet.command()
@@ -867,7 +868,7 @@ def logs_search(
     from xahaud_scripts.testnet.cli_handlers import logs_search_handler
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
-    base_dir = ctx.obj.get("base_dir") or (xahaud_root / "testnet")
+    base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
 
     logs_search_handler(
         base_dir=base_dir,
