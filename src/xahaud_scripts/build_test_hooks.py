@@ -385,7 +385,9 @@ std::map<std::string, std::vector<uint8_t>> wasm = {
 class TestHookBuilder:
     """Main builder orchestrating the compilation process."""
 
-    def __init__(self, jobs: int, force_write: bool) -> None:
+    def __init__(
+        self, jobs: int, force_write: bool, input_file: Path | None = None
+    ) -> None:
         self.jobs = jobs
         self.force_write = force_write
 
@@ -393,8 +395,16 @@ class TestHookBuilder:
         test_app_dir = xahaud_root / "src" / "test" / "app"
 
         self.wasm_dir = test_app_dir / "generated" / "hook" / "c"
-        self.input_file = test_app_dir / "SetHook_test.cpp"
-        self.output_file = test_app_dir / "SetHook_wasm.h"
+
+        # Use provided input file or default to SetHook_test.cpp
+        if input_file is not None:
+            self.input_file = input_file
+            # Generate output name: Foo_test.cpp -> Foo_test_hooks.h
+            stem = input_file.stem  # e.g., "Export_test"
+            self.output_file = input_file.parent / f"{stem}_hooks.h"
+        else:
+            self.input_file = test_app_dir / "SetHook_test.cpp"
+            self.output_file = test_app_dir / "SetHook_wasm.h"
 
         self.checker = BinaryChecker()
         self.cache = CompilationCache()
@@ -502,6 +512,12 @@ class TestHookBuilder:
 
 
 @click.command()
+@click.argument(
+    "input_file",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+    default=None,
+)
 @click.option(
     "--log-level",
     type=click.Choice(["debug", "info", "warning", "error"], case_sensitive=False),
@@ -520,26 +536,35 @@ class TestHookBuilder:
     is_flag=True,
     help="Always write output file even if unchanged",
 )
-def main(log_level: str, jobs: int, force_write: bool) -> None:
-    """Generate SetHook_wasm.h from SetHook_test.cpp.
+def main(
+    input_file: Path | None, log_level: str, jobs: int, force_write: bool
+) -> None:
+    """Generate _hooks.h from a test file containing WASM blocks.
 
     Extracts WASM test code blocks, compiles them using wasmcc or wat2wasm,
     and generates a C++ header with the compiled bytecode.
 
+    If INPUT_FILE is provided, output is named <stem>_hooks.h (e.g.,
+    Export_test.cpp -> Export_test_hooks.h).
+
+    If no INPUT_FILE, defaults to SetHook_test.cpp -> SetHook_wasm.h.
+
     Examples:
 
-        x-build-test-hooks                    # Build with INFO logging
+        x-build-test-hooks                         # Default: SetHook_test.cpp
 
-        x-build-test-hooks --log-level=debug  # Build with DEBUG logging
+        x-build-test-hooks Export_test.cpp         # -> Export_test_hooks.h
 
-        x-build-test-hooks -j 4               # Build with 4 workers
+        x-build-test-hooks -j 4 Foo_test.cpp       # 4 workers
 
-        x-build-test-hooks --force-write      # Always write output
+        x-build-test-hooks --force-write           # Always write output
     """
     setup_logging(log_level, logger)
 
     try:
-        builder = TestHookBuilder(jobs=jobs, force_write=force_write)
+        builder = TestHookBuilder(
+            jobs=jobs, force_write=force_write, input_file=input_file
+        )
         builder.build()
     except RuntimeError as e:
         logger.error(f"Build failed: {e}")
