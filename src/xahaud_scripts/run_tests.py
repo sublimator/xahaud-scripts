@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import click
 
@@ -265,6 +266,12 @@ def run_rippled(
     help="Build JS hooks header",
 )
 @click.option(
+    "--compile-hooks",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Compile WASM hooks from test file before building (e.g., Export_test.cpp)",
+)
+@click.option(
     "--lldb/--no-lldb",
     is_flag=True,
     default=False,
@@ -392,6 +399,7 @@ def run_rippled(
 def main(
     log_level,
     build_jshooks_header,
+    compile_hooks,
     lldb,
     lldb_all_threads,
     lldb_commands_file,
@@ -502,6 +510,16 @@ def main(
             if build_jshooks_header:
                 logger.info("Building JS hooks header...")
                 do_build_jshooks_header()
+
+            # Compile WASM hooks from test file if requested
+            if compile_hooks:
+                logger.info(f"Compiling WASM hooks from {compile_hooks}...")
+                try:
+                    run_command(["x-build-test-hooks", str(compile_hooks)])
+                    logger.info("WASM hooks compiled successfully")
+                except Exception as e:
+                    logger.error(f"Failed to compile WASM hooks: {e}")
+                    raise
 
             # Build rippled
             if build or dry_run:
