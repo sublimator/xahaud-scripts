@@ -15,7 +15,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -336,22 +335,34 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
         return self.cache_dir / f"formatted_{content_hash}.h"
 
     def _format_content(self, unformatted_content: str) -> str:
-        """Format content using clang-format via temp file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".h", delete=False) as tmp:
-            tmp.write(unformatted_content)
-            tmp_path = tmp.name
+        """Format content using clang-format.
 
-        try:
-            subprocess.run(["clang-format", "-i", tmp_path], check=True)
-            with open(tmp_path) as f:
-                return f.read()
-        finally:
-            os.unlink(tmp_path)
+        Uses --assume-filename so clang-format finds the project's .clang-format
+        file based on the output file's location.
+        """
+        result = subprocess.run(
+            [
+                "clang-format",
+                f"--assume-filename={self.output_file}",
+            ],
+            input=unformatted_content,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
 
     def write(
         self, compiled_blocks: dict[int, tuple[str, bytes]], force_write: bool = False
     ) -> None:
-        """Write all compiled blocks to output file, only if changed."""
+        """Write all compiled blocks to output file, only if changed.
+
+        Caching strategy:
+        1. Cache formatted output keyed by hash of unformatted content
+        2. Only write to disk if content actually changed
+        This avoids modifying file mtime when content is unchanged,
+        which prevents unnecessary rebuilds in the build system.
+        """
         unformatted = []
         unformatted.append(self._get_header())
         for counter in sorted(compiled_blocks.keys()):
