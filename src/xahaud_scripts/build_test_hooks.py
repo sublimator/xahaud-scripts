@@ -557,9 +557,7 @@ class TestHookBuilder:
     is_flag=True,
     help="Always write output file even if unchanged",
 )
-def main(
-    input_file: Path | None, log_level: str, jobs: int, force_write: bool
-) -> None:
+def main(input_file: Path | None, log_level: str, jobs: int, force_write: bool) -> None:
     """Generate _hooks.h from a test file containing WASM blocks.
 
     Extracts WASM test code blocks, compiles them using wasmcc or wat2wasm,

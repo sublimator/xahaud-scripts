@@ -473,7 +473,9 @@ def main(
 
     # Convert Path objects to strings for JSON serialization
     args_dict = {k: str(v) if isinstance(v, Path) else v for k, v in locals().items()}
-    logger.info(f"Starting run_tests.py, running cmd with {json.dumps(args_dict, indent=2)}")
+    logger.info(
+        f"Starting run_tests.py, running cmd with {json.dumps(args_dict, indent=2)}"
+    )
 
     logger.debug(f"Command line arguments: {' '.join(sys.argv[1:])}")
 
