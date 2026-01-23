@@ -36,6 +36,7 @@ from xrpl.core import keypairs
 from xrpl.models import Payment
 from xrpl.wallet import Wallet
 
+from xahaud_scripts.hooks import WasmCompiler
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -84,7 +85,7 @@ def create_account_info(name: str) -> AccountInfo:
 class TestContext:
     """Context passed to test scripts.
 
-    Provides access to the xrpl-py client and account information.
+    Provides access to the xrpl-py client, account information, and hook compiler.
     """
 
     def __init__(
@@ -94,6 +95,7 @@ class TestContext:
     ) -> None:
         self.client = client
         self._accounts = accounts
+        self._compiler = WasmCompiler()  # Uses default cache
 
     def get_account(self, name: str) -> AccountInfo:
         """Get account info by name.
@@ -106,6 +108,20 @@ class TestContext:
                 f"Account '{name}' not found. Available accounts: {available}"
             )
         return self._accounts[name]
+
+    def compile_hook(self, source: str, label: str = "hook") -> bytes:
+        """Compile C or WAT source to WASM bytecode.
+
+        Uses cached compilation - same source returns cached result.
+
+        Args:
+            source: C or WAT hook source code
+            label: Label for logging (e.g., "my-hook")
+
+        Returns:
+            Compiled WASM bytecode
+        """
+        return self._compiler.compile(source, label)
 
 
 def load_test_script(script_path: Path) -> tuple[dict[str, int], Any]:

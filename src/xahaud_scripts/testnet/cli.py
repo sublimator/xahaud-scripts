@@ -990,6 +990,32 @@ Returns an `AccountInfo` dataclass with:
 - `seed`: The seed/secret (e.g., "sXXX...")
 - `wallet`: An xrpl-py `Wallet` object for signing transactions
 
+### ctx.compile_hook(source, label="hook") -> bytes
+
+Compile C or WAT source code to WASM bytecode. Uses caching - same source
+returns cached result instantly.
+
+```python
+# Compile a simple C hook
+wasm = ctx.compile_hook("""
+    #include <stdint.h>
+    int64_t hook(uint32_t r) {
+        return 0;  // accept
+    }
+    int64_t cbak(uint32_t r) {
+        return 0;
+    }
+""", label="my-hook")
+
+print(f"Compiled to {len(wasm)} bytes")
+
+# Use with SetHook transaction...
+```
+
+The compiler auto-detects C vs WAT format (WAT contains "(module").
+
+Requires: wasmcc, hook-cleaner, wat2wasm installed.
+
 ## Account Derivation
 
 Accounts are derived deterministically from their name using SHA-512:
