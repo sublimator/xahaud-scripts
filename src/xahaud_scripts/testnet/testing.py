@@ -154,17 +154,17 @@ def load_test_script(script_path: Path) -> tuple[dict[str, int], Any]:
     return accounts, run_func
 
 
-async def wait_for_first_ledger(client: AsyncWebsocketClient, timeout: float = 60.0) -> int:
-    """Wait for the first ledger to close.
+async def wait_for_network_ready(ws_url: str, timeout: float = 120.0) -> int:
+    """Wait for the network to be ready by polling until first ledger closes.
 
-    Polls server_info until we see a validated ledger.
+    Handles connection failures gracefully - nodes may not be up yet.
 
     Args:
-        client: Connected xrpl-py client
+        ws_url: WebSocket URL to connect to
         timeout: Maximum time to wait in seconds
 
     Returns:
-        The ledger index of the first closed ledger
+        The ledger index when network is ready
     """
     import asyncio
     import time
@@ -172,24 +172,35 @@ async def wait_for_first_ledger(client: AsyncWebsocketClient, timeout: float = 6
     from xrpl.models import ServerInfo
 
     start = time.monotonic()
+    attempt = 0
+
     while True:
         elapsed = time.monotonic() - start
         if elapsed > timeout:
-            raise TimeoutError(f"Timed out waiting for first ledger after {timeout}s")
+            raise TimeoutError(f"Timed out waiting for network after {timeout}s")
 
+        attempt += 1
         try:
-            response = await client.request(ServerInfo())
-            info = response.result.get("info", {})
-            validated = info.get("validated_ledger")
-            if validated:
-                ledger_index = validated.get("seq", 0)
-                if ledger_index > 1:
-                    logger.info(f"Network ready at ledger {ledger_index}")
-                    return ledger_index
-        except Exception as e:
-            logger.debug(f"Waiting for network: {e}")
+            async with AsyncWebsocketClient(ws_url) as client:
+                response = await client.request(ServerInfo())
+                info = response.result.get("info", {})
+                validated = info.get("validated_ledger")
+                if validated:
+                    ledger_index = validated.get("seq", 0)
+                    if ledger_index > 1:
+                        logger.info(f"Network ready at ledger {ledger_index}")
+                        return ledger_index
 
-        await asyncio.sleep(1.0)
+                # Connected but no validated ledger yet
+                server_state = info.get("server_state", "unknown")
+                logger.info(f"Waiting for consensus... (state: {server_state})")
+
+        except Exception as e:
+            if attempt == 1:
+                logger.info("Waiting for nodes to start...")
+            logger.debug(f"Connection attempt {attempt}: {e}")
+
+        await asyncio.sleep(2.0)
 
 
 async def fund_account(
@@ -245,13 +256,13 @@ async def run_test_script(
         accounts[name] = create_account_info(name)
         logger.info(f"Account '{name}': {accounts[name].address}")
 
-    # Connect to the network
-    logger.info(f"Connecting to {ws_url}")
-    async with AsyncWebsocketClient(ws_url) as client:
-        # Wait for first ledger close
-        logger.info("Waiting for first ledger close...")
-        await wait_for_first_ledger(client)
+    # Wait for network to be ready (handles connection retries)
+    logger.info(f"Waiting for network at {ws_url}...")
+    await wait_for_network_ready(ws_url)
 
+    # Now connect for the actual test
+    logger.info("Connecting to run test...")
+    async with AsyncWebsocketClient(ws_url) as client:
         # Fund accounts from genesis
         if accounts_config:
             genesis_wallet = Wallet.from_seed(genesis_seed)
