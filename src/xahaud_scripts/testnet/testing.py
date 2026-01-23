@@ -162,19 +162,30 @@ class TestContext:
         # Autofill fee, sequence, last_ledger_sequence if not provided
         if "Fee" not in tx_dict:
             fee_response = await self.client.request(Fee())
-            tx_dict["Fee"] = fee_response.result.get("drops", {}).get("base_fee", "10")
+            if "drops" not in fee_response.result:
+                logger.error(f"Fee request failed: {fee_response.result}")
+                raise ValueError(f"Fee request failed: {fee_response.result}")
+            tx_dict["Fee"] = fee_response.result["drops"].get("base_fee", "10")
 
         if "Sequence" not in tx_dict:
             from xrpl.models import AccountInfo
             acct_response = await self.client.request(
                 AccountInfo(account=wallet.classic_address)
             )
+            if "account_data" not in acct_response.result:
+                logger.error(f"AccountInfo request failed: {acct_response.result}")
+                raise ValueError(
+                    f"AccountInfo request for {wallet.classic_address} failed: "
+                    f"{acct_response.result}"
+                )
             tx_dict["Sequence"] = acct_response.result["account_data"]["Sequence"]
 
         if "LastLedgerSequence" not in tx_dict:
             ledger_response = await self.client.request(Ledger())
-            ledger_index = ledger_response.result.get("ledger_index", 0)
-            tx_dict["LastLedgerSequence"] = ledger_index + 20
+            if "ledger_index" not in ledger_response.result:
+                logger.error(f"Ledger request failed: {ledger_response.result}")
+                raise ValueError(f"Ledger request failed: {ledger_response.result}")
+            tx_dict["LastLedgerSequence"] = ledger_response.result["ledger_index"] + 20
 
         # Set Account if not provided
         if "Account" not in tx_dict:
@@ -193,7 +204,15 @@ class TestContext:
 
         # Submit
         response = await self.client.request(SubmitOnly(tx_blob=signed_blob))
-        return response.result
+        result = response.result
+
+        # Log if there's an error
+        engine_result = result.get("engine_result", "")
+        if engine_result and not engine_result.startswith("tes"):
+            logger.warning(f"Transaction result: {engine_result}")
+            logger.debug(f"Full response: {result}")
+
+        return result
 
 
 def load_test_script(script_path: Path) -> tuple[dict[str, int], Any]:
@@ -324,6 +343,27 @@ async def fund_account(
     logger.info(f"Funding {destination} with {amount_xah} XAH")
     tx_blob = encode(signed_tx.to_xrpl())
     submit_response = await client.request(SubmitOnly(tx_blob=tx_blob))
+
+    # Get tx hash and wait for validation
+    tx_hash = submit_response.result.get("tx_json", {}).get("hash")
+    if not tx_hash:
+        logger.warning(f"No tx hash in response: {submit_response.result}")
+        return submit_response.result
+
+    # Poll for validation (check every ledger close ~4s)
+    from xrpl.models import Tx
+
+    for attempt in range(15):  # ~60 seconds max
+        await asyncio.sleep(4)
+        try:
+            tx_response = await client.request(Tx(transaction=tx_hash))
+            if tx_response.result.get("validated"):
+                logger.info(f"  Funded {destination[:8]}... (validated)")
+                return tx_response.result
+        except Exception as e:
+            logger.debug(f"Tx check attempt {attempt}: {e}")
+
+    logger.warning(f"Funding tx {tx_hash} not validated after 60s")
     return submit_response.result
 
 
