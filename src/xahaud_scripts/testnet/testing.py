@@ -17,6 +17,7 @@ Example test script:
         print(f"Alice balance: {resp.result['account_data']['Balance']}")
 """
 
+import asyncio
 import importlib.util
 from dataclasses import dataclass
 from hashlib import sha512
@@ -371,3 +372,98 @@ async def run_test_script(
         await run_func(ctx)
 
         logger.info("Test script completed")
+
+
+async def run_test_with_monitor(
+    script_path: Path,
+    ws_url: str,
+    network_config: Any,
+    rpc_client: Any,
+    genesis_seed: str | None = None,
+    tracked_amendment: str | None = None,
+) -> None:
+    """Run a test script with the network monitor running in background.
+
+    The monitor displays network status tables while the test script runs.
+    Output from both is interleaved.
+
+    Args:
+        script_path: Path to the test script
+        ws_url: WebSocket URL to connect to
+        network_config: NetworkConfig for the monitor
+        rpc_client: RPCClient for the monitor
+        genesis_seed: Seed for the genesis account
+        tracked_amendment: Optional amendment ID to track
+    """
+    from xahaud_scripts.testnet.monitor import NetworkMonitor
+
+    if genesis_seed is None:
+        genesis_seed = GENESIS_SEED
+
+    # Load and validate test script
+    logger.info(f"Loading test script: {script_path}")
+    accounts_config, run_func = load_test_script(script_path)
+
+    # Create account info for each declared account
+    accounts: dict[str, AccountInfo] = {}
+    for name in accounts_config:
+        accounts[name] = create_account_info(name)
+        logger.info(f"Account '{name}': {accounts[name].address}")
+
+    # Create stop event for monitor
+    stop_event = asyncio.Event()
+
+    # Create monitor
+    monitor = NetworkMonitor(
+        rpc_client=rpc_client,
+        network_config=network_config,
+        tracked_amendment=tracked_amendment,
+    )
+
+    async def run_monitor() -> None:
+        """Run monitor until stop_event is set."""
+        try:
+            await monitor.monitor(stop_event=stop_event)
+        except asyncio.CancelledError:
+            pass
+
+    async def run_script() -> None:
+        """Run the test script."""
+        # Wait for first ledger close before starting
+        # (monitor will be showing progress in the meantime)
+        await wait_for_network_ready(ws_url)
+
+        logger.info(f"Connecting to {ws_url}...")
+        async with AsyncWebsocketClient(ws_url) as raw_client:
+            client = XahauClient(raw_client)
+
+            # Fund accounts from genesis
+            if accounts_config:
+                genesis_wallet = Wallet.from_seed(genesis_seed)
+                logger.info(f"Genesis account: {genesis_wallet.classic_address}")
+
+                for name, amount_xah in accounts_config.items():
+                    account = accounts[name]
+                    await fund_account(client, genesis_wallet, account.address, amount_xah)
+
+            # Create context and run the test
+            ctx = TestContext(client=client, accounts=accounts)
+
+            logger.info("Running test script...")
+            await run_func(ctx)
+
+            logger.info("Test script completed")
+
+    # Run both concurrently
+    monitor_task = asyncio.create_task(run_monitor())
+
+    try:
+        await run_script()
+    finally:
+        # Stop monitor when script finishes
+        stop_event.set()
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass

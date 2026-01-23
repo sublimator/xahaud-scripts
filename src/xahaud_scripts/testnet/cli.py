@@ -475,21 +475,22 @@ def run(
     network.run(launch_config)
 
     if test_script:
-        # Wait for first ledger with normal monitor output
-        ledger_index = network.monitor(stop_after_first_ledger=True)
-        if ledger_index == 0:
-            logger.error("Network failed to start")
-            network.teardown()
-            return
-
-        # Run test script
+        # Run test script with monitor in background
         import asyncio
 
-        from xahaud_scripts.testnet.testing import run_test_script
+        from xahaud_scripts.testnet.testing import run_test_with_monitor
 
         ws_url = f"ws://localhost:{network._config.base_port_ws}"
         try:
-            asyncio.run(run_test_script(test_script, ws_url))
+            asyncio.run(
+                run_test_with_monitor(
+                    script_path=test_script,
+                    ws_url=ws_url,
+                    network_config=network._config,
+                    rpc_client=network._rpc,
+                    tracked_amendment=amendment_id,
+                )
+            )
         except KeyboardInterrupt:
             logger.info("Test script interrupted")
         finally:

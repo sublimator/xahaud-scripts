@@ -659,7 +659,11 @@ class NetworkMonitor:
             self._in_stall = False
             self._stall_start = None
 
-    async def monitor(self, stop_after_first_ledger: bool = False) -> int:
+    async def monitor(
+        self,
+        stop_after_first_ledger: bool = False,
+        stop_event: asyncio.Event | None = None,
+    ) -> int:
         """Run the monitoring loop with persistent WebSocket connections.
 
         Uses async context manager for proper connection lifecycle.
@@ -668,6 +672,7 @@ class NetworkMonitor:
         Args:
             stop_after_first_ledger: If True, return after first ledger closes
                                      instead of continuous monitoring.
+            stop_event: If provided, stop monitoring when this event is set.
 
         Returns:
             The ledger index when stopped (0 if failed to start).
@@ -699,7 +704,9 @@ class NetworkMonitor:
                 )
                 first_ledger_received = False
 
-                while not first_ledger_received:
+                while not first_ledger_received and not (
+                    stop_event and stop_event.is_set()
+                ):
                     uptime = self._get_uptime()
                     uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
                     console.print(
@@ -729,23 +736,28 @@ class NetworkMonitor:
 
                     if not first_ledger_received:
                         await asyncio.sleep(3)
-                    else:
-                        if stop_after_first_ledger:
-                            console.print(
-                                f"[green]First ledger close detected "
-                                f"(index {last_ledger_index})[/green]\n"
-                            )
-                            return last_ledger_index
+
+                # Check if we exited due to stop_event
+                if stop_event and stop_event.is_set():
+                    return last_ledger_index
+
+                if first_ledger_received:
+                    if stop_after_first_ledger:
                         console.print(
-                            f"[green]First ledger close detected (index {last_ledger_index}), "
-                            "event-driven monitoring active[/green]\n"
+                            f"[green]First ledger close detected "
+                            f"(index {last_ledger_index})[/green]\n"
                         )
+                        return last_ledger_index
+                    console.print(
+                        f"[green]First ledger close detected (index {last_ledger_index}), "
+                        "event-driven monitoring active[/green]\n"
+                    )
 
                 # Event-driven monitoring phase
                 last_ledger_events: dict[int, dict[str, Any]] | None = None
                 missed_events_count = 0
 
-                while True:
+                while not (stop_event and stop_event.is_set()):
                     next_ledger_index = last_ledger_index + 1
 
                     # Wait for new ledger from buffered events
