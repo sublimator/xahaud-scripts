@@ -901,6 +901,189 @@ def logs_search(
     )
 
 
+TEST_SCRIPT_GUIDE = '''
+# x-testnet Test Script Guide
+
+## Overview
+
+Test scripts let you run automated tests against a local xahaud testnet.
+The framework handles network setup, account funding, and provides an
+xrpl-py client for interacting with the network.
+
+## Running a Test Script
+
+    x-testnet run --test-script my_test.py
+
+This will:
+1. Launch a local testnet (5 nodes by default)
+2. Wait for the first ledger to close
+3. Create wallets for declared accounts (deterministic from name)
+4. Fund each account from genesis
+5. Call your `async def run(ctx)` function
+6. Tear down the network when done
+
+## Test Script Format
+
+A test script is a Python file with:
+- `accounts` dict (optional): Maps account names to initial XAH balances
+- `async def run(ctx)`: The test function that receives a TestContext
+
+### Minimal Example
+
+```python
+async def run(ctx):
+    print("Hello from test script!")
+```
+
+### With Accounts
+
+```python
+accounts = {
+    "alice": 1000,  # 1000 XAH
+    "bob": 500,     # 500 XAH
+}
+
+async def run(ctx):
+    alice = ctx.get_account("alice")
+    bob = ctx.get_account("bob")
+    print(f"Alice: {alice.address}")
+    print(f"Bob: {bob.address}")
+```
+
+## TestContext
+
+The `ctx` object passed to your `run()` function provides:
+
+### ctx.client
+
+An xrpl-py `AsyncWebsocketClient` connected to node 0. Use it directly
+with xrpl-py functions:
+
+```python
+from xrpl.models import ServerInfo, AccountInfo, Payment
+from xrpl.asyncio.transaction import submit_and_wait
+
+# Query server info
+response = await ctx.client.request(ServerInfo())
+
+# Check account balance
+response = await ctx.client.request(AccountInfo(account=alice.address))
+balance = response.result["account_data"]["Balance"]
+
+# Submit a transaction
+payment = Payment(
+    account=alice.address,
+    destination=bob.address,
+    amount="1000000",  # 1 XAH in drops
+)
+result = await submit_and_wait(payment, ctx.client, alice.wallet)
+```
+
+### ctx.get_account(name) -> AccountInfo
+
+Get account info by name. The account must be declared in the `accounts` dict.
+
+Returns an `AccountInfo` dataclass with:
+- `name`: The account name (e.g., "alice")
+- `address`: The classic address (e.g., "rXXX...")
+- `public_key`: The public key (e.g., "ED..." or "02/03...")
+- `seed`: The seed/secret (e.g., "sXXX...")
+- `wallet`: An xrpl-py `Wallet` object for signing transactions
+
+## Account Derivation
+
+Accounts are derived deterministically from their name using SHA-512:
+- Same name always produces the same address
+- Useful for reproducible tests
+
+```
+"alice" -> sha512("alice")[:16] -> seed -> wallet
+```
+
+## Genesis Account
+
+The genesis account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh) is used to
+fund your test accounts. It starts with 100 billion XAH.
+
+## Full Example: Payment Test
+
+```python
+"""Test that payments work correctly."""
+
+accounts = {
+    "alice": 1000,
+    "bob": 100,
+}
+
+async def run(ctx):
+    from xrpl.models import Payment, AccountInfo
+    from xrpl.asyncio.transaction import submit_and_wait
+
+    alice = ctx.get_account("alice")
+    bob = ctx.get_account("bob")
+
+    # Check initial balances
+    resp = await ctx.client.request(AccountInfo(account=bob.address))
+    initial_balance = int(resp.result["account_data"]["Balance"])
+    print(f"Bob initial balance: {initial_balance} drops")
+
+    # Send 50 XAH from alice to bob
+    payment = Payment(
+        account=alice.address,
+        destination=bob.address,
+        amount="50000000",  # 50 XAH in drops
+    )
+    result = await submit_and_wait(payment, ctx.client, alice.wallet)
+
+    tx_result = result.result["meta"]["TransactionResult"]
+    print(f"Payment result: {tx_result}")
+    assert tx_result == "tesSUCCESS", f"Payment failed: {tx_result}"
+
+    # Verify new balance
+    resp = await ctx.client.request(AccountInfo(account=bob.address))
+    new_balance = int(resp.result["account_data"]["Balance"])
+    print(f"Bob new balance: {new_balance} drops")
+
+    expected = initial_balance + 50_000_000
+    assert new_balance == expected, f"Expected {expected}, got {new_balance}"
+
+    print("Payment test PASSED!")
+```
+
+## Tips
+
+- Use `drops` for amounts (1 XAH = 1,000,000 drops)
+- The `accounts` dict values are in XAH, not drops
+- Use xrpl-py models from `xrpl.models` for transactions
+- Use `submit_and_wait()` to submit and wait for validation
+- The network has 5 validators, so consensus is fast
+
+## xrpl-py Documentation
+
+For more on xrpl-py: https://xrpl-py.readthedocs.io/
+
+Common imports:
+```python
+from xrpl.models import (
+    Payment,
+    AccountInfo,
+    ServerInfo,
+    AccountSet,
+    TrustSet,
+    # ... etc
+)
+from xrpl.asyncio.transaction import submit_and_wait, autofill
+from xrpl.utils import xrp_to_drops, drops_to_xrp
+```
+'''
+
+
+@testnet.command("test-script-guide")
+def test_script_guide() -> None:
+    """Show guide for writing test scripts."""
+    click.echo(TEST_SCRIPT_GUIDE)
+
+
 def main() -> None:
     """Entry point for the testnet CLI."""
     testnet()
