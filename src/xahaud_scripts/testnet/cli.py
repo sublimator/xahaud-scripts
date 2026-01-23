@@ -328,6 +328,12 @@ def generate(
     is_flag=True,
     help="Reconnect to existing network (skip launching, just monitor)",
 )
+@click.option(
+    "--test-script",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to test script to run instead of monitoring",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -349,6 +355,7 @@ def run(
     launcher: str | None,
     desktop: int | None,
     reconnect: bool,
+    test_script: Path | None,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -466,7 +473,22 @@ def run(
     )
 
     network.run(launch_config)
-    network.monitor(tracked_amendment=amendment_id)
+
+    if test_script:
+        # Run test script instead of monitoring
+        import asyncio
+
+        from xahaud_scripts.testnet.testing import run_test_script
+
+        ws_url = f"ws://localhost:{network._config.base_port_ws}"
+        try:
+            asyncio.run(run_test_script(test_script, ws_url))
+        except KeyboardInterrupt:
+            logger.info("Test script interrupted")
+        finally:
+            network.teardown()
+    else:
+        network.monitor(tracked_amendment=amendment_id)
 
 
 @testnet.command()
