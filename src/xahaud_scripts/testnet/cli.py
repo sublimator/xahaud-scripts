@@ -963,12 +963,11 @@ The `ctx` object passed to your `run()` function provides:
 
 ### ctx.client
 
-An xrpl-py `AsyncWebsocketClient` connected to node 0. Use it directly
-with xrpl-py functions:
+A wrapped xrpl-py client connected to node 0. The wrapper automatically
+sets api_version=1 on all requests (required by xahaud).
 
 ```python
-from xrpl.models import ServerInfo, AccountInfo, Payment
-from xrpl.asyncio.transaction import submit_and_wait
+from xrpl.models import ServerInfo, AccountInfo
 
 # Query server info
 response = await ctx.client.request(ServerInfo())
@@ -976,14 +975,6 @@ response = await ctx.client.request(ServerInfo())
 # Check account balance
 response = await ctx.client.request(AccountInfo(account=alice.address))
 balance = response.result["account_data"]["Balance"]
-
-# Submit a transaction
-payment = Payment(
-    account=alice.address,
-    destination=bob.address,
-    amount="1000000",  # 1 XAH in drops
-)
-result = await submit_and_wait(payment, ctx.client, alice.wallet)
 ```
 
 ### ctx.get_account(name) -> AccountInfo
@@ -1023,6 +1014,34 @@ The compiler auto-detects C vs WAT format (WAT contains "(module").
 
 Requires: wasmcc, hook-cleaner, wat2wasm installed.
 
+### ctx.submit_tx(tx_dict, wallet) -> dict
+
+Sign and submit a raw transaction dict. Use this for Xahau-specific
+transactions like SetHook that aren't in xrpl-py.
+
+Autofills Fee, Sequence, LastLedgerSequence, and Account if not provided.
+
+```python
+# SetHook example
+wasm = ctx.compile_hook(hook_source, label="my-hook")
+
+result = await ctx.submit_tx({
+    "TransactionType": "SetHook",
+    "Hooks": [{
+        "Hook": {
+            "CreateCode": wasm.hex().upper(),
+            "HookOn": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF",
+            "HookNamespace": "0" * 64,
+            "HookApiVersion": 0,
+        }
+    }]
+}, alice.wallet)
+
+print(f"SetHook result: {result.get('engine_result')}")
+```
+
+Other Xahau-specific transactions: Invoke, UNLModify, Import, etc.
+
 ## Account Derivation
 
 Accounts are derived deterministically from their name using SHA-512:
@@ -1042,6 +1061,8 @@ fund your test accounts. It starts with 100 billion XAH.
 
 ```python
 """Test that payments work correctly."""
+import asyncio
+from xrpl.models import AccountInfo
 
 accounts = {
     "alice": 1000,
@@ -1049,9 +1070,6 @@ accounts = {
 }
 
 async def run(ctx):
-    from xrpl.models import Payment, AccountInfo
-    from xrpl.asyncio.transaction import submit_and_wait
-
     alice = ctx.get_account("alice")
     bob = ctx.get_account("bob")
 
@@ -1060,17 +1078,17 @@ async def run(ctx):
     initial_balance = int(resp.result["account_data"]["Balance"])
     print(f"Bob initial balance: {initial_balance} drops")
 
-    # Send 50 XAH from alice to bob
-    payment = Payment(
-        account=alice.address,
-        destination=bob.address,
-        amount="50000000",  # 50 XAH in drops
-    )
-    result = await submit_and_wait(payment, ctx.client, alice.wallet)
+    # Send 50 XAH from alice to bob using ctx.submit_tx
+    result = await ctx.submit_tx({
+        "TransactionType": "Payment",
+        "Destination": bob.address,
+        "Amount": "50000000",  # 50 XAH in drops
+    }, alice.wallet)
 
-    tx_result = result.result["meta"]["TransactionResult"]
-    print(f"Payment result: {tx_result}")
-    assert tx_result == "tesSUCCESS", f"Payment failed: {tx_result}"
+    print(f"Payment result: {result.get('engine_result')}")
+
+    # Wait for ledger close
+    await asyncio.sleep(4)
 
     # Verify new balance
     resp = await ctx.client.request(AccountInfo(account=bob.address))
@@ -1087,9 +1105,9 @@ async def run(ctx):
 
 - Use `drops` for amounts (1 XAH = 1,000,000 drops)
 - The `accounts` dict values are in XAH, not drops
-- Use xrpl-py models from `xrpl.models` for transactions
-- Use `submit_and_wait()` to submit and wait for validation
-- The network has 5 validators, so consensus is fast
+- Use `ctx.submit_tx()` for all transactions (handles Xahau api_version)
+- The network has 5 validators, so consensus is fast (~4 second ledgers)
+- No need to specify api_version=1 - the client wrapper handles it
 
 ## xrpl-py Documentation
 
@@ -1097,17 +1115,12 @@ For more on xrpl-py: https://xrpl-py.readthedocs.io/
 
 Common imports:
 ```python
-from xrpl.models import (
-    Payment,
-    AccountInfo,
-    ServerInfo,
-    AccountSet,
-    TrustSet,
-    # ... etc
-)
-from xrpl.asyncio.transaction import submit_and_wait, autofill
+from xrpl.models import AccountInfo, ServerInfo, Tx, Ledger
 from xrpl.utils import xrp_to_drops, drops_to_xrp
 ```
+
+Note: Use `ctx.submit_tx()` instead of xrpl-py's `submit_and_wait()` to
+avoid api_version incompatibilities with xahaud.
 '''
 
 
