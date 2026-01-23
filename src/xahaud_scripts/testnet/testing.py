@@ -12,16 +12,9 @@ Example test script:
         alice = ctx.get_account("alice")
         bob = ctx.get_account("bob")
 
-        from xrpl.models import Payment
-        from xrpl.transaction import submit_and_wait
-
-        payment = Payment(
-            account=alice.address,
-            destination=bob.address,
-            amount="100000000",
-        )
-        result = await submit_and_wait(payment, ctx.client, alice.wallet)
-        print(f"Payment: {result.result['hash']}")
+        from xrpl.models import AccountInfo
+        resp = await ctx.client.request(AccountInfo(account=alice.address))
+        print(f"Alice balance: {resp.result['account_data']['Balance']}")
 """
 
 import importlib.util
@@ -33,12 +26,37 @@ from typing import Any
 from xrpl.asyncio.clients import AsyncWebsocketClient
 from xrpl.core import keypairs
 from xrpl.models import Payment
+from xrpl.models.requests import Request
 from xrpl.wallet import Wallet
 
 from xahaud_scripts.hooks import WasmCompiler
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
+
+
+class XahauClient:
+    """Wrapper around AsyncWebsocketClient that uses api_version=1.
+
+    xahaud requires api_version=1, but xrpl-py defaults to api_version=2.
+    This wrapper automatically sets api_version=1 on all requests.
+    """
+
+    def __init__(self, client: AsyncWebsocketClient) -> None:
+        self._client = client
+
+    async def request(self, request: Request) -> Any:
+        """Send a request with api_version=1."""
+        # Create a copy of the request with api_version=1
+        request_dict = request.to_dict()
+        request_dict["api_version"] = 1
+        patched = request.from_dict(request_dict)
+        return await self._client.request(patched)
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate everything else to the underlying client."""
+        return getattr(self._client, name)
+
 
 # Standard XRPL genesis account (from "masterpassphrase")
 GENESIS_SEED = "snoPBrXtMeMyMHUVTgbuqAfg1SUTb"
@@ -89,7 +107,7 @@ class TestContext:
 
     def __init__(
         self,
-        client: AsyncWebsocketClient,
+        client: XahauClient,
         accounts: dict[str, AccountInfo],
     ) -> None:
         self.client = client
@@ -181,7 +199,7 @@ async def wait_for_network_ready(ws_url: str, timeout: float = 120.0) -> int:
         attempt += 1
         try:
             async with AsyncWebsocketClient(ws_url) as client:
-                response = await client.request(ServerInfo())
+                response = await client.request(ServerInfo(api_version=1))
                 info = response.result.get("info", {})
                 validated = info.get("validated_ledger")
                 if validated:
@@ -203,7 +221,7 @@ async def wait_for_network_ready(ws_url: str, timeout: float = 120.0) -> int:
 
 
 async def fund_account(
-    client: AsyncWebsocketClient,
+    client: XahauClient,
     genesis_wallet: Wallet,
     destination: str,
     amount_xah: int,
@@ -219,16 +237,18 @@ async def fund_account(
     Returns:
         Transaction result
     """
-    from xrpl.asyncio.transaction import sign, submit
+    from xrpl.asyncio.transaction import sign
+    from xrpl.core.binarycodec import encode
     from xrpl.models import AccountInfo, Fee, Ledger
+    from xrpl.models.requests import SubmitOnly
 
     amount_drops = str(amount_xah * 1_000_000)
 
-    # Get current ledger and account info with api_version=1 for xahaud
-    fee_response = await client.request(Fee(api_version=1))
-    ledger_response = await client.request(Ledger(api_version=1))
+    # Get current ledger and account info
+    fee_response = await client.request(Fee())
+    ledger_response = await client.request(Ledger())
     account_response = await client.request(
-        AccountInfo(account=genesis_wallet.classic_address, api_version=1)
+        AccountInfo(account=genesis_wallet.classic_address)
     )
 
     fee = fee_response.result.get("drops", {}).get("base_fee", "10")
@@ -247,7 +267,8 @@ async def fund_account(
     signed_tx = sign(payment, genesis_wallet)
 
     logger.info(f"Funding {destination} with {amount_xah} XAH")
-    submit_response = await submit(signed_tx, client)
+    tx_blob = encode(signed_tx.to_xrpl())
+    submit_response = await client.request(SubmitOnly(tx_blob=tx_blob))
 
     # Wait for validation
     import asyncio
@@ -261,7 +282,7 @@ async def fund_account(
 
     for _ in range(30):  # Wait up to 30 seconds
         await asyncio.sleep(1)
-        tx_response = await client.request(Tx(transaction=tx_hash, api_version=1))
+        tx_response = await client.request(Tx(transaction=tx_hash))
         if tx_response.result.get("validated"):
             return tx_response.result
 
@@ -293,7 +314,10 @@ async def run_test_script(
 
     # Connect to run test (network already ready - monitor waited for first ledger)
     logger.info(f"Connecting to {ws_url}...")
-    async with AsyncWebsocketClient(ws_url) as client:
+    async with AsyncWebsocketClient(ws_url) as raw_client:
+        # Wrap client to use api_version=1 (required by xahaud)
+        client = XahauClient(raw_client)
+
         # Fund accounts from genesis
         if accounts_config:
             genesis_wallet = Wallet.from_seed(genesis_seed)
