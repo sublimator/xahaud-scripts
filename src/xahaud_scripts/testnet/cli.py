@@ -475,7 +475,14 @@ def run(
     network.run(launch_config)
 
     if test_script:
-        # Run test script instead of monitoring
+        # Wait for first ledger with normal monitor output
+        ledger_index = network.monitor(stop_after_first_ledger=True)
+        if ledger_index == 0:
+            logger.error("Network failed to start")
+            network.teardown()
+            return
+
+        # Run test script
         import asyncio
 
         from xahaud_scripts.testnet.testing import run_test_script

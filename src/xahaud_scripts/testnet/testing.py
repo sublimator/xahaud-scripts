@@ -256,12 +256,8 @@ async def run_test_script(
         accounts[name] = create_account_info(name)
         logger.info(f"Account '{name}': {accounts[name].address}")
 
-    # Wait for network to be ready (handles connection retries)
-    logger.info(f"Waiting for network at {ws_url}...")
-    await wait_for_network_ready(ws_url)
-
-    # Now connect for the actual test
-    logger.info("Connecting to run test...")
+    # Connect to run test (network already ready - monitor waited for first ledger)
+    logger.info(f"Connecting to {ws_url}...")
     async with AsyncWebsocketClient(ws_url) as client:
         # Fund accounts from genesis
         if accounts_config:

@@ -248,11 +248,19 @@ class TestNetwork:
         logger.info(f"  Node 0 RPC: http://127.0.0.1:{self._config.base_port_rpc}")
         logger.info(f"  Node 0 WS:  ws://127.0.0.1:{self._config.base_port_ws}")
 
-    def monitor(self, tracked_amendment: str | None = None) -> None:
+    def monitor(
+        self,
+        tracked_amendment: str | None = None,
+        stop_after_first_ledger: bool = False,
+    ) -> int:
         """Start the monitoring loop.
 
         Args:
             tracked_amendment: Optional amendment ID to track
+            stop_after_first_ledger: If True, stop after first ledger closes
+
+        Returns:
+            Ledger index when stopped (0 if failed)
         """
         # Load network info if not already loaded
         if not self._nodes:
@@ -264,15 +272,21 @@ class TestNetwork:
             tracked_amendment=tracked_amendment,
         )
 
+        if stop_after_first_ledger:
+            logger.info("Waiting for first ledger...")
+            return asyncio.run(monitor.monitor(stop_after_first_ledger=True))
+
         logger.info("Starting monitoring loop (Ctrl+C to stop)...")
         try:
             asyncio.run(monitor.monitor())
+            return 0
         except KeyboardInterrupt:
             logger.info("Monitoring stopped by user")
             # Shutdown nodes via launcher (kills processes + closes window)
             killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
             if killed:
                 logger.info(f"Killed {killed} rippled processes")
+            return 0
 
     def teardown(self) -> int:
         """Kill all running test network processes and clean up.

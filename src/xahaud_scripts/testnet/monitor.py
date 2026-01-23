@@ -659,11 +659,18 @@ class NetworkMonitor:
             self._in_stall = False
             self._stall_start = None
 
-    async def monitor(self) -> None:
+    async def monitor(self, stop_after_first_ledger: bool = False) -> int:
         """Run the monitoring loop with persistent WebSocket connections.
 
         Uses async context manager for proper connection lifecycle.
         Connections are maintained in background tasks with auto-reconnect.
+
+        Args:
+            stop_after_first_ledger: If True, return after first ledger closes
+                                     instead of continuous monitoring.
+
+        Returns:
+            The ledger index when stopped (0 if failed to start).
         """
         node_count = self.network_config.node_count
         last_ledger_index = 0
@@ -676,7 +683,7 @@ class NetworkMonitor:
 
                 if not await self._ws_manager.wait_until_ready(timeout=30.0):
                     console.print("[red]Failed to connect to any nodes[/red]")
-                    return
+                    return 0
 
                 # Show connection status
                 status = self._ws_manager.get_connection_status()
@@ -723,6 +730,12 @@ class NetworkMonitor:
                     if not first_ledger_received:
                         await asyncio.sleep(3)
                     else:
+                        if stop_after_first_ledger:
+                            console.print(
+                                f"[green]First ledger close detected "
+                                f"(index {last_ledger_index})[/green]\n"
+                            )
+                            return last_ledger_index
                         console.print(
                             f"[green]First ledger close detected (index {last_ledger_index}), "
                             "event-driven monitoring active[/green]\n"
@@ -846,6 +859,8 @@ class NetworkMonitor:
 
         except KeyboardInterrupt:
             console.print("\n\n[bold yellow]Monitoring stopped by user[/bold yellow]")
+
+        return 0
 
     def _fetch_all_node_data(self) -> dict[int, dict[str, Any]]:
         """Fetch data from all nodes in parallel.
