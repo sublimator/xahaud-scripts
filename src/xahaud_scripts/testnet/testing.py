@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from xrpl.asyncio.clients import AsyncWebsocketClient
+from xrpl.constants import CryptoAlgorithm
 from xrpl.core import keypairs
 from xrpl.models import Payment
 from xrpl.models.requests import Request
@@ -342,13 +343,21 @@ async def fund_account(
 
     logger.info(f"Funding {destination} with {amount_xah} XAH")
     tx_blob = encode(signed_tx.to_xrpl())
+    logger.debug(f"  tx_blob: {tx_blob[:40]}...")
     submit_response = await client.request(SubmitOnly(tx_blob=tx_blob))
 
+    # Log submit result
+    result = submit_response.result
+    engine_result = result.get("engine_result", "???")
+    logger.info(f"  Submit result: {engine_result}")
+    if engine_result != "tesSUCCESS":
+        logger.warning(f"  Full response: {result}")
+
     # Get tx hash and wait for validation
-    tx_hash = submit_response.result.get("tx_json", {}).get("hash")
+    tx_hash = result.get("tx_json", {}).get("hash")
     if not tx_hash:
-        logger.warning(f"No tx hash in response: {submit_response.result}")
-        return submit_response.result
+        logger.warning(f"No tx hash in response: {result}")
+        return result
 
     # Poll for validation (check every ledger close ~4s)
     from xrpl.models import Tx
@@ -398,7 +407,7 @@ async def run_test_script(
 
         # Fund accounts from genesis
         if accounts_config:
-            genesis_wallet = Wallet.from_seed(genesis_seed)
+            genesis_wallet = Wallet.from_seed(genesis_seed, algorithm=CryptoAlgorithm.SECP256K1)
             logger.info(f"Genesis account: {genesis_wallet.classic_address}")
 
             for name, amount_xah in accounts_config.items():
@@ -479,7 +488,7 @@ async def run_test_with_monitor(
 
             # Fund accounts from genesis
             if accounts_config:
-                genesis_wallet = Wallet.from_seed(genesis_seed)
+                genesis_wallet = Wallet.from_seed(genesis_seed, algorithm=CryptoAlgorithm.SECP256K1)
                 logger.info(f"Genesis account: {genesis_wallet.classic_address}")
 
                 for name, amount_xah in accounts_config.items():
