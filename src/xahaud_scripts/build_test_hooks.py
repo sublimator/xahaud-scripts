@@ -20,246 +20,11 @@ from pathlib import Path
 
 import click
 
+from xahaud_scripts.hooks import BinaryChecker, CompilationCache, WasmCompiler
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
 
 logger = make_logger(__name__)
-
-
-class BinaryChecker:
-    """Check for required binaries and provide installation instructions."""
-
-    REQUIRED_BINARIES = {
-        "wasmcc": "curl https://raw.githubusercontent.com/aspect-build/aspect-cli/main/docs/aspect/wasmcc/install.sh | sh",
-        "hook-cleaner": "git clone https://github.com/RichardAH/hook-cleaner-c.git && cd hook-cleaner-c && make && cp hook-cleaner ~/.local/bin/",
-        "wat2wasm": "brew install wabt",
-        "clang-format": "brew install clang-format",
-    }
-
-    def check_binary(self, name: str) -> str | None:
-        """Check if binary exists and return its path."""
-        result = subprocess.run(["which", name], capture_output=True, text=True)
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            logger.info(f"✓ {name}: {path}")
-            return path
-        return None
-
-    def check_all(self) -> bool:
-        """Check all required binaries. Returns True if all found."""
-        logger.info("Checking required tools...")
-        all_found = True
-
-        for binary, install_msg in self.REQUIRED_BINARIES.items():
-            path = self.check_binary(binary)
-            if not path:
-                logger.error(f"✗ {binary}: NOT FOUND")
-                logger.error(f"  Install: {install_msg}")
-                all_found = False
-
-        if all_found:
-            logger.info("All required tools found!")
-
-        return all_found
-
-
-class CompilationCache:
-    """Cache compiled WASM bytecode based on source and binary versions."""
-
-    def __init__(self) -> None:
-        self.cache_dir = Path.home() / ".cache" / "build_test_hooks"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.binary_versions = self._get_binary_versions()
-        logger.debug(f"Cache directory: {self.cache_dir}")
-
-    def _get_binary_version(self, binary: str) -> str:
-        """Get version hash of a binary."""
-        try:
-            which_result = subprocess.run(
-                ["which", binary], capture_output=True, text=True, check=True
-            )
-            binary_path = which_result.stdout.strip()
-
-            hasher = hashlib.sha256()
-            with open(binary_path, "rb") as f:
-                hasher.update(f.read())
-            return hasher.hexdigest()[:16]
-        except Exception as e:
-            logger.warning(f"Could not hash {binary}: {e}")
-            return "unknown"
-
-    def _get_binary_versions(self) -> dict[str, str]:
-        """Get version hashes of all compilation binaries."""
-        binaries = ["wasmcc", "hook-cleaner", "wat2wasm"]
-        versions = {}
-
-        for binary in binaries:
-            versions[binary] = self._get_binary_version(binary)
-            logger.debug(f"{binary} version hash: {versions[binary]}")
-
-        return versions
-
-    def _compute_cache_key(self, source: str, is_wat: bool) -> str:
-        """Compute cache key from source and binary versions."""
-        hasher = hashlib.sha256()
-        hasher.update(source.encode("utf-8"))
-        hasher.update(b"wat" if is_wat else b"c")
-
-        if is_wat:
-            hasher.update(self.binary_versions["wat2wasm"].encode("utf-8"))
-        else:
-            hasher.update(self.binary_versions["wasmcc"].encode("utf-8"))
-            hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
-
-        return hasher.hexdigest()
-
-    def get(self, source: str, is_wat: bool) -> bytes | None:
-        """Get cached bytecode if available."""
-        cache_key = self._compute_cache_key(source, is_wat)
-        cache_file = self.cache_dir / f"{cache_key}.wasm"
-
-        if cache_file.exists():
-            logger.debug(f"Cache hit: {cache_key[:16]}...")
-            return cache_file.read_bytes()
-
-        logger.debug(f"Cache miss: {cache_key[:16]}...")
-        return None
-
-    def put(self, source: str, is_wat: bool, bytecode: bytes) -> None:
-        """Store bytecode in cache."""
-        cache_key = self._compute_cache_key(source, is_wat)
-        cache_file = self.cache_dir / f"{cache_key}.wasm"
-
-        cache_file.write_bytes(bytecode)
-        logger.debug(f"Cached: {cache_key[:16]}... ({len(bytecode)} bytes)")
-
-
-class SourceValidator:
-    """Validate C source code for undeclared functions."""
-
-    def extract_declarations(self, source: str) -> tuple[list[str], list[str]]:
-        """Extract declared and used function names."""
-        normalized = re.sub(r"\s+", " ", source)
-
-        declared = set()
-        used = set()
-
-        decl_pattern = r"(?:extern|define)\s+[a-z0-9_]+\s+([a-z_-]+)\s*\("
-        for match in re.finditer(decl_pattern, normalized):
-            func_name = match.group(1)
-            if func_name != "sizeof":
-                declared.add(func_name)
-
-        call_pattern = r"([a-z_-]+)\("
-        for match in re.finditer(call_pattern, normalized):
-            func_name = match.group(1)
-            if func_name != "sizeof" and not func_name.startswith(("hook", "cbak")):
-                used.add(func_name)
-
-        return sorted(declared), sorted(used)
-
-    def validate(self, source: str, counter: int) -> None:
-        """Validate that all used functions are declared."""
-        declared, used = self.extract_declarations(source)
-        undeclared = set(used) - set(declared)
-
-        if undeclared:
-            logger.error(
-                f"Undeclared functions in block {counter}: {', '.join(sorted(undeclared))}"
-            )
-            logger.debug(f"  Declared: {', '.join(declared)}")
-            logger.debug(f"  Used: {', '.join(used)}")
-            raise ValueError(f"Undeclared functions: {', '.join(sorted(undeclared))}")
-
-
-class WasmCompiler:
-    """Compile WASM from C or WAT source."""
-
-    def __init__(self, wasm_dir: Path, cache: CompilationCache) -> None:
-        self.wasm_dir = wasm_dir
-        self.cache = cache
-        self.validator = SourceValidator()
-
-    def is_wat_format(self, source: str) -> bool:
-        """Check if source is WAT format."""
-        return "(module" in source
-
-    def compile_c(self, source: str, counter: int) -> bytes:
-        """Compile C source to WASM."""
-        logger.debug(f"Compiling C for block {counter}")
-        self.validator.validate(source, counter)
-
-        source_file = self.wasm_dir / f"test-{counter}-gen.c"
-        source_file.write_text(f'#include "api.h"\n{source}')
-
-        wasmcc_result = subprocess.run(
-            [
-                "wasmcc",
-                "-x",
-                "c",
-                "/dev/stdin",
-                "-o",
-                "/dev/stdout",
-                "-O2",
-                "-Wl,--allow-undefined",
-            ],
-            input=source.encode("utf-8"),
-            capture_output=True,
-            check=True,
-        )
-
-        cleaner_result = subprocess.run(
-            ["hook-cleaner", "-", "-"],
-            input=wasmcc_result.stdout,
-            capture_output=True,
-            check=True,
-        )
-
-        return cleaner_result.stdout
-
-    def compile_wat(self, source: str) -> bytes:
-        """Compile WAT source to WASM."""
-        logger.debug("Compiling WAT")
-        source = re.sub(r"/\*end\*/$", "", source)
-
-        result = subprocess.run(
-            ["wat2wasm", "-", "-o", "/dev/stdout"],
-            input=source.encode("utf-8"),
-            capture_output=True,
-            check=True,
-        )
-
-        return result.stdout
-
-    def compile(self, source: str, counter: int) -> bytes:
-        """Compile source, using cache if available."""
-        is_wat = self.is_wat_format(source)
-
-        cached = self.cache.get(source, is_wat)
-        if cached is not None:
-            logger.info(f"Block {counter}: using cached bytecode")
-            return cached
-
-        logger.info(f"Block {counter}: compiling {'WAT' if is_wat else 'C'}")
-
-        try:
-            if is_wat:
-                bytecode = self.compile_wat(source)
-            else:
-                bytecode = self.compile_c(source, counter)
-
-            self.cache.put(source, is_wat, bytecode)
-            return bytecode
-
-        except subprocess.CalledProcessError as e:
-            error_msg = str(e)
-            if e.stderr:
-                try:
-                    error_msg = e.stderr.decode("utf-8")
-                except Exception:
-                    error_msg = f"Binary error output ({len(e.stderr)} bytes)"
-            logger.error(f"Compilation failed: {error_msg}")
-            raise
 
 
 class OutputFormatter:
@@ -427,7 +192,7 @@ class TestHookBuilder:
 
         self.checker = BinaryChecker()
         self.cache = CompilationCache()
-        self.compiler = WasmCompiler(self.wasm_dir, self.cache)
+        self.compiler = WasmCompiler(cache=self.cache)
         self.extractor = SourceExtractor(self.input_file)
         self.writer = OutputWriter(
             self.output_file, self.cache.cache_dir, self.symbol_name
@@ -443,7 +208,7 @@ class TestHookBuilder:
         self, counter: int, source: str, line_number: int
     ) -> tuple[int, str, bytes]:
         """Compile a single block."""
-        bytecode = self.compiler.compile(source, counter)
+        bytecode = self.compiler.compile(source, f"Block {counter}")
         return (counter, source, bytecode)
 
     def _format_block_ranges(self, block_numbers: list[int]) -> str:
@@ -519,7 +284,9 @@ class TestHookBuilder:
         logger.info(f"  Output: {self.output_file}")
         logger.info(f"  Cache: {self.cache.cache_dir}")
 
-        if not self.checker.check_all():
+        # Check WASM compiler binaries + clang-format for output formatting
+        required = ["wasmcc", "hook-cleaner", "wat2wasm", "clang-format"]
+        if not self.checker.check_all(required):
             logger.error("Missing required binaries")
             sys.exit(1)
 
