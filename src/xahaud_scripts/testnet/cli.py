@@ -491,10 +491,15 @@ def run(
                     tracked_amendment=amendment_id,
                 )
             )
+            logger.info("Test script finished.")
         except KeyboardInterrupt:
             logger.info("Test script interrupted")
-        finally:
-            network.teardown()
+        except Exception as e:
+            logger.error(f"Test script failed: {e}")
+
+        # After test script (success, interrupted, or failed), continue monitoring
+        logger.info("Continuing to monitor (Ctrl-C to stop)...")
+        network.monitor(tracked_amendment=amendment_id)
     else:
         network.monitor(tracked_amendment=amendment_id)
 

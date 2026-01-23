@@ -18,6 +18,7 @@ Example test script:
 """
 
 import asyncio
+import contextlib
 import importlib.util
 from dataclasses import dataclass
 from hashlib import sha512
@@ -118,43 +119,16 @@ async def patch_definitions_from_server(client: "XahauClient") -> None:
     transaction types like SetHook. This fetches definitions from the
     server and patches them in at runtime.
     """
-    from xrpl.core.binarycodec.definitions import definitions as defs_module
     from xrpl.models.requests import GenericRequest
+
+    from xahaud_scripts.testnet.xrpl_patch import patch_definitions
 
     # Fetch server definitions
     response = await client.request(GenericRequest(command="server_definitions"))
     server_defs = response.result
 
-    # Patch transaction types
-    if "TRANSACTION_TYPES" in server_defs:
-        for tx_type, code in server_defs["TRANSACTION_TYPES"].items():
-            if tx_type not in defs_module._DEFINITIONS["TRANSACTION_TYPES"]:
-                defs_module._DEFINITIONS["TRANSACTION_TYPES"][tx_type] = code
-                logger.debug(f"Patched transaction type: {tx_type}={code}")
-
-    # Patch ledger entry types
-    if "LEDGER_ENTRY_TYPES" in server_defs:
-        for entry_type, code in server_defs["LEDGER_ENTRY_TYPES"].items():
-            if entry_type not in defs_module._DEFINITIONS["LEDGER_ENTRY_TYPES"]:
-                defs_module._DEFINITIONS["LEDGER_ENTRY_TYPES"][entry_type] = code
-
-    # Patch fields
-    if "FIELDS" in server_defs:
-        existing_fields = {f[0] for f in defs_module._DEFINITIONS["FIELDS"]}
-        for field in server_defs["FIELDS"]:
-            if isinstance(field, list) and len(field) >= 2:
-                field_name = field[0]
-                if field_name not in existing_fields:
-                    defs_module._DEFINITIONS["FIELDS"].append(field)
-                    logger.debug(f"Patched field: {field_name}")
-
-    # Patch types
-    if "TYPES" in server_defs:
-        for type_name, code in server_defs["TYPES"].items():
-            if type_name not in defs_module._DEFINITIONS["TYPES"]:
-                defs_module._DEFINITIONS["TYPES"][type_name] = code
-
-    logger.info("Patched xrpl-py definitions from server")
+    # Patch xrpl-py with the server definitions
+    patch_definitions(server_defs)
 
 
 class TestContext:
@@ -198,7 +172,9 @@ class TestContext:
         """
         return self._compiler.compile(source, label)
 
-    async def submit_tx(self, tx_dict: dict[str, Any], wallet: Wallet) -> dict[str, Any]:
+    async def submit_tx(
+        self, tx_dict: dict[str, Any], wallet: Wallet
+    ) -> dict[str, Any]:
         """Sign and submit a raw transaction dict.
 
         Use this for Xahau-specific transactions like SetHook that aren't
@@ -222,10 +198,14 @@ class TestContext:
             if "drops" not in fee_response.result:
                 logger.error(f"Fee request failed: {fee_response.result}")
                 raise ValueError(f"Fee request failed: {fee_response.result}")
-            tx_dict["Fee"] = fee_response.result["drops"].get("base_fee", "10")
+            # Use open_ledger_cost (higher) to ensure tx gets in
+            tx_dict["Fee"] = fee_response.result["drops"].get(
+                "open_ledger_cost", "1000000"
+            )
 
         if "Sequence" not in tx_dict:
             from xrpl.models import AccountInfo
+
             acct_response = await self.client.request(
                 AccountInfo(account=wallet.classic_address)
             )
@@ -241,13 +221,16 @@ class TestContext:
             ledger_response = await self.client.request(Ledger())
             ledger_index = get_ledger_index(ledger_response.result)
             if not ledger_index:
-                logger.error(f"Ledger request - no ledger_index: {ledger_response.result}")
+                logger.error(
+                    f"Ledger request - no ledger_index: {ledger_response.result}"
+                )
                 raise ValueError(f"Ledger request failed: {ledger_response.result}")
             tx_dict["LastLedgerSequence"] = ledger_index + 20
 
         # Get NetworkID from server (required for Xahau)
         if "NetworkID" not in tx_dict:
             from xrpl.models import ServerInfo
+
             server_response = await self.client.request(ServerInfo())
             network_id = server_response.result.get("info", {}).get("network_id")
             if network_id:
@@ -260,12 +243,14 @@ class TestContext:
         # Add signing fields
         tx_dict["SigningPubKey"] = wallet.public_key
 
-        # Encode and sign
-        tx_blob = encode(tx_dict)
-        signature = sign_blob(tx_blob, wallet.private_key)
+        # Encode for signing (different from full encoding!)
+        from xrpl.core.binarycodec import encode_for_signing
+
+        signing_blob = encode_for_signing(tx_dict)
+        signature = sign_blob(signing_blob, wallet.private_key)
         tx_dict["TxnSignature"] = signature
 
-        # Re-encode with signature
+        # Encode full transaction with signature
         signed_blob = encode(tx_dict)
 
         # Submit
@@ -478,7 +463,9 @@ async def run_test_script(
 
         # Fund accounts from genesis
         if accounts_config:
-            genesis_wallet = Wallet.from_seed(genesis_seed, algorithm=CryptoAlgorithm.SECP256K1)
+            genesis_wallet = Wallet.from_seed(
+                genesis_seed, algorithm=CryptoAlgorithm.SECP256K1
+            )
             logger.info(f"Genesis account: {genesis_wallet.classic_address}")
 
             for name, amount_xah in accounts_config.items():
@@ -542,10 +529,8 @@ async def run_test_with_monitor(
 
     async def run_monitor() -> None:
         """Run monitor until stop_event is set."""
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await monitor.monitor(stop_event=stop_event)
-        except asyncio.CancelledError:
-            pass
 
     async def run_script() -> None:
         """Run the test script."""
@@ -562,12 +547,16 @@ async def run_test_with_monitor(
 
             # Fund accounts from genesis
             if accounts_config:
-                genesis_wallet = Wallet.from_seed(genesis_seed, algorithm=CryptoAlgorithm.SECP256K1)
+                genesis_wallet = Wallet.from_seed(
+                    genesis_seed, algorithm=CryptoAlgorithm.SECP256K1
+                )
                 logger.info(f"Genesis account: {genesis_wallet.classic_address}")
 
                 for name, amount_xah in accounts_config.items():
                     account = accounts[name]
-                    await fund_account(client, genesis_wallet, account.address, amount_xah)
+                    await fund_account(
+                        client, genesis_wallet, account.address, amount_xah
+                    )
 
             # Create context and run the test
             ctx = TestContext(client=client, accounts=accounts)
@@ -586,7 +575,5 @@ async def run_test_with_monitor(
         # Stop monitor when script finishes
         stop_event.set()
         monitor_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await monitor_task
-        except asyncio.CancelledError:
-            pass

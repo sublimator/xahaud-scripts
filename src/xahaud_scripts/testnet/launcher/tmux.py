@@ -269,7 +269,17 @@ class TmuxLauncher:
 
     def finalize(self) -> None:
         """Attach to the tmux session after all nodes are launched."""
+        import os
+
         if not self._session_created:
+            return
+
+        # Check for headless mode (no iTerm window)
+        if os.environ.get("TMUX_MODE", "").lower() == "headless":
+            logger.info(
+                f"Headless mode: tmux session '{TMUX_SESSION_NAME}' running in background"
+            )
+            logger.info(f"  Attach with: tmux attach -t {TMUX_SESSION_NAME}")
             return
 
         # Switch to target desktop if specified
