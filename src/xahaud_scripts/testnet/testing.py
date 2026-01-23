@@ -188,6 +188,14 @@ class TestContext:
                 raise ValueError(f"Ledger request failed: {ledger_response.result}")
             tx_dict["LastLedgerSequence"] = ledger_response.result["ledger_index"] + 20
 
+        # Get NetworkID from server (required for Xahau)
+        if "NetworkID" not in tx_dict:
+            from xrpl.models import ServerInfo
+            server_response = await self.client.request(ServerInfo())
+            network_id = server_response.result.get("info", {}).get("network_id")
+            if network_id:
+                tx_dict["NetworkID"] = network_id
+
         # Set Account if not provided
         if "Account" not in tx_dict:
             tx_dict["Account"] = wallet.classic_address
@@ -314,21 +322,23 @@ async def fund_account(
     """
     from xrpl.asyncio.transaction import sign
     from xrpl.core.binarycodec import encode
-    from xrpl.models import AccountInfo, Fee, Ledger
+    from xrpl.models import AccountInfo, Fee, Ledger, ServerInfo
     from xrpl.models.requests import SubmitOnly
 
     amount_drops = str(amount_xah * 1_000_000)
 
-    # Get current ledger and account info
+    # Get current ledger, account info, and network_id
     fee_response = await client.request(Fee())
     ledger_response = await client.request(Ledger())
     account_response = await client.request(
         AccountInfo(account=genesis_wallet.classic_address)
     )
+    server_response = await client.request(ServerInfo())
 
     fee = fee_response.result.get("drops", {}).get("base_fee", "10")
     sequence = account_response.result.get("account_data", {}).get("Sequence", 1)
     ledger_index = ledger_response.result.get("ledger_index", 0)
+    network_id = server_response.result.get("info", {}).get("network_id")
 
     payment = Payment(
         account=genesis_wallet.classic_address,
@@ -337,6 +347,7 @@ async def fund_account(
         fee=fee,
         sequence=sequence,
         last_ledger_sequence=ledger_index + 10,
+        network_id=network_id,
     )
 
     signed_tx = sign(payment, genesis_wallet)

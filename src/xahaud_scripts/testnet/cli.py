@@ -1020,7 +1020,7 @@ Requires: wasmcc, hook-cleaner, wat2wasm installed.
 Sign and submit a raw transaction dict. Use this for Xahau-specific
 transactions like SetHook that aren't in xrpl-py.
 
-Autofills Fee, Sequence, LastLedgerSequence, and Account if not provided.
+Autofills Fee, Sequence, LastLedgerSequence, NetworkID, and Account if not provided.
 
 ```python
 # SetHook example
