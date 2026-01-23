@@ -101,6 +101,16 @@ def create_account_info(name: str) -> AccountInfo:
     )
 
 
+def get_ledger_index(ledger_result: dict[str, Any]) -> int:
+    """Extract ledger_index from a Ledger response (handles both formats)."""
+    idx = ledger_result.get("ledger_index")
+    if not idx:
+        idx = ledger_result.get("open", {}).get("ledger", {}).get("ledger_index")
+    if not idx:
+        idx = ledger_result.get("closed", {}).get("ledger", {}).get("ledger_index")
+    return int(idx) if idx else 0
+
+
 class TestContext:
     """Context passed to test scripts.
 
@@ -183,10 +193,11 @@ class TestContext:
 
         if "LastLedgerSequence" not in tx_dict:
             ledger_response = await self.client.request(Ledger())
-            if "ledger_index" not in ledger_response.result:
-                logger.error(f"Ledger request failed: {ledger_response.result}")
+            ledger_index = get_ledger_index(ledger_response.result)
+            if not ledger_index:
+                logger.error(f"Ledger request - no ledger_index: {ledger_response.result}")
                 raise ValueError(f"Ledger request failed: {ledger_response.result}")
-            tx_dict["LastLedgerSequence"] = ledger_response.result["ledger_index"] + 20
+            tx_dict["LastLedgerSequence"] = ledger_index + 20
 
         # Get NetworkID from server (required for Xahau)
         if "NetworkID" not in tx_dict:
@@ -337,8 +348,8 @@ async def fund_account(
 
     fee = fee_response.result.get("drops", {}).get("base_fee", "10")
     sequence = account_response.result.get("account_data", {}).get("Sequence", 1)
-    ledger_index = ledger_response.result.get("ledger_index", 0)
     network_id = server_response.result.get("info", {}).get("network_id")
+    ledger_index = get_ledger_index(ledger_response.result)
 
     payment = Payment(
         account=genesis_wallet.classic_address,
