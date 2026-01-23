@@ -248,6 +248,11 @@ def main() -> None:
         default="INFO",
         help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
     )
+    parser.add_argument(
+        "--stage",
+        action="store_true",
+        help="Stage all formatted files with git add",
+    )
     args = parser.parse_args()
 
     setup_logging(args.log_level, logger)
@@ -316,6 +321,7 @@ def main() -> None:
     # Track overall success
     success: bool = True
     files_formatted = 0
+    formatted_paths: list[Path] = []  # Track paths for --stage
 
     # Format all requested file types
     for file_type, formatter in formatters.items():
@@ -333,11 +339,25 @@ def main() -> None:
                 success = False
             else:
                 files_formatted += 1
+                formatted_paths.append(file_path)
 
     if files_formatted > 0:
         logger.info(f"Successfully formatted {files_formatted} files")
     else:
         logger.info("No files were formatted")
+
+    # Stage formatted files if requested
+    if args.stage and formatted_paths:
+        try:
+            subprocess.run(
+                ["git", "add", "--"] + [str(p) for p in formatted_paths],
+                cwd=root_dir,
+                check=True,
+            )
+            logger.info(f"Staged {len(formatted_paths)} formatted files")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to stage files: {e}")
+            success = False
 
     sys.exit(0 if success else 1)
 
