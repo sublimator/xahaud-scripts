@@ -111,6 +111,52 @@ def get_ledger_index(ledger_result: dict[str, Any]) -> int:
     return int(idx) if idx else 0
 
 
+async def patch_definitions_from_server(client: "XahauClient") -> None:
+    """Fetch server_definitions and patch xrpl-py's binarycodec.
+
+    xrpl-py has hardcoded definitions that don't include Xahau-specific
+    transaction types like SetHook. This fetches definitions from the
+    server and patches them in at runtime.
+    """
+    from xrpl.core.binarycodec.definitions import definitions as defs_module
+    from xrpl.models.requests import GenericRequest
+
+    # Fetch server definitions
+    response = await client.request(GenericRequest(command="server_definitions"))
+    server_defs = response.result
+
+    # Patch transaction types
+    if "TRANSACTION_TYPES" in server_defs:
+        for tx_type, code in server_defs["TRANSACTION_TYPES"].items():
+            if tx_type not in defs_module._DEFINITIONS["TRANSACTION_TYPES"]:
+                defs_module._DEFINITIONS["TRANSACTION_TYPES"][tx_type] = code
+                logger.debug(f"Patched transaction type: {tx_type}={code}")
+
+    # Patch ledger entry types
+    if "LEDGER_ENTRY_TYPES" in server_defs:
+        for entry_type, code in server_defs["LEDGER_ENTRY_TYPES"].items():
+            if entry_type not in defs_module._DEFINITIONS["LEDGER_ENTRY_TYPES"]:
+                defs_module._DEFINITIONS["LEDGER_ENTRY_TYPES"][entry_type] = code
+
+    # Patch fields
+    if "FIELDS" in server_defs:
+        existing_fields = {f[0] for f in defs_module._DEFINITIONS["FIELDS"]}
+        for field in server_defs["FIELDS"]:
+            if isinstance(field, list) and len(field) >= 2:
+                field_name = field[0]
+                if field_name not in existing_fields:
+                    defs_module._DEFINITIONS["FIELDS"].append(field)
+                    logger.debug(f"Patched field: {field_name}")
+
+    # Patch types
+    if "TYPES" in server_defs:
+        for type_name, code in server_defs["TYPES"].items():
+            if type_name not in defs_module._DEFINITIONS["TYPES"]:
+                defs_module._DEFINITIONS["TYPES"][type_name] = code
+
+    logger.info("Patched xrpl-py definitions from server")
+
+
 class TestContext:
     """Context passed to test scripts.
 
@@ -427,6 +473,9 @@ async def run_test_script(
         # Wrap client to use api_version=1 (required by xahaud)
         client = XahauClient(raw_client)
 
+        # Patch xrpl-py definitions with Xahau types (SetHook, etc.)
+        await patch_definitions_from_server(client)
+
         # Fund accounts from genesis
         if accounts_config:
             genesis_wallet = Wallet.from_seed(genesis_seed, algorithm=CryptoAlgorithm.SECP256K1)
@@ -507,6 +556,9 @@ async def run_test_with_monitor(
         logger.info(f"Connecting to {ws_url}...")
         async with AsyncWebsocketClient(ws_url) as raw_client:
             client = XahauClient(raw_client)
+
+            # Patch xrpl-py definitions with Xahau types (SetHook, etc.)
+            await patch_definitions_from_server(client)
 
             # Fund accounts from genesis
             if accounts_config:
