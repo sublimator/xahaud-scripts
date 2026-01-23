@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from xrpl.asyncio.clients import AsyncWebsocketClient
-from xrpl.asyncio.transaction import submit_and_wait
 from xrpl.core import keypairs
 from xrpl.models import Payment
 from xrpl.wallet import Wallet
@@ -220,17 +219,53 @@ async def fund_account(
     Returns:
         Transaction result
     """
+    from xrpl.asyncio.transaction import sign, submit
+    from xrpl.models import AccountInfo, Fee, Ledger
+
     amount_drops = str(amount_xah * 1_000_000)
+
+    # Get current ledger and account info with api_version=1 for xahaud
+    fee_response = await client.request(Fee(api_version=1))
+    ledger_response = await client.request(Ledger(api_version=1))
+    account_response = await client.request(
+        AccountInfo(account=genesis_wallet.classic_address, api_version=1)
+    )
+
+    fee = fee_response.result.get("drops", {}).get("base_fee", "10")
+    sequence = account_response.result.get("account_data", {}).get("Sequence", 1)
+    ledger_index = ledger_response.result.get("ledger_index", 0)
 
     payment = Payment(
         account=genesis_wallet.classic_address,
         destination=destination,
         amount=amount_drops,
+        fee=fee,
+        sequence=sequence,
+        last_ledger_sequence=ledger_index + 10,
     )
 
+    signed_tx = sign(payment, genesis_wallet)
+
     logger.info(f"Funding {destination} with {amount_xah} XAH")
-    result = await submit_and_wait(payment, client, genesis_wallet)
-    return result.result
+    submit_response = await submit(signed_tx, client)
+
+    # Wait for validation
+    import asyncio
+
+    tx_hash = submit_response.result.get("tx_json", {}).get("hash")
+    if not tx_hash:
+        return submit_response.result
+
+    # Poll for validation
+    from xrpl.models import Tx
+
+    for _ in range(30):  # Wait up to 30 seconds
+        await asyncio.sleep(1)
+        tx_response = await client.request(Tx(transaction=tx_hash, api_version=1))
+        if tx_response.result.get("validated"):
+            return tx_response.result
+
+    return submit_response.result
 
 
 async def run_test_script(
