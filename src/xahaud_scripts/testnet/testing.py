@@ -140,6 +140,60 @@ class TestContext:
         """
         return self._compiler.compile(source, label)
 
+    async def submit_tx(self, tx_dict: dict[str, Any], wallet: Wallet) -> dict[str, Any]:
+        """Sign and submit a raw transaction dict.
+
+        Use this for Xahau-specific transactions like SetHook that aren't
+        in xrpl-py. Autofills fee, sequence, and last_ledger_sequence.
+
+        Args:
+            tx_dict: Transaction as a dict (e.g., {"TransactionType": "SetHook", ...})
+            wallet: Wallet to sign with
+
+        Returns:
+            Submit response result
+        """
+        from xrpl.core.binarycodec import encode
+        from xrpl.core.keypairs import sign as sign_blob
+        from xrpl.models import Fee, Ledger
+        from xrpl.models.requests import SubmitOnly
+
+        # Autofill fee, sequence, last_ledger_sequence if not provided
+        if "Fee" not in tx_dict:
+            fee_response = await self.client.request(Fee())
+            tx_dict["Fee"] = fee_response.result.get("drops", {}).get("base_fee", "10")
+
+        if "Sequence" not in tx_dict:
+            from xrpl.models import AccountInfo
+            acct_response = await self.client.request(
+                AccountInfo(account=wallet.classic_address)
+            )
+            tx_dict["Sequence"] = acct_response.result["account_data"]["Sequence"]
+
+        if "LastLedgerSequence" not in tx_dict:
+            ledger_response = await self.client.request(Ledger())
+            ledger_index = ledger_response.result.get("ledger_index", 0)
+            tx_dict["LastLedgerSequence"] = ledger_index + 20
+
+        # Set Account if not provided
+        if "Account" not in tx_dict:
+            tx_dict["Account"] = wallet.classic_address
+
+        # Add signing fields
+        tx_dict["SigningPubKey"] = wallet.public_key
+
+        # Encode and sign
+        tx_blob = encode(tx_dict)
+        signature = sign_blob(tx_blob, wallet.private_key)
+        tx_dict["TxnSignature"] = signature
+
+        # Re-encode with signature
+        signed_blob = encode(tx_dict)
+
+        # Submit
+        response = await self.client.request(SubmitOnly(tx_blob=signed_blob))
+        return response.result
+
 
 def load_test_script(script_path: Path) -> tuple[dict[str, int], Any]:
     """Load a test script module and extract accounts dict and run function.
@@ -269,23 +323,6 @@ async def fund_account(
     logger.info(f"Funding {destination} with {amount_xah} XAH")
     tx_blob = encode(signed_tx.to_xrpl())
     submit_response = await client.request(SubmitOnly(tx_blob=tx_blob))
-
-    # Wait for validation
-    import asyncio
-
-    tx_hash = submit_response.result.get("tx_json", {}).get("hash")
-    if not tx_hash:
-        return submit_response.result
-
-    # Poll for validation
-    from xrpl.models import Tx
-
-    for _ in range(30):  # Wait up to 30 seconds
-        await asyncio.sleep(1)
-        tx_response = await client.request(Tx(transaction=tx_hash))
-        if tx_response.result.get("validated"):
-            return tx_response.result
-
     return submit_response.result
 
 
