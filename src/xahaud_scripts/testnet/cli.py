@@ -892,6 +892,12 @@ def clean(ctx: click.Context) -> None:
     default=None,
     help="Only show entries at or before this time (HH:MM:SS, -5m, -30s, -1h)",
 )
+@click.option(
+    "--nodes",
+    "-n",
+    default=None,
+    help="Which nodes to search (e.g., '0-2', '1,3,5', '0-2,5,7-9')",
+)
 @click.pass_context
 def logs_search(
     ctx: click.Context,
@@ -901,6 +907,7 @@ def logs_search(
     limit: int | None,
     time_start: str | None,
     time_end: str | None,
+    nodes: str | None,
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -916,6 +923,8 @@ def logs_search(
         x-testnet logs-search "LedgerConsensus.*accepted"
         x-testnet logs-search Shuffle --tail 1000
         x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
+        x-testnet logs-search -n 0-2                  # only n0, n1, n2
+        x-testnet logs-search -n 1,3,5                # only n1, n3, n5
     """
     import re
     from datetime import datetime, timedelta
@@ -963,6 +972,7 @@ def logs_search(
         limit=limit,
         time_start=parse_time(time_start),
         time_end=parse_time(time_end),
+        nodes=nodes,
     )
 
 

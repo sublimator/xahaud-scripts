@@ -148,6 +148,25 @@ def merge_log_streams(
             pass  # This iterator is exhausted
 
 
+def parse_node_spec(spec: str) -> set[int]:
+    """Parse a node specification like '0-2,5,7-9' into a set of node IDs.
+
+    Examples:
+        '0-2' -> {0, 1, 2}
+        '1,3,5' -> {1, 3, 5}
+        '0-2,5,7-9' -> {0, 1, 2, 5, 7, 8, 9}
+    """
+    result: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            start, end = part.split("-", 1)
+            result.update(range(int(start), int(end) + 1))
+        else:
+            result.add(int(part))
+    return result
+
+
 def logs_search_handler(
     base_dir: Path,
     pattern: str,
@@ -156,6 +175,7 @@ def logs_search_handler(
     limit: int | None = None,
     time_start: datetime | None = None,
     time_end: datetime | None = None,
+    nodes: str | None = None,
 ) -> int:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -167,6 +187,7 @@ def logs_search_handler(
         limit: Maximum number of results to display
         time_start: Only include entries at or after this time
         time_end: Only include entries at or before this time
+        nodes: Node spec like '0-2,5' to filter which nodes to search
 
     Returns:
         Number of matching lines found
@@ -183,6 +204,13 @@ def logs_search_handler(
 
     # Find all node directories
     node_dirs = sorted(base_dir.glob("n[0-9]*"))
+    if nodes is not None:
+        # Filter to specified nodes
+        try:
+            node_ids = parse_node_spec(nodes)
+        except ValueError as e:
+            raise click.BadParameter(f"Invalid node spec '{nodes}': {e}") from e
+        node_dirs = [d for d in node_dirs if int(d.name[1:]) in node_ids]
     if not node_dirs:
         raise click.ClickException(
             f"No node directories (n0, n1, ...) found in {base_dir}"
