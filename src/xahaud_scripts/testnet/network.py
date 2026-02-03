@@ -170,9 +170,22 @@ class TestNetwork:
         wait_interval = 2  # seconds
         waited = 0
         killed_pids: set[int] = set()
+        # Processes to ignore (monitoring tools, not actually using ports)
+        ignored_processes = {"peermon"}
+
+        def filter_ports(
+            ports: dict[int, list[dict[str, str]]],
+        ) -> dict[int, list[dict[str, str]]]:
+            """Filter out ignored processes from port check results."""
+            result: dict[int, list[dict[str, str]]] = {}
+            for port, conns in ports.items():
+                filtered = [c for c in conns if c["process"] not in ignored_processes]
+                if filtered:
+                    result[port] = filtered
+            return result
 
         while waited < max_wait:
-            ports_in_use = self.check_ports()
+            ports_in_use = filter_ports(self.check_ports())
             if not ports_in_use:
                 break
 
@@ -183,8 +196,10 @@ class TestNetwork:
                 for conn in connections:
                     state = conn["state"]
                     pid = int(conn["pid"])
+                    process_name = conn["process"]
+
                     logger.warning(
-                        f"  Port {port}: {conn['process']} (PID {pid}, {state})"
+                        f"  Port {port}: {process_name} (PID {pid}, {state})"
                     )
                     # Kill processes that are actively using ports (not TIME_WAIT)
                     killable = ("LISTEN", "ESTABLISHED", "CLOSE_WAIT", "CLOSED")
