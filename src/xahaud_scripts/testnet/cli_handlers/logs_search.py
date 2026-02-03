@@ -56,6 +56,8 @@ def iter_matching_lines(
     node_id: int,
     pattern: re.Pattern[str],
     tail: int | None = None,
+    time_start: datetime | None = None,
+    time_end: datetime | None = None,
 ) -> Iterator[LogEntry]:
     """Iterate over matching lines from a log file.
 
@@ -64,6 +66,8 @@ def iter_matching_lines(
         node_id: Node ID for prefixing
         pattern: Compiled regex pattern to match
         tail: If set, only read last N lines
+        time_start: Only include entries at or after this time
+        time_end: Only include entries at or before this time
 
     Yields:
         LogEntry objects for matching lines
@@ -79,6 +83,11 @@ def iter_matching_lines(
                     # Skip continuation lines (no timestamp = part of multi-line entry)
                     if ts is None:
                         continue
+                    # Filter by time range
+                    if time_start and ts < time_start:
+                        continue
+                    if time_end and ts > time_end:
+                        continue
                     yield LogEntry(
                         timestamp=ts,
                         node_id=node_id,
@@ -92,6 +101,8 @@ def merge_log_streams(
     log_files: list[Path],
     pattern: re.Pattern[str],
     tail: int | None = None,
+    time_start: datetime | None = None,
+    time_end: datetime | None = None,
 ) -> Iterator[LogEntry]:
     """Merge multiple log files by timestamp using a heap.
 
@@ -102,6 +113,8 @@ def merge_log_streams(
         log_files: List of log file paths
         pattern: Compiled regex pattern to match
         tail: If set, only read last N lines from each file
+        time_start: Only include entries at or after this time
+        time_end: Only include entries at or before this time
 
     Yields:
         LogEntry objects in timestamp order
@@ -110,7 +123,7 @@ def merge_log_streams(
     iterators: list[tuple[int, Iterator[LogEntry]]] = []
     for log_file in log_files:
         node_id = int(log_file.parent.name[1:])  # n0 -> 0, n1 -> 1, etc.
-        it = iter_matching_lines(log_file, node_id, pattern, tail)
+        it = iter_matching_lines(log_file, node_id, pattern, tail, time_start, time_end)
         iterators.append((node_id, it))
 
     # Initialize heap with first entry from each iterator
@@ -141,6 +154,8 @@ def logs_search_handler(
     tail: int | None = None,
     no_sort: bool = False,
     limit: int | None = None,
+    time_start: datetime | None = None,
+    time_end: datetime | None = None,
 ) -> int:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -150,6 +165,8 @@ def logs_search_handler(
         tail: Only search last N lines of each file
         no_sort: Don't sort by timestamp (faster, less memory)
         limit: Maximum number of results to display
+        time_start: Only include entries at or after this time
+        time_end: Only include entries at or before this time
 
     Returns:
         Number of matching lines found
@@ -206,7 +223,9 @@ def logs_search_handler(
         # Fast path: just grep each file, no sorting
         for log_file in log_files:
             node_id = int(log_file.parent.name[1:])
-            for entry in iter_matching_lines(log_file, node_id, regex, tail):
+            for entry in iter_matching_lines(
+                log_file, node_id, regex, tail, time_start, time_end
+            ):
                 click.echo(entry.line)
                 count += 1
                 if limit and count >= limit:
@@ -215,7 +234,7 @@ def logs_search_handler(
                 break
     else:
         # Use heap-based merge for sorted output
-        for entry in merge_log_streams(log_files, regex, tail):
+        for entry in merge_log_streams(log_files, regex, tail, time_start, time_end):
             click.echo(entry.line)
             count += 1
             if limit and count >= limit:

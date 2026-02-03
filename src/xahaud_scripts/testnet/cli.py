@@ -880,6 +880,18 @@ def clean(ctx: click.Context) -> None:
     default=None,
     help="Maximum number of results to display",
 )
+@click.option(
+    "--time-start",
+    "-s",
+    default=None,
+    help="Only show entries at or after this time (HH:MM:SS or HH:MM:SS.ffffff)",
+)
+@click.option(
+    "--time-end",
+    "-e",
+    default=None,
+    help="Only show entries at or before this time (HH:MM:SS or HH:MM:SS.ffffff)",
+)
 @click.pass_context
 def logs_search(
     ctx: click.Context,
@@ -887,6 +899,8 @@ def logs_search(
     tail: int | None,
     no_sort: bool,
     limit: int | None,
+    time_start: str | None,
+    time_end: str | None,
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -899,8 +913,24 @@ def logs_search(
         x-testnet logs-search Shuffle --tail 1000
         x-testnet logs-search Shuffle --no-sort
         x-testnet logs-search Shuffle --limit 100
+        x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
     """
+    from datetime import datetime
+
     from xahaud_scripts.testnet.cli_handlers import logs_search_handler
+
+    # Parse time arguments
+    def parse_time(s: str | None) -> datetime | None:
+        if s is None:
+            return None
+        for fmt in ["%H:%M:%S.%f", "%H:%M:%S"]:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        raise click.BadParameter(
+            f"Invalid time format: {s} (use HH:MM:SS or HH:MM:SS.ffffff)"
+        )
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
@@ -911,6 +941,8 @@ def logs_search(
         tail=tail,
         no_sort=no_sort,
         limit=limit,
+        time_start=parse_time(time_start),
+        time_end=parse_time(time_end),
     )
 
 
