@@ -884,13 +884,13 @@ def clean(ctx: click.Context) -> None:
     "--time-start",
     "-s",
     default=None,
-    help="Only show entries at or after this time (HH:MM:SS or HH:MM:SS.ffffff)",
+    help="Only show entries at or after this time (HH:MM:SS, -5m, -30s, -1h)",
 )
 @click.option(
     "--time-end",
     "-e",
     default=None,
-    help="Only show entries at or before this time (HH:MM:SS or HH:MM:SS.ffffff)",
+    help="Only show entries at or before this time (HH:MM:SS, -5m, -30s, -1h)",
 )
 @click.pass_context
 def logs_search(
@@ -914,22 +914,43 @@ def logs_search(
         x-testnet logs-search Shuffle --no-sort
         x-testnet logs-search Shuffle --limit 100
         x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
+        x-testnet logs-search Shuffle -s -5m          # last 5 minutes
+        x-testnet logs-search Shuffle -s -30s         # last 30 seconds
+        x-testnet logs-search Shuffle -s -1h30m       # last 1.5 hours
     """
-    from datetime import datetime
+    import re
+    from datetime import datetime, timedelta
 
     from xahaud_scripts.testnet.cli_handlers import logs_search_handler
 
-    # Parse time arguments
+    # Parse time arguments (absolute or relative)
     def parse_time(s: str | None) -> datetime | None:
         if s is None:
             return None
+
+        # Check for relative time: -5m, -30s, -1h, -2h30m, etc.
+        rel_match = re.match(r"^-(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", s)
+        if rel_match:
+            hours = int(rel_match.group(1) or 0)
+            minutes = int(rel_match.group(2) or 0)
+            seconds = int(rel_match.group(3) or 0)
+            if hours == 0 and minutes == 0 and seconds == 0:
+                raise click.BadParameter(f"Invalid relative time: {s}")
+            delta = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+            # Log timestamps are time-only (year=1900), so compute relative to now's time
+            now = datetime.now()
+            target = now - delta
+            # Return with year=1900 to match log timestamp format
+            return target.replace(year=1900, month=1, day=1)
+
+        # Absolute time formats
         for fmt in ["%H:%M:%S.%f", "%H:%M:%S"]:
             try:
                 return datetime.strptime(s, fmt)
             except ValueError:
                 continue
         raise click.BadParameter(
-            f"Invalid time format: {s} (use HH:MM:SS or HH:MM:SS.ffffff)"
+            f"Invalid time format: {s} (use HH:MM:SS, HH:MM:SS.ffffff, or relative like -5m, -30s, -1h)"
         )
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
