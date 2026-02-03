@@ -438,6 +438,8 @@ def generate_all_configs(
             network_config = find_free_port_base(network_config, process_manager)
         else:
             # Check for port conflicts and error if any found
+            # Ignore peermon - it's a monitoring tool, not actually using the ports
+            ignored_processes = {"peermon"}
             conflicts = []
             for node_id in range(network_config.node_count):
                 for port in [
@@ -448,6 +450,8 @@ def generate_all_configs(
                     connections = process_manager.get_port_state(port)
                     if connections:
                         for conn in connections:
+                            if conn["process"] in ignored_processes:
+                                continue
                             conflicts.append(
                                 f"  Port {port}: {conn['process']} "
                                 f"(PID {conn['pid']}, {conn['state']})"

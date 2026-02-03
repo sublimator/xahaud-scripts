@@ -244,6 +244,18 @@ def main() -> None:
         "--cmake-only", action="store_true", help="Format only CMake files"
     )
     parser.add_argument(
+        "--no-cpp", action="store_true", help="Exclude C++ files from formatting"
+    )
+    parser.add_argument(
+        "--no-shell", action="store_true", help="Exclude shell files from formatting"
+    )
+    parser.add_argument(
+        "--no-python", action="store_true", help="Exclude Python files from formatting"
+    )
+    parser.add_argument(
+        "--no-cmake", action="store_true", help="Exclude CMake files from formatting"
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
@@ -263,10 +275,12 @@ def main() -> None:
     format_only_one_type = (
         args.cpp_only or args.shell_only or args.python_only or args.cmake_only
     )
-    format_cpp = args.cpp_only or not format_only_one_type
-    format_shell = args.shell_only or not format_only_one_type
-    format_python = args.python_only or not format_only_one_type
-    format_cmake = args.cmake_only or not format_only_one_type
+    format_cpp = (args.cpp_only or not format_only_one_type) and not args.no_cpp
+    format_shell = (args.shell_only or not format_only_one_type) and not args.no_shell
+    format_python = (
+        args.python_only or not format_only_one_type
+    ) and not args.no_python
+    format_cmake = (args.cmake_only or not format_only_one_type) and not args.no_cmake
 
     if args.all:
         # Explicit request for all files
