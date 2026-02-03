@@ -860,7 +860,7 @@ def clean(ctx: click.Context) -> None:
 
 
 @testnet.command("logs-search")
-@click.argument("pattern")
+@click.argument("pattern", default=".")
 @click.option(
     "--tail",
     "-t",
@@ -904,19 +904,18 @@ def logs_search(
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
 
+    PATTERN is optional - if omitted, matches all lines.
+
     Uses a heap-based streaming merge to efficiently handle large log files
     without loading everything into memory.
 
     Examples:
+        x-testnet logs-search -s -5m                  # all logs, last 5 minutes
+        x-testnet logs-search -s -30s --limit 100     # last 30 seconds, max 100 lines
         x-testnet logs-search Shuffle
         x-testnet logs-search "LedgerConsensus.*accepted"
         x-testnet logs-search Shuffle --tail 1000
-        x-testnet logs-search Shuffle --no-sort
-        x-testnet logs-search Shuffle --limit 100
         x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
-        x-testnet logs-search Shuffle -s -5m          # last 5 minutes
-        x-testnet logs-search Shuffle -s -30s         # last 30 seconds
-        x-testnet logs-search Shuffle -s -1h30m       # last 1.5 hours
     """
     import re
     from datetime import datetime, timedelta
