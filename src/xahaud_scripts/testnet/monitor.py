@@ -212,10 +212,11 @@ def display_txn_histogram(
     if not transactions:
         return {}
 
-    # Count transaction types and collect Shuffle-specific fields
+    # Count transaction types and collect type-specific fields
     type_counts: dict[str, int] = {}
     shuffle_ledger_seqs: set[int] = set()
     shuffle_parent_hashes: set[str] = set()
+    entropy_digests: set[str] = set()
 
     for tx in transactions:
         tx_type = tx.get("TransactionType", "Unknown")
@@ -227,6 +228,9 @@ def display_txn_histogram(
                 shuffle_ledger_seqs.add(tx["LedgerSequence"])
             if "ParentHash" in tx:
                 shuffle_parent_hashes.add(tx["ParentHash"])
+        elif tx_type == "ConsensusEntropy":
+            if "Digest" in tx:
+                entropy_digests.add(tx["Digest"][:7])
 
     # Sort by count (descending), then by name
     sorted_types = sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))
@@ -244,6 +248,9 @@ def display_txn_histogram(
                 hashes = ",".join(h[:12] + "..." for h in sorted(shuffle_parent_hashes))
                 details.append(f"Parent={hashes}")
             parts.append(f"[cyan]{name}[/cyan]:{count}({' '.join(details)})")
+        elif name == "ConsensusEntropy" and entropy_digests:
+            digests = ",".join(sorted(entropy_digests))
+            parts.append(f"[cyan]{name}[/cyan]:{count}({digests})")
         else:
             parts.append(f"[cyan]{name}[/cyan]:{count}")
 
@@ -495,6 +502,11 @@ class NetworkMonitor:
         # Count distribution: tx_type -> {count: num_ledgers}
         self._txn_count_dist: dict[str, dict[int, int]] = {}
 
+        # Ledger close timing
+        self._last_ledger_time: float | None = None  # monotonic time of last close
+        self._close_times: list[float] = []  # all close deltas
+        self._recent_close_times: deque[float] = deque(maxlen=10)  # last 10 deltas
+
         # Stall tracking (10+ seconds without ledger close)
         self._stall_count: int = 0
         self._in_stall: bool = False
@@ -512,6 +524,15 @@ class NetworkMonitor:
         if self._start_time is None:
             return None
         return time.time() - self._start_time
+
+    def _record_ledger_close(self) -> None:
+        """Record the time of a ledger close event."""
+        now = time.monotonic()
+        if self._last_ledger_time is not None:
+            delta = now - self._last_ledger_time
+            self._close_times.append(delta)
+            self._recent_close_times.append(delta)
+        self._last_ledger_time = now
 
     def _update_convergence_stats(self, node_data: dict[int, dict[str, Any]]) -> None:
         """Extract convergence times from node data and update tracking stats.
@@ -595,8 +616,24 @@ class NetworkMonitor:
         else:
             txn_line = "N/A"
 
+        # Get ledger close timing
+        if self._close_times:
+            recent = list(self._recent_close_times)
+            recent_count = len(recent)
+            recent_avg = sum(recent) / recent_count
+            recent_min = min(recent)
+            cumul_avg = sum(self._close_times) / len(self._close_times)
+            cumul_min = min(self._close_times)
+            close_line = (
+                f"last{recent_count}=\\[avg:{recent_avg:.3f}s min:{recent_min:.3f}s] "
+                f"cumul=\\[avg:{cumul_avg:.3f}s min:{cumul_min:.3f}s]"
+            )
+        else:
+            close_line = "N/A"
+
         # Display combined output
         console.print(f"[dim]Avg Conv:[/dim] {conv_line}")
+        console.print(f"[dim]Close Time:[/dim] {close_line}")
         console.print(f"[dim]Avg Txns:[/dim] {txn_line}")
 
         # Display txn count distributions per type
@@ -742,6 +779,8 @@ class NetworkMonitor:
                     return last_ledger_index
 
                 if first_ledger_received:
+                    # Seed close timer so first event-driven ledger gets a delta
+                    self._record_ledger_close()
                     if stop_after_first_ledger:
                         console.print(
                             f"[green]First ledger close detected "
@@ -769,6 +808,7 @@ class NetworkMonitor:
                     if ledger_events:
                         missed_events_count = 0  # Reset counter on success
                         self._exit_stall()  # End any active stall
+                        self._record_ledger_close()
 
                         # Debug: dump ledgerClosed event
                         if os.environ.get("DEBUG") == "1":
