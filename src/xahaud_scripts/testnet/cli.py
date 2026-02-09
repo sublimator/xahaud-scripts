@@ -27,6 +27,7 @@ from pathlib import Path
 import click
 
 from xahaud_scripts.testnet.config import (
+    MAX_NODE_COUNT,
     LaunchConfig,
     NetworkConfig,
     feature_name_to_hash,
@@ -171,9 +172,9 @@ def testnet(
 @click.option(
     "--node-count",
     "-n",
-    type=click.IntRange(1, 10),
+    type=click.IntRange(1, MAX_NODE_COUNT),
     default=5,
-    help="Number of nodes (1-10)",
+    help=f"Number of nodes (1-{MAX_NODE_COUNT})",
 )
 @click.option(
     "--log-level-suite",
@@ -257,9 +258,9 @@ def generate(
 @click.option(
     "--node-count",
     "-n",
-    type=click.IntRange(1, 10),
+    type=click.IntRange(1, MAX_NODE_COUNT),
     default=5,
-    help="Number of nodes (1-10)",
+    help=f"Number of nodes (1-{MAX_NODE_COUNT})",
 )
 @click.option("--amendment-id", help="Amendment ID for injection")
 @click.option("--quorum", type=int, help="Quorum value for consensus")
@@ -756,9 +757,9 @@ def ports(ctx: click.Context) -> None:
 @click.option(
     "--node-count",
     "-n",
-    type=click.IntRange(1, 10),
+    type=click.IntRange(1, MAX_NODE_COUNT),
     default=5,
-    help="Number of nodes (1-10)",
+    help=f"Number of nodes (1-{MAX_NODE_COUNT})",
 )
 @click.pass_context
 def check_ports(ctx: click.Context, node_count: int) -> None:
@@ -796,7 +797,7 @@ def check_ports(ctx: click.Context, node_count: int) -> None:
 @click.option(
     "--node-count",
     "-n",
-    type=click.IntRange(1, 10),
+    type=click.IntRange(1, MAX_NODE_COUNT),
     default=None,
     help="Number of nodes (default: from network.json or 5)",
 )
@@ -857,6 +858,165 @@ def clean(ctx: click.Context) -> None:
     network = _create_network(ctx)
     network.clean()
     click.echo("Cleaned up generated files")
+
+
+@testnet.command("create-config")
+@click.option(
+    "--network",
+    type=click.Choice(["mainnet", "testnet"], case_sensitive=False),
+    required=True,
+    help="Target network",
+)
+@click.option(
+    "--db-type",
+    type=click.Choice(["NuDB", "RWDB"], case_sensitive=False),
+    default="NuDB",
+    help="Database backend (default: NuDB)",
+)
+@click.option(
+    "--data-dir",
+    default="/opt/xahaud",
+    help="Data directory for db and logs (default: /opt/xahaud)",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=".",
+    help="Where to write generated files (default: current dir)",
+)
+@click.option(
+    "--node-size",
+    type=click.Choice(
+        ["tiny", "small", "medium", "large", "huge"], case_sensitive=False
+    ),
+    default="medium",
+    help="Node size tuning (default: medium)",
+)
+@click.option(
+    "--log-level",
+    "cfg_log_level",
+    type=click.Choice(
+        ["trace", "debug", "info", "warning", "error", "fatal"], case_sensitive=False
+    ),
+    default="warning",
+    help="Default log severity (default: warning)",
+)
+@click.option(
+    "--online-delete",
+    type=int,
+    default=512,
+    help="Ledgers to keep before deleting (default: 512)",
+)
+@click.option(
+    "--ledger-history",
+    default="256",
+    help="Ledger history depth (default: 256, use 'full' for full history)",
+)
+@click.option(
+    "--peer-port",
+    type=int,
+    default=None,
+    help="Override peer port (default: network-specific)",
+)
+@click.option(
+    "--rpc-port",
+    type=int,
+    default=5009,
+    help="RPC port (default: 5009)",
+)
+@click.option(
+    "--ws-port",
+    type=int,
+    default=6009,
+    help="WebSocket port (default: 6009)",
+)
+@click.option(
+    "--peers-max",
+    type=int,
+    default=21,
+    help="Max peer connections (default: 21)",
+)
+@click.option(
+    "--hooks-server",
+    is_flag=True,
+    default=False,
+    help="Auto-subscribe to hooks-server (http://localhost:8080) on startup",
+)
+def create_config(
+    network: str,
+    db_type: str,
+    data_dir: str,
+    output_dir: Path,
+    node_size: str,
+    cfg_log_level: str,
+    online_delete: int,
+    ledger_history: str,
+    peer_port: int | None,
+    rpc_port: int,
+    ws_port: int,
+    peers_max: int,
+    hooks_server: bool,
+) -> None:
+    """Generate production-ready xahaud.cfg and validators-xahau.txt.
+
+    Creates configuration files for deploying a node to mainnet or testnet
+    with sensible defaults.
+
+    Examples:
+
+        x-testnet create-config --network mainnet
+
+        x-testnet create-config --network testnet --db-type RWDB
+
+        x-testnet create-config --network mainnet --output-dir /tmp/cfg
+
+        x-testnet create-config --network testnet --hooks-server
+    """
+    from xahaud_scripts.testnet.cli_handlers import create_config_handler
+
+    create_config_handler(
+        network=network,
+        output_dir=output_dir,
+        db_type=db_type,
+        data_dir=data_dir,
+        node_size=node_size,
+        log_level=cfg_log_level,
+        online_delete=online_delete,
+        ledger_history=ledger_history,
+        peer_port=peer_port,
+        rpc_port=rpc_port,
+        ws_port=ws_port,
+        peers_max=peers_max,
+        subscribe_url="http://localhost:8080" if hooks_server else None,
+    )
+
+
+@testnet.command("hooks-server")
+@click.option("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+@click.option("--port", type=int, default=8080, help="Listen port (default: 8080)")
+@click.option(
+    "--error",
+    "errors",
+    multiple=True,
+    help="Error responses as STATUS:WEIGHT (e.g. 500:0.25). Can be repeated.",
+)
+def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
+    """Run a mock webhook receiver for xahaud subscription events.
+
+    Starts an HTTP server that receives POST requests from xahaud's
+    outbound webhook system and logs them with Rich formatting.
+
+    Examples:
+
+        x-testnet hooks-server
+
+        x-testnet hooks-server --port 9090
+
+        x-testnet hooks-server --error 500:0.25 --error 400:0.1
+    """
+    from xahaud_scripts.testnet.cli_handlers import hooks_server_handler
+
+    hooks_server_handler(host=host, port=port, errors=errors)
 
 
 @testnet.command("logs-search")
