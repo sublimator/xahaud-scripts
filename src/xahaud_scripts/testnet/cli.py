@@ -875,8 +875,8 @@ def clean(ctx: click.Context) -> None:
 )
 @click.option(
     "--data-dir",
-    default="/opt/xahaud",
-    help="Data directory for db and logs (default: /opt/xahaud)",
+    default=None,
+    help="Data directory for db and logs (default: <output-dir>)",
 )
 @click.option(
     "--output-dir",
@@ -945,7 +945,7 @@ def clean(ctx: click.Context) -> None:
 def create_config(
     network: str,
     db_type: str,
-    data_dir: str,
+    data_dir: str | None,
     output_dir: Path,
     node_size: str,
     cfg_log_level: str,
@@ -974,11 +974,13 @@ def create_config(
     """
     from xahaud_scripts.testnet.cli_handlers import create_config_handler
 
+    effective_data_dir = data_dir or str(output_dir.resolve())
+
     create_config_handler(
         network=network,
         output_dir=output_dir,
         db_type=db_type,
-        data_dir=data_dir,
+        data_dir=effective_data_dir,
         node_size=node_size,
         log_level=cfg_log_level,
         online_delete=online_delete,
