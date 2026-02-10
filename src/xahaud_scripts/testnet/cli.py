@@ -335,6 +335,12 @@ def generate(
     default=None,
     help="Path to test script to run instead of monitoring",
 )
+@click.option(
+    "--test-script-log-file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Log test script output to this file",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -357,6 +363,7 @@ def run(
     desktop: int | None,
     reconnect: bool,
     test_script: Path | None,
+    test_script_log_file: Path | None,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -478,8 +485,22 @@ def run(
     if test_script:
         # Run test script with monitor in background
         import asyncio
+        import logging
 
         from xahaud_scripts.testnet.testing import run_test_with_monitor
+
+        # Set up file logging for test script if requested
+        file_handler = None
+        if test_script_log_file:
+            test_script_log_file.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(test_script_log_file, mode="w")
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+            )
+            # Add to the testing module logger
+            testing_logger = logging.getLogger("xahaud_scripts.testnet.testing")
+            testing_logger.addHandler(file_handler)
+            logger.info(f"Test script log: {test_script_log_file}")
 
         ws_url = f"ws://localhost:{network._config.base_port_ws}"
         try:
@@ -497,6 +518,12 @@ def run(
             logger.info("Test script interrupted")
         except Exception as e:
             logger.error(f"Test script failed: {e}")
+        finally:
+            if file_handler:
+                file_handler.close()
+                logging.getLogger("xahaud_scripts.testnet.testing").removeHandler(
+                    file_handler
+                )
 
         # After test script (success, interrupted, or failed), continue monitoring
         logger.info("Continuing to monitor (Ctrl-C to stop)...")
@@ -1272,6 +1299,33 @@ print(f"SetHook result: {result.get('engine_result')}")
 ```
 
 Other Xahau-specific transactions: Invoke, UNLModify, Import, etc.
+
+### await ctx.submit_and_wait(tx_dict, wallet) -> dict
+
+Like `submit_tx` but waits for the transaction to be validated in a
+closed ledger. Returns the full validated result including `meta`
+(which contains `HookExecutions`, `AffectedNodes`, etc.).
+
+```python
+result = await ctx.submit_and_wait({
+    "TransactionType": "SetHook",
+    "Hooks": [{
+        "Hook": {
+            "CreateCode": wasm.hex().upper(),
+            "HookOn": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF",
+            "HookNamespace": "0" * 64,
+            "HookApiVersion": 0,
+        }
+    }]
+}, alice.wallet)
+
+# Now has full metadata
+print(f"Result: {result.get('meta', {}).get('TransactionResult')}")
+hook_executions = result.get("meta", {}).get("HookExecutions", [])
+```
+
+Raises `ValueError` if the transaction is not validated within the
+timeout (default 60s).
 
 ## Account Derivation
 

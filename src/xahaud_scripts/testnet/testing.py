@@ -265,6 +265,55 @@ class TestContext:
 
         return result
 
+    async def submit_and_wait(
+        self,
+        tx_dict: dict[str, Any],
+        wallet: Wallet,
+        timeout: float = 60.0,
+        poll_interval: float = 4.0,
+    ) -> dict[str, Any]:
+        """Sign, submit, and wait for validation.
+
+        Like submit_tx but polls until the transaction is validated,
+        returning the full result including metadata (e.g. HookExecutions).
+
+        Args:
+            tx_dict: Transaction as a dict
+            wallet: Wallet to sign with
+            timeout: Max seconds to wait for validation
+            poll_interval: Seconds between polls
+
+        Returns:
+            Validated transaction result (includes meta, HookExecutions, etc.)
+
+        Raises:
+            ValueError: If submit fails or transaction not validated in time
+        """
+        from xrpl.models import Tx
+
+        result = await self.submit_tx(tx_dict, wallet)
+
+        engine_result = result.get("engine_result", "")
+        if not engine_result.startswith("tes"):
+            return result
+
+        tx_hash = result.get("tx_json", {}).get("hash")
+        if not tx_hash:
+            logger.warning(f"No tx hash in submit response: {result}")
+            return result
+
+        max_attempts = int(timeout / poll_interval)
+        for attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+            try:
+                tx_response = await self.client.request(Tx(transaction=tx_hash))
+                if tx_response.result.get("validated"):
+                    return tx_response.result
+            except Exception as e:
+                logger.debug(f"Tx poll attempt {attempt}: {e}")
+
+        raise ValueError(f"Transaction {tx_hash} not validated after {timeout}s")
+
 
 def load_test_script(script_path: Path) -> tuple[dict[str, int], Any]:
     """Load a test script module and extract accounts dict and run function.
