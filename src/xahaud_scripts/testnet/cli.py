@@ -1221,7 +1221,7 @@ Returns an `AccountInfo` dataclass with:
 ### ctx.compile_hook(source, label="hook") -> bytes
 
 Compile C or WAT source code to WASM bytecode. Uses caching - same source
-returns cached result instantly.
+returns cached result instantly. Raises on compilation failure.
 
 ```python
 # Compile a simple C hook
@@ -1244,12 +1244,13 @@ The compiler auto-detects C vs WAT format (WAT contains "(module").
 
 Requires: wasmcc, hook-cleaner, wat2wasm installed.
 
-### ctx.submit_tx(tx_dict, wallet) -> dict
+### await ctx.submit_tx(tx_dict, wallet) -> dict
 
-Sign and submit a raw transaction dict. Use this for Xahau-specific
-transactions like SetHook that aren't in xrpl-py.
+Sign and submit a raw transaction dict. This is async - use `await`.
+Use this for Xahau-specific transactions like SetHook that aren't in xrpl-py.
 
 Autofills Fee, Sequence, LastLedgerSequence, NetworkID, and Account if not provided.
+Raises `ValueError` if the server request fails (e.g. connection error).
 
 ```python
 # SetHook example
