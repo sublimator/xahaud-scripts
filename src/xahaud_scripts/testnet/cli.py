@@ -341,6 +341,12 @@ def generate(
     default=None,
     help="Log test script output to this file",
 )
+@click.option(
+    "--test-script-teardown",
+    is_flag=True,
+    default=False,
+    help="Kill all nodes after test script finishes (keeps configs/logs)",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -364,6 +370,7 @@ def run(
     reconnect: bool,
     test_script: Path | None,
     test_script_log_file: Path | None,
+    test_script_teardown: bool,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -525,9 +532,13 @@ def run(
                     file_handler
                 )
 
-        # After test script (success, interrupted, or failed), continue monitoring
-        logger.info("Continuing to monitor (Ctrl-C to stop)...")
-        network.monitor(tracked_amendment=amendment_id)
+        if test_script_teardown:
+            count = network.teardown()
+            logger.info(f"Teardown: killed {count} processes")
+        else:
+            # After test script (success, interrupted, or failed), continue monitoring
+            logger.info("Continuing to monitor (Ctrl-C to stop)...")
+            network.monitor(tracked_amendment=amendment_id)
     else:
         network.monitor(tracked_amendment=amendment_id)
 
