@@ -352,19 +352,6 @@ def main(
         "-Dxrpld=TRUE",
     ]
 
-    # Find conan toolchain file — conan layout() may nest it arbitrarily
-    # (e.g. build/generators/, build/build/generators/, or directly in build/)
-    toolchain_matches = sorted(build_path.rglob("conan_toolchain.cmake"))
-    if toolchain_matches:
-        toolchain_file = toolchain_matches[0]
-        debug(f"Found toolchain: {toolchain_file}")
-        cmake_args.append(f"-DCMAKE_TOOLCHAIN_FILE={toolchain_file}")
-    else:
-        console.print(
-            "[bold yellow]Warning: conan_toolchain.cmake not found — "
-            "run with --conan first if dependencies are needed[/bold yellow]"
-        )
-
     if coverage:
         cmake_args += [
             "-Dcoverage=ON",
@@ -379,34 +366,91 @@ def main(
             "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         ]
 
-    run_cmd(
-        [
-            "cmake",
-            "-G",
-            "Ninja",
-            f"-DCMAKE_BUILD_TYPE={build_type}",
-            *cmake_args,
-            "-B",
-            str(build_path),
-            ".",
-        ],
-        cwd=root,
-    )
+    # Use cmake presets when available (conan generates these and they handle
+    # all the toolchain/path wiring correctly regardless of cmake_layout nesting)
+    preset_name = f"conan-{build_type.lower()}"
+    use_preset = (root / "CMakeUserPresets.json").exists()
+
+    if use_preset:
+        debug(f"Using cmake preset: {preset_name}")
+        run_cmd(
+            ["cmake", "--preset", preset_name, *cmake_args],
+            cwd=root,
+        )
+    else:
+        # Manual approach — find toolchain file if conan was run previously
+        toolchain_matches = sorted(build_path.rglob("conan_toolchain.cmake"))
+        if toolchain_matches:
+            toolchain_file = toolchain_matches[0]
+            debug(f"Found toolchain: {toolchain_file}")
+            cmake_args.append(f"-DCMAKE_TOOLCHAIN_FILE={toolchain_file}")
+        else:
+            console.print(
+                "[bold yellow]Warning: conan_toolchain.cmake not found — "
+                "run with --conan first if dependencies are needed[/bold yellow]"
+            )
+
+        run_cmd(
+            [
+                "cmake",
+                "-G",
+                "Ninja",
+                f"-DCMAKE_BUILD_TYPE={build_type}",
+                *cmake_args,
+                "-B",
+                str(build_path),
+                ".",
+            ],
+            cwd=root,
+        )
 
     # ── Build ──
     console.rule("[bold blue]Build")
-    run_cmd(
-        [
-            "cmake",
-            "--build",
-            str(build_path),
-            "--config",
-            build_type,
-            "--parallel",
-            str(jobs),
-        ],
-        cwd=root,
-    )
+    if use_preset:
+        run_cmd(
+            [
+                "cmake",
+                "--build",
+                "--preset",
+                preset_name,
+                "--parallel",
+                str(jobs),
+            ],
+            cwd=root,
+        )
+    else:
+        run_cmd(
+            [
+                "cmake",
+                "--build",
+                str(build_path),
+                "--config",
+                build_type,
+                "--parallel",
+                str(jobs),
+            ],
+            cwd=root,
+        )
+
+    # Find the xrpld binary (may be nested when conan cmake_layout is used)
+    xrpld_binary = None
+    if not skip_test or coverage:
+        for match in build_path.rglob("xrpld"):
+            if match.is_file() and os.access(match, os.X_OK):
+                xrpld_binary = match
+                break
+        if xrpld_binary is None:
+            for match in build_path.rglob("xrpld.exe"):
+                if match.is_file():
+                    xrpld_binary = match
+                    break
+        if xrpld_binary:
+            debug(f"Found binary: {xrpld_binary}")
+        else:
+            console.print(
+                "[bold red]Could not find xrpld binary in build tree[/bold red]"
+            )
+            sys.exit(1)
 
     # ── Clear stale coverage data ──
     if coverage and test_patterns:
@@ -424,7 +468,7 @@ def main(
                 console.print(f"[bold]Run {i + 1}/{len(test_patterns)}:[/bold] {pat}")
                 run_cmd(
                     [
-                        str(build_path / "xrpld"),
+                        str(xrpld_binary),
                         "--unittest",
                         pat,
                         "--unittest-jobs",
@@ -435,7 +479,7 @@ def main(
         else:
             run_cmd(
                 [
-                    str(build_path / "xrpld"),
+                    str(xrpld_binary),
                     "--unittest",
                     "--unittest-jobs",
                     str(jobs),
