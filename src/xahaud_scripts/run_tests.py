@@ -395,6 +395,23 @@ def run_rippled(
     default="Debug",
     help="CMake build type (default: Debug)",
 )
+@click.option(
+    "--diff-cover/--no-diff-cover",
+    is_flag=True,
+    default=False,
+    help="Show coverage for lines changed since --diff-cover-since",
+)
+@click.option(
+    "--diff-cover-since",
+    default="origin/dev",
+    help="Commitish for --diff-cover comparison (default: origin/dev)",
+)
+@click.option(
+    "--diff-cover-context",
+    type=int,
+    default=3,
+    help="Context lines around uncovered regions (default: 3)",
+)
 @click.argument("rippled_args", nargs=-1, type=click.UNPROCESSED)
 def main(
     log_level,
@@ -424,6 +441,9 @@ def main(
     target,
     log_line_numbers,
     build_type,
+    diff_cover,
+    diff_cover_since,
+    diff_cover_context,
 ):
     """Build and run rippled tests with support for debugging and coverage analysis.
 
@@ -459,6 +479,13 @@ def main(
     """
     # Set up logging first
     setup_logging(log_level, logger)
+
+    # Auto-enable coverage when diff-cover is requested
+    if diff_cover and not coverage:
+        logger.info(
+            "--diff-cover implies --coverage, enabling coverage instrumentation"
+        )
+        coverage = True
 
     # Check environment variable for ccache if not explicitly set
     if ccache is None:
@@ -603,6 +630,22 @@ def main(
                     build_dir=build_dir,
                     specific_file=coverage_file,
                     prefix=coverage_prefix,
+                )
+
+            # Generate diff coverage report if requested
+            if diff_cover and coverage:
+                from xahaud_scripts.utils.coverage_diff import (
+                    do_diff_coverage_report,
+                )
+
+                logger.info(
+                    f"Generating diff coverage report (since {diff_cover_since})..."
+                )
+                do_diff_coverage_report(
+                    build_dir=build_dir,
+                    commitish=diff_cover_since,
+                    prefix=coverage_prefix,
+                    context_lines=diff_cover_context,
                 )
 
             # Return the exit code from the last process
