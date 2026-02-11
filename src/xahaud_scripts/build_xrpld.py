@@ -290,6 +290,14 @@ def main(
     """Build xrpld with optional coverage support."""
     global VERBOSE  # noqa: PLW0603
     VERBOSE = verbose
+
+    # Expose venv bin dir to subprocesses so tools like gcovr are found
+    # (uv tool install runs us in a venv but subprocesses don't inherit it)
+    venv_bin = str(Path(sys.prefix) / "bin")
+    if venv_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = venv_bin + os.pathsep + os.environ.get("PATH", "")
+        debug(f"Added {venv_bin} to PATH")
+
     root = _find_root()
     build_path = root / build_dir
     build_type = "Debug" if (is_debug or coverage) else "Release"
