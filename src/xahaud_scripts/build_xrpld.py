@@ -161,6 +161,20 @@ def parse_diff_hunks(commitish: str, root: Path) -> dict[str, list[tuple[int, in
 
 def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> None:
     """Cross-reference git diff hunks with gcovr JSON to show uncovered changed lines."""
+    # Verify the commitish exists before running diff
+    ref_check = subprocess.run(
+        ["git", "rev-parse", "--verify", commitish],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    if ref_check.returncode != 0:
+        console.print(
+            f"[bold red]Git ref '{commitish}' not found. "
+            f"Use --cover-diff to specify the base branch.[/bold red]"
+        )
+        return
+
     hunks = parse_diff_hunks(commitish, root)
 
     with open(gcovr_json_path) as f:
@@ -179,16 +193,23 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
     debug(f"coverage data: {len(cov_by_file)} files")
     debug(f"diff hunks: {len(hunks)} files")
 
+    SOURCE_EXTS = (".cpp", ".h", ".hpp", ".ipp", ".c")
+    SKIP_PREFIXES = ("src/test/", "src/tests/", "external/")
+
     total_changed = 0
     total_covered = 0
+    total_diff_files = len(hunks)
+    skipped_files = 0
 
-    console.rule("[bold blue]Uncovered Diff Lines")
+    console.rule(f"[bold blue]Uncovered Diff Lines (since {commitish})")
 
     for filepath, ranges in sorted(hunks.items()):
         # Skip test files and non-source
-        if not filepath.endswith((".cpp", ".h", ".ipp")):
+        if not filepath.endswith(SOURCE_EXTS):
+            skipped_files += 1
             continue
-        if filepath.startswith(("src/test/", "src/tests/", "external/")):
+        if any(filepath.startswith(p) for p in SKIP_PREFIXES):
+            skipped_files += 1
             continue
 
         line_cov = cov_by_file.get(filepath, {})
@@ -296,7 +317,14 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
             f"({pct:.1f}%)[/{color}][/bold]"
         )
     else:
-        console.print("[yellow]No changed source lines found in diff.[/yellow]")
+        if total_diff_files == 0:
+            console.print(f"[yellow]No files changed since {commitish}[/yellow]")
+        else:
+            console.print(
+                f"[yellow]No source files in diff "
+                f"({total_diff_files} files changed, "
+                f"{skipped_files} skipped as test/non-source)[/yellow]"
+            )
 
 
 def run_cmd(
@@ -663,7 +691,7 @@ def main(
             diff_files = [
                 f
                 for f in result.stdout.strip().splitlines()
-                if f.endswith((".cpp", ".h", ".ipp"))
+                if f.endswith((".cpp", ".h", ".hpp", ".ipp", ".c"))
                 and not f.startswith(("src/test/", "src/tests/", "external/"))
             ]
             if not diff_files:
