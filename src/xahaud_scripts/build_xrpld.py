@@ -650,6 +650,7 @@ def main(
             "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
             "--gcov-ignore-errors=source_not_found",
             "--gcov-ignore-errors=no_working_dir_found",
+            "--merge-mode-functions=merge-use-line-0",
             "-r",
             str(root),
             "--exclude-throw-branches",
@@ -666,7 +667,7 @@ def main(
             "include/xrpl/beast/test",
             "-e",
             "include/xrpl/beast/unit_test",
-            f"--object-directory={build_path}",
+            f"--object-directory={xrpld_binary.parent if xrpld_binary else build_path}",
         ]
 
         # Resolve files to filter
