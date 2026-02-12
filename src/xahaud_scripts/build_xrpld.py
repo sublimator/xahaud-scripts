@@ -648,6 +648,7 @@ def main(
             "--gcov-executable",
             gcov_tool,
             "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+            "--gcov-ignore-errors=source_not_found.warn_once_per_file",
             "--gcov-ignore-errors=no_working_dir_found",
             "-r",
             str(root),
