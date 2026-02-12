@@ -37,14 +37,40 @@ def debug(msg: str) -> None:
         console.print(f"[dim cyan]\\[debug] {msg}[/dim cyan]")
 
 
+def _patch_already_applied(patch_content: str, root: Path) -> bool:
+    """Check if a patch is already applied by looking for added lines in target files."""
+    target_file = None
+    added_lines: list[str] = []
+
+    for line in patch_content.splitlines():
+        if line.startswith("+++ b/"):
+            target_file = line[6:]
+        elif target_file and line.startswith("+") and not line.startswith("+++"):
+            stripped = line[1:].strip()
+            # Skip blank lines and trivial lines
+            if stripped and not stripped.startswith("#") and len(stripped) > 10:
+                added_lines.append(stripped)
+
+    if not target_file or not added_lines:
+        return False
+
+    target_path = root / target_file
+    if not target_path.exists():
+        return False
+
+    file_content = target_path.read_text()
+    # If most of the non-trivial added lines are already present, it's applied
+    found = sum(1 for line in added_lines if line in file_content)
+    return found >= len(added_lines) * 0.7
+
+
 def _apply_patches(root: Path) -> None:
     """Apply bundled patches to the repo, skipping already-applied ones.
 
     For each .patch file in the patches directory:
-    1. Check if already applied (git apply --check -R succeeds)
-    2. Try git apply --check to see if it applies cleanly
-    3. If clean, apply it
-    4. If stale, try launching claude -p to apply it semantically
+    1. Check if the fix is already present in the target file
+    2. Try git apply if not already applied
+    3. If stale, warn with the patch path for manual application
     """
     patches_pkg = importlib.resources.files("xahaud_scripts") / "patches"
     patch_files = sorted(
@@ -59,15 +85,8 @@ def _apply_patches(root: Path) -> None:
         patch_content = patch_ref.read_text()
         patch_name = patch_ref.name
 
-        # Check if already applied (reverse-apply check succeeds)
-        result = subprocess.run(
-            ["git", "apply", "--check", "-R", "-"],
-            input=patch_content,
-            capture_output=True,
-            text=True,
-            cwd=root,
-        )
-        if result.returncode == 0:
+        # Check if the fix is already present in the target file
+        if _patch_already_applied(patch_content, root):
             debug(f"Patch already applied: {patch_name}")
             continue
 
@@ -90,44 +109,17 @@ def _apply_patches(root: Path) -> None:
             console.print(f"[green]Applied patch: {patch_name}[/green]")
             continue
 
-        # Patch is stale — try claude -p fallback
-        console.print(f"[yellow]Patch {patch_name} doesn't apply cleanly[/yellow]")
-
-        if not shutil.which("claude"):
-            console.print(
-                "[dim]Install Claude Code CLI to auto-apply stale patches[/dim]"
-            )
-            continue
-
-        # Extract description (lines before the diff)
-        desc_lines = []
+        # Patch doesn't apply cleanly — warn and continue
+        console.print(
+            f"[bold yellow]Patch {patch_name} doesn't apply cleanly — "
+            f"may need manual application[/bold yellow]"
+        )
+        # Show description from patch header
         for line in patch_content.splitlines():
             if line.startswith("---"):
                 break
-            desc_lines.append(line)
-        description = "\n".join(desc_lines).strip()
-
-        prompt = (
-            f"Apply the following patch to this codebase. "
-            f"The patch is slightly out of date so git apply failed, "
-            f"but the intent is the same. Find the right location and "
-            f"make the equivalent change.\n\n"
-            f"Description: {description}\n\n"
-            f"```diff\n{patch_content}\n```"
-        )
-
-        console.print(f"[cyan]Launching Claude Code to apply {patch_name}...[/cyan]")
-        claude_result = subprocess.run(
-            ["claude", "-p", prompt],
-            cwd=root,
-        )
-        if claude_result.returncode == 0:
-            console.print(f"[green]Claude applied patch: {patch_name}[/green]")
-        else:
-            console.print(
-                f"[bold red]Claude failed to apply {patch_name} "
-                f"(exit {claude_result.returncode})[/bold red]"
-            )
+            if line.strip():
+                console.print(f"  [dim]{line.strip()}[/dim]")
 
 
 def parse_diff_hunks(commitish: str, root: Path) -> dict[str, list[tuple[int, int]]]:
