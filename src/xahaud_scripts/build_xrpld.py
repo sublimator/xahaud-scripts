@@ -38,30 +38,36 @@ def debug(msg: str) -> None:
 
 
 def _patch_already_applied(patch_content: str, root: Path) -> bool:
-    """Check if a patch is already applied by looking for added lines in target files."""
-    target_file = None
-    added_lines: list[str] = []
+    """Check if a patch is already applied by looking for added lines in target files.
+
+    Evaluates each file hunk independently so multi-file patches are handled correctly.
+    """
+    # Group added lines by target file
+    file_added_lines: dict[str, list[str]] = {}
+    current_file: str | None = None
 
     for line in patch_content.splitlines():
         if line.startswith("+++ b/"):
-            target_file = line[6:]
-        elif target_file and line.startswith("+") and not line.startswith("+++"):
+            current_file = line[6:]
+        elif current_file and line.startswith("+") and not line.startswith("+++"):
             stripped = line[1:].strip()
-            # Skip blank lines and trivial lines
             if stripped and not stripped.startswith("#") and len(stripped) > 10:
-                added_lines.append(stripped)
+                file_added_lines.setdefault(current_file, []).append(stripped)
 
-    if not target_file or not added_lines:
+    if not file_added_lines:
         return False
 
-    target_path = root / target_file
-    if not target_path.exists():
-        return False
+    # Check each target file independently
+    for target_file, added_lines in file_added_lines.items():
+        target_path = root / target_file
+        if not target_path.exists():
+            return False
+        file_content = target_path.read_text()
+        found = sum(1 for line in added_lines if line in file_content)
+        if found < len(added_lines) * 0.7:
+            return False
 
-    file_content = target_path.read_text()
-    # If most of the non-trivial added lines are already present, it's applied
-    found = sum(1 for line in added_lines if line in file_content)
-    return found >= len(added_lines) * 0.7
+    return True
 
 
 def _apply_patches(root: Path) -> None:
@@ -370,6 +376,11 @@ def run_cmd(
     is_flag=True,
     help="Show uncovered lines in diff (uses --cover-diff commitish, default origin/develop).",
 )
+@click.option(
+    "--cover-html",
+    is_flag=True,
+    help="Generate HTML coverage report (slow — re-reads all coverage data).",
+)
 @click.option("--conan", is_flag=True, help="Run conan install (skipped by default).")
 @click.option("--skip-test", is_flag=True, help="Skip test execution.")
 @click.option("--clean", is_flag=True, help="Remove build dir before starting.")
@@ -399,6 +410,7 @@ def main(
     cover_file: tuple[str, ...],
     cover_diff: str | None,
     uncovered_diff: bool,
+    cover_html: bool,
     conan: bool,
     skip_test: bool,
     clean: bool,
@@ -567,13 +579,20 @@ def main(
     # Find the xrpld binary (may be nested when conan cmake_layout is used)
     xrpld_binary = None
     if not skip_test or coverage:
-        for match in build_path.rglob("xrpld"):
-            if match.is_file() and os.access(match, os.X_OK):
-                xrpld_binary = match
+        # Prefer build-type-specific path (conan cmake_layout: build/build/{Type}/)
+        type_dir = build_path / "build" / build_type
+        for search_dir in [type_dir, build_path]:
+            for name in ["xrpld", "xrpld.exe"]:
+                candidate = search_dir / name
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    xrpld_binary = candidate
+                    break
+            if xrpld_binary:
                 break
+        # Fallback: rglob for non-standard layouts
         if xrpld_binary is None:
-            for match in build_path.rglob("xrpld.exe"):
-                if match.is_file():
+            for match in build_path.rglob("xrpld"):
+                if match.is_file() and os.access(match, os.X_OK):
                     xrpld_binary = match
                     break
         if xrpld_binary:
@@ -585,7 +604,7 @@ def main(
             sys.exit(1)
 
     # ── Clear stale coverage data ──
-    if coverage and test_patterns:
+    if coverage and not skip_test:
         gcda_files = list(build_path.rglob("*.gcda"))
         if gcda_files:
             console.print(f"[yellow]Clearing {len(gcda_files)} .gcda files...[/yellow]")
@@ -711,21 +730,25 @@ def main(
                 gcovr_cmd += ["--filter", ff]
 
         json_report = report_dir / "coverage.json"
-        gcovr_cmd += [
-            "--html-details",
-            str(report),
-            "--json",
-            str(json_report),
-        ]
+        run_cmd(gcovr_cmd + ["--json", str(json_report)], cwd=root)
 
-        run_cmd(gcovr_cmd, cwd=root)
-
-        if report.exists():
-            console.print(f"\n[bold green]Coverage report:[/bold green] {report}")
-        else:
-            console.print(
-                "[yellow]Coverage report not found at expected path.[/yellow]"
+        if cover_html:
+            # HTML re-reads all coverage data so is slow — opt-in only
+            html_result = subprocess.run(
+                gcovr_cmd + ["--html-details", str(report)],
+                cwd=root,
             )
+            if html_result.returncode != 0:
+                console.print(
+                    "[yellow]HTML detail report failed (likely missing source "
+                    "files). Trying summary-only...[/yellow]"
+                )
+                subprocess.run(
+                    gcovr_cmd + ["--html", str(report)],
+                    cwd=root,
+                )
+            if report.exists():
+                console.print(f"\n[bold green]Coverage report:[/bold green] {report}")
 
         if uncovered_diff and json_report.exists():
             show_uncovered_diff(cover_diff or "origin/develop", json_report, root)
