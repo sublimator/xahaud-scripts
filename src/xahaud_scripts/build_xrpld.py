@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import multiprocessing
 import os
@@ -34,6 +35,99 @@ def _find_root() -> Path:
 def debug(msg: str) -> None:
     if VERBOSE:
         console.print(f"[dim cyan]\\[debug] {msg}[/dim cyan]")
+
+
+def _apply_patches(root: Path) -> None:
+    """Apply bundled patches to the repo, skipping already-applied ones.
+
+    For each .patch file in the patches directory:
+    1. Check if already applied (git apply --check -R succeeds)
+    2. Try git apply --check to see if it applies cleanly
+    3. If clean, apply it
+    4. If stale, try launching claude -p to apply it semantically
+    """
+    patches_pkg = importlib.resources.files("xahaud_scripts") / "patches"
+    patch_files = sorted(
+        (p for p in patches_pkg.iterdir() if p.name.endswith(".patch")),
+        key=lambda p: p.name,
+    )
+
+    if not patch_files:
+        return
+
+    for patch_ref in patch_files:
+        patch_content = patch_ref.read_text()
+        patch_name = patch_ref.name
+
+        # Check if already applied (reverse-apply check succeeds)
+        result = subprocess.run(
+            ["git", "apply", "--check", "-R", "-"],
+            input=patch_content,
+            capture_output=True,
+            text=True,
+            cwd=root,
+        )
+        if result.returncode == 0:
+            debug(f"Patch already applied: {patch_name}")
+            continue
+
+        # Try clean apply
+        result = subprocess.run(
+            ["git", "apply", "--check", "-"],
+            input=patch_content,
+            capture_output=True,
+            text=True,
+            cwd=root,
+        )
+        if result.returncode == 0:
+            subprocess.run(
+                ["git", "apply", "-"],
+                input=patch_content,
+                text=True,
+                cwd=root,
+                check=True,
+            )
+            console.print(f"[green]Applied patch: {patch_name}[/green]")
+            continue
+
+        # Patch is stale — try claude -p fallback
+        console.print(f"[yellow]Patch {patch_name} doesn't apply cleanly[/yellow]")
+
+        if not shutil.which("claude"):
+            console.print(
+                "[dim]Install Claude Code CLI to auto-apply stale patches[/dim]"
+            )
+            continue
+
+        # Extract description (lines before the diff)
+        desc_lines = []
+        for line in patch_content.splitlines():
+            if line.startswith("---"):
+                break
+            desc_lines.append(line)
+        description = "\n".join(desc_lines).strip()
+
+        prompt = (
+            f"Apply the following patch to this codebase. "
+            f"The patch is slightly out of date so git apply failed, "
+            f"but the intent is the same. Find the right location and "
+            f"make the equivalent change.\n\n"
+            f"Description: {description}\n\n"
+            f"```diff\n{patch_content}\n```"
+        )
+
+        console.print(f"[cyan]Launching Claude Code to apply {patch_name}...[/cyan]")
+        claude_result = subprocess.run(
+            ["claude", "-p", prompt],
+            cwd=root,
+        )
+        if claude_result.returncode == 0:
+            console.print(f"[green]Claude applied patch: {patch_name}[/green]")
+        else:
+            console.print(
+                f"[bold red]Claude failed to apply {patch_name} "
+                f"(exit {claude_result.returncode})[/bold red]"
+            )
 
 
 def parse_diff_hunks(commitish: str, root: Path) -> dict[str, list[tuple[int, int]]]:
@@ -271,6 +365,11 @@ def run_cmd(
     default="build",
     help="Build directory.",
 )
+@click.option(
+    "--patches/--no-patches",
+    default=True,
+    help="Apply bundled patches before build (default: enabled).",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
 def main(
     coverage: bool,
@@ -285,6 +384,7 @@ def main(
     clean: bool,
     jobs: int,
     build_dir: str,
+    patches: bool,
     verbose: bool,
 ) -> None:
     """Build xrpld with optional coverage support."""
@@ -350,6 +450,10 @@ def main(
             cwd=build_path,
             env={"CONAN_CPU_COUNT": "4"},
         )
+
+    # ── Apply Patches ──
+    if patches:
+        _apply_patches(root)
 
     # ── CMake Configure ──
     console.rule("[bold blue]CMake Configure")
@@ -524,6 +628,7 @@ def main(
             "--gcov-executable",
             gcov_tool,
             "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+            "--gcov-ignore-errors=no_working_dir_found",
             "-r",
             str(root),
             "--exclude-throw-branches",

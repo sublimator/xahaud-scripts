@@ -1,0 +1,23 @@
+Fix CodeCoverage.cmake gcov linkage for Clang/Apple Clang.
+
+GCC requires explicit libgcov linkage but Clang handles it via --coverage.
+The original code unconditionally links gcov which breaks on Clang.
+
+--- a/cmake/CodeCoverage.cmake
++++ b/cmake/CodeCoverage.cmake
+@@ -469,8 +469,11 @@ function (add_code_coverage_to_target name scope)
+     target_link_libraries(
+         ${name}
+         ${scope}
+-        $<$<LINK_LANGUAGE:CXX>:${COVERAGE_CXX_LINKER_FLAGS}
+-        gcov>
+-        $<$<LINK_LANGUAGE:C>:${COVERAGE_C_LINKER_FLAGS}
+-        gcov>)
++        $<$<LINK_LANGUAGE:CXX>:${COVERAGE_CXX_LINKER_FLAGS}>
++        $<$<LINK_LANGUAGE:C>:${COVERAGE_C_LINKER_FLAGS}>)
++
++    # GCC requires explicit libgcov linkage; Clang/Apple Clang handle it via --coverage
++    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++        target_link_libraries(${name} ${scope} gcov)
++    endif ()
+ endfunction () # add_code_coverage_to_target
