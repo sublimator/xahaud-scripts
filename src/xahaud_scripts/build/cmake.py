@@ -39,6 +39,7 @@ class CMakeOptions:
 
     build_type: str = "Debug"
     coverage: bool = False
+    coverage_version: str = "v1"  # v1: llvm-cov, v2: gcovr (PR #661)
     verbose: bool = False
     ccache: bool = False
     ccache_basedir: str | None = None  # Absolute path for cache sharing
@@ -118,15 +119,25 @@ def cmake_configure(
 
         # Add coverage settings if requested
         if options.coverage:
-            logger.info("Configuring build with coverage instrumentation")
-            cmake_cmd.extend(
-                [
-                    "-Dcoverage=ON",
-                    "-Dcoverage_core_only=ON",
-                    "-DCMAKE_CXX_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
-                    "-DCMAKE_C_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
-                ]
-            )
+            if options.coverage_version == "v2":
+                # v2 (PR #661): CMake handles flags via CodeCoverage.cmake + gcovr
+                logger.info(
+                    "Configuring build with coverage instrumentation (v2/gcovr)"
+                )
+                cmake_cmd.append("-Dcoverage=ON")
+            else:
+                # v1: explicit llvm-cov flags
+                logger.info(
+                    "Configuring build with coverage instrumentation (v1/llvm-cov)"
+                )
+                cmake_cmd.extend(
+                    [
+                        "-Dcoverage=ON",
+                        "-Dcoverage_core_only=ON",
+                        "-DCMAKE_CXX_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
+                        "-DCMAKE_C_FLAGS=-O0 -fcoverage-mapping -fprofile-instr-generate",
+                    ]
+                )
         else:
             logger.info(f"Configuring standard {options.build_type} build")
 

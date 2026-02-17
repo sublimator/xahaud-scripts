@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -499,6 +501,255 @@ def do_diff_coverage_report(
 
     # Parse and cross-reference
     line_coverage = parse_line_coverage(export_data)
+    summary = compute_diff_coverage(diff_hunks, line_coverage, repo_root)
+
+    # Display
+    display_diff_coverage(summary, repo_root, context_lines)
+
+    return True
+
+
+# ── v2 (gcovr) support ──────────────────────────────────────────────
+
+
+def _detect_gcov_tool() -> str:
+    """Detect the gcov executable, using llvm-cov gcov on macOS if available."""
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["xcrun", "-f", "llvm-cov"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                tool = f"{result.stdout.strip()} gcov"
+                logger.debug(f"Using gcov tool: {tool}")
+                return tool
+        except FileNotFoundError:
+            pass
+    return "gcov"
+
+
+def _build_gcovr_cmd(
+    build_dir: str,
+    repo_root: str,
+    filter_files: list[str] | None = None,
+) -> list[str]:
+    """Build the base gcovr command with standard flags."""
+    gcov_tool = _detect_gcov_tool()
+    jobs = str(os.cpu_count() or 1)
+
+    cmd = [
+        "gcovr",
+        "--gcov-executable",
+        gcov_tool,
+        "--gcov-ignore-parse-errors=negative_hits.warn_once_per_file",
+        "--gcov-ignore-errors=source_not_found",
+        "--gcov-ignore-errors=no_working_dir_found",
+        "--merge-mode-functions=merge-use-line-0",
+        "-r",
+        repo_root,
+        "--exclude-throw-branches",
+        "--exclude-noncode-lines",
+        "--exclude-unreachable-branches",
+        "-s",
+        "-j",
+        jobs,
+        "-e",
+        "src/test",
+        "-e",
+        "src/tests",
+        f"--object-directory={build_dir}",
+    ]
+
+    if filter_files:
+        for ff in filter_files:
+            cmd += ["--filter", ff]
+
+    return cmd
+
+
+def _run_gcovr_json(
+    build_dir: str,
+    repo_root: str,
+    filter_files: list[str] | None = None,
+) -> Path | None:
+    """Run gcovr and produce a JSON coverage report.
+
+    Args:
+        build_dir: Build directory containing .gcda/.gcno files.
+        repo_root: Repository root for source file resolution.
+        filter_files: If provided, only include these files (relative paths).
+
+    Returns:
+        Path to the JSON report, or None on failure.
+    """
+    if not shutil.which("gcovr"):
+        logger.error("gcovr not found on PATH")
+        return None
+
+    report_dir = Path(build_dir) / "coverage"
+    report_dir.mkdir(exist_ok=True)
+    json_report = report_dir / "diff_coverage.json"
+
+    gcovr_cmd = _build_gcovr_cmd(build_dir, repo_root, filter_files)
+    gcovr_cmd += ["--json", str(json_report)]
+
+    logger.info(
+        f"Running gcovr for diff coverage ({len(filter_files or [])} file filters)..."
+    )
+    try:
+        subprocess.run(gcovr_cmd, cwd=repo_root, check=True)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"gcovr failed with exit code {e.returncode}")
+        return None
+
+    if not json_report.exists():
+        logger.error("gcovr did not produce JSON output")
+        return None
+
+    return json_report
+
+
+def do_generate_coverage_report_v2(
+    build_dir: str,
+    html: bool = True,
+) -> bool:
+    """Generate a coverage report using gcovr (v2/PR #661).
+
+    Runs gcovr directly on .gcda/.gcno files in the build directory.
+    Produces JSON summary and optionally an HTML detail report.
+
+    Args:
+        build_dir: Build directory with .gcda/.gcno files.
+        html: If True, also generate an HTML detail report.
+
+    Returns:
+        True if successful.
+    """
+    if not shutil.which("gcovr"):
+        logger.error("gcovr not found on PATH")
+        return False
+
+    repo_root = get_xahaud_root()
+    report_dir = Path(build_dir) / "coverage"
+    report_dir.mkdir(exist_ok=True)
+
+    gcovr_cmd = _build_gcovr_cmd(build_dir, repo_root)
+
+    json_report = report_dir / "coverage.json"
+    output_args = ["--json", str(json_report)]
+
+    if html:
+        html_report = report_dir / "index.html"
+        output_args += ["--html-details", str(html_report)]
+
+    # Single gcovr invocation for all output formats
+    logger.info("Generating coverage report (v2/gcovr)...")
+    try:
+        subprocess.run(
+            gcovr_cmd + output_args,
+            cwd=repo_root,
+            check=True,
+        )
+        logger.info(f"JSON coverage report: {json_report}")
+        if html:
+            logger.info(f"HTML coverage report: {html_report}")
+    except subprocess.CalledProcessError as e:
+        if html:
+            # Retry without --html-details (may fail with missing sources)
+            logger.warning("gcovr with HTML details failed, retrying JSON-only...")
+            try:
+                subprocess.run(
+                    gcovr_cmd + ["--json", str(json_report)],
+                    cwd=repo_root,
+                    check=True,
+                )
+                logger.info(f"JSON coverage report: {json_report}")
+            except subprocess.CalledProcessError as e2:
+                logger.error(f"gcovr JSON report failed: {e2.returncode}")
+                return False
+        else:
+            logger.error(f"gcovr report failed with exit code {e.returncode}")
+            return False
+
+    return True
+
+
+def _parse_gcovr_line_coverage(
+    gcovr_json_path: Path,
+) -> dict[str, dict[int, int]]:
+    """Parse gcovr JSON into per-file line coverage.
+
+    Args:
+        gcovr_json_path: Path to gcovr JSON report.
+
+    Returns:
+        Dict mapping filepath to {line_number: execution_count}.
+    """
+    with open(gcovr_json_path) as f:
+        cov_data = json.load(f)
+
+    file_coverage: dict[str, dict[int, int]] = {}
+    for file_entry in cov_data.get("files", []):
+        filepath = file_entry["file"]
+        line_hits: dict[int, int] = {}
+        for line in file_entry.get("lines", []):
+            line_hits[line["line_number"]] = line["count"]
+        file_coverage[filepath] = line_hits
+
+    return file_coverage
+
+
+def do_diff_coverage_report_v2(
+    build_dir: str,
+    commitish: str,
+    context_lines: int = 3,
+) -> bool:
+    """Generate and display a diff coverage report using gcovr (v2/PR #661).
+
+    Runs gcovr to collect coverage from .gcda files, then cross-references
+    with git diff to show uncovered changed lines.
+
+    Args:
+        build_dir: Build directory with .gcda/.gcno files.
+        commitish: Git ref to diff against (e.g. "origin/dev").
+        context_lines: Context lines for display.
+
+    Returns:
+        True if successful.
+    """
+    repo_root = get_xahaud_root()
+
+    # Parse diff
+    diff_hunks = parse_diff_hunks(commitish, repo_root)
+    if not diff_hunks:
+        logger.info(f"No changes found since {commitish}")
+        return True
+
+    source_hunks = {
+        k: v
+        for k, v in diff_hunks.items()
+        if k.endswith(SOURCE_EXTENSIONS)
+        and not any(k.startswith(p) for p in SKIP_PREFIXES)
+    }
+    logger.info(f"Found changes in {len(source_hunks)} source files since {commitish}")
+
+    if not source_hunks:
+        logger.info("No source file changes to analyze")
+        return True
+
+    # Run gcovr filtered to changed files
+    json_report = _run_gcovr_json(
+        build_dir,
+        repo_root,
+        filter_files=list(source_hunks.keys()),
+    )
+    if json_report is None:
+        return False
+
+    # Parse and cross-reference
+    line_coverage = _parse_gcovr_line_coverage(json_report)
     summary = compute_diff_coverage(diff_hunks, line_coverage, repo_root)
 
     # Display

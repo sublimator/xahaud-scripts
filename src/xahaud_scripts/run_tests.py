@@ -44,6 +44,22 @@ from xahaud_scripts.utils.shell_utils import (
 logger = make_logger(__name__)
 
 
+def detect_coverage_version(xahaud_root: str) -> str:
+    """Auto-detect coverage version from CMake files in the worktree.
+
+    Returns 'v2' if CodeCoverage.cmake exists (PR #661 gcovr-based),
+    otherwise 'v1' (llvm-cov based, origin/dev).
+    """
+    code_coverage_cmake = os.path.join(
+        xahaud_root, "Builds", "CMake", "CodeCoverage.cmake"
+    )
+    if os.path.exists(code_coverage_cmake):
+        logger.info("Auto-detected coverage v2 (CodeCoverage.cmake found)")
+        return "v2"
+    logger.info("Auto-detected coverage v1 (no CodeCoverage.cmake)")
+    return "v1"
+
+
 def do_build_jshooks_header() -> None:
     """Build the JS hooks header."""
     logger.info("Building JS hooks header...")
@@ -59,6 +75,7 @@ def do_build_jshooks_header() -> None:
 def build_rippled(
     reconfigure_build: bool = False,
     coverage: bool = False,
+    coverage_version: str = "v1",
     use_conan: bool = True,
     verbose: bool = False,
     use_ccache: bool = False,
@@ -131,6 +148,7 @@ def build_rippled(
         options = CMakeOptions(
             build_type=build_type,
             coverage=coverage,
+            coverage_version=coverage_version,
             verbose=verbose,
             ccache=use_ccache,
             ccache_basedir=ccache_basedir,
@@ -315,6 +333,12 @@ def run_rippled(
     help="Build with code coverage support",
 )
 @click.option(
+    "--coverage-version",
+    type=click.Choice(["v1", "v2", "auto"], case_sensitive=False),
+    default="auto",
+    help="Coverage system: 'v1' for llvm-cov (origin/dev), 'v2' for gcovr (PR #661), 'auto' to detect from worktree. Default: auto.",
+)
+@click.option(
     "--conan/--no-conan",
     is_flag=True,
     default=True,
@@ -336,7 +360,7 @@ def run_rippled(
     "--generate-coverage-report/--no-generate-coverage-report",
     is_flag=True,
     default=False,
-    help="Generate coverage report after tests finish (only if --coverage was used)",
+    help="Deprecated: reports are now generated automatically when coverage is enabled.",
 )
 @click.option(
     "--coverage-file",
@@ -391,9 +415,15 @@ def run_rippled(
 )
 @click.option(
     "--build-type",
-    type=click.Choice(["Debug", "Release"], case_sensitive=False),
+    type=click.Choice(["Debug", "Release", "Coverage"], case_sensitive=False),
     default="Debug",
-    help="CMake build type (default: Debug)",
+    help="CMake build type: Debug, Release, or Coverage (Debug + coverage instrumentation + report).",
+)
+@click.option(
+    "--keep-gcda/--no-keep-gcda",
+    is_flag=True,
+    default=False,
+    help="Keep .gcda files from previous runs (default: clear before tests for clean coverage)",
 )
 @click.option(
     "--diff-cover/--no-diff-cover",
@@ -427,6 +457,7 @@ def main(
     reconfigure_build,
     dry_run,
     coverage,
+    coverage_version,
     conan,
     verbose,
     unity,
@@ -441,6 +472,7 @@ def main(
     target,
     log_line_numbers,
     build_type,
+    keep_gcda,
     diff_cover,
     diff_cover_since,
     diff_cover_context,
@@ -453,8 +485,14 @@ def main(
         # Run a basic unit test
         run-tests -- unit_test_hook
 
-        # Build with coverage and generate report
-        run-tests --coverage --generate-coverage-report -- unit_test_hook
+        # Build with coverage (auto-generates report)
+        run-tests --build-type Coverage --reconfigure-build -- unit_test_hook
+
+        # Coverage with diff-cover against origin/dev
+        run-tests --build-type Coverage --diff-cover -- unit_test_hook
+
+        # Explicit coverage flags (equivalent to --build-type Coverage)
+        run-tests --coverage --reconfigure-build -- unit_test_hook
 
         # Run with debugger
         run-tests --lldb -- unit_test_hook
@@ -480,12 +518,38 @@ def main(
     # Set up logging first
     setup_logging(log_level, logger)
 
+    # Resolve --build-type=Coverage → coverage + Debug
+    if build_type.lower() == "coverage":
+        coverage = True
+        build_type = "Debug"
+        logger.info(
+            "--build-type=Coverage: enabling coverage instrumentation with Debug build"
+        )
+
     # Auto-enable coverage when diff-cover is requested
     if diff_cover and not coverage:
         logger.info(
             "--diff-cover implies --coverage, enabling coverage instrumentation"
         )
         coverage = True
+
+    # Resolve coverage version (auto-detect if needed)
+    if coverage and coverage_version == "auto":
+        try:
+            xahaud_root = get_xahaud_root()
+            coverage_version = detect_coverage_version(xahaud_root)
+        except Exception:
+            logger.warning("Could not auto-detect coverage version, falling back to v1")
+            coverage_version = "v1"
+
+    # Coverage forces Debug in cmake (RippledSettings.cmake), and conan
+    # generator expressions are config-specific ($<$<CONFIG:Release>:...>)
+    # so conan and cmake must agree on build type or includes vanish.
+    if coverage and build_type.lower() != "debug":
+        raise click.UsageError(
+            f"--coverage requires Debug build, but --build-type={build_type} was specified. "
+            "Coverage instrumentation only works with --build-type=Debug (the default)."
+        )
 
     # Check environment variable for ccache if not explicitly set
     if ccache is None:
@@ -569,6 +633,7 @@ def main(
                 build_successful = build_rippled(
                     reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
+                    coverage_version=coverage_version,
                     use_conan=conan,
                     verbose=verbose,
                     use_ccache=ccache,
@@ -598,11 +663,24 @@ def main(
             else:
                 logger.info("Skipping build as requested")
 
+            # Clear stale .gcda files before test runs for clean coverage
+            if coverage and coverage_version == "v2" and not keep_gcda:
+                from pathlib import Path as _Path
+
+                gcda_files = list(_Path(build_dir).rglob("*.gcda"))
+                if gcda_files:
+                    logger.info(
+                        f"Clearing {len(gcda_files)} .gcda files from previous runs..."
+                    )
+                    for f in gcda_files:
+                        f.unlink()
+
             # Run rippled with the appropriate arguments
             logger.info(f"Running rippled with args: {' '.join(rippled_args)}")
             env = os.environ.copy()
-            if coverage:
-                # Generate a random prefix for coverage files
+            coverage_prefix = None
+            if coverage and coverage_version == "v1":
+                # v1: Generate a random prefix for llvm-cov profraw files
                 coverage_prefix = generate_coverage_prefix()
                 logger.info(f"Using coverage file prefix: {coverage_prefix}")
 
@@ -623,30 +701,55 @@ def main(
                 lldb_all_threads=lldb_all_threads,
             )
 
-            # Generate coverage report if requested
-            if (generate_coverage_report or coverage_file) and coverage:
-                logger.info("Generating coverage report...")
-                do_generate_coverage_report(
-                    build_dir=build_dir,
-                    specific_file=coverage_file,
-                    prefix=coverage_prefix,
-                )
+            # Generate coverage report automatically when coverage is enabled
+            if coverage:
+                if coverage_version == "v2":
+                    # v2: run gcovr directly on .gcda files
+                    from xahaud_scripts.utils.coverage_diff import (
+                        do_generate_coverage_report_v2,
+                    )
+
+                    do_generate_coverage_report_v2(
+                        build_dir=build_dir,
+                    )
+                else:
+                    # v1: use llvm-cov
+                    logger.info("Generating coverage report (v1/llvm-cov)...")
+                    do_generate_coverage_report(
+                        build_dir=build_dir,
+                        specific_file=coverage_file,
+                        prefix=coverage_prefix,
+                    )
 
             # Generate diff coverage report if requested
             if diff_cover and coverage:
-                from xahaud_scripts.utils.coverage_diff import (
-                    do_diff_coverage_report,
-                )
+                if coverage_version == "v2":
+                    from xahaud_scripts.utils.coverage_diff import (
+                        do_diff_coverage_report_v2,
+                    )
 
-                logger.info(
-                    f"Generating diff coverage report (since {diff_cover_since})..."
-                )
-                do_diff_coverage_report(
-                    build_dir=build_dir,
-                    commitish=diff_cover_since,
-                    prefix=coverage_prefix,
-                    context_lines=diff_cover_context,
-                )
+                    logger.info(
+                        f"Generating diff coverage report via gcovr (since {diff_cover_since})..."
+                    )
+                    do_diff_coverage_report_v2(
+                        build_dir=build_dir,
+                        commitish=diff_cover_since,
+                        context_lines=diff_cover_context,
+                    )
+                else:
+                    from xahaud_scripts.utils.coverage_diff import (
+                        do_diff_coverage_report,
+                    )
+
+                    logger.info(
+                        f"Generating diff coverage report (since {diff_cover_since})..."
+                    )
+                    do_diff_coverage_report(
+                        build_dir=build_dir,
+                        commitish=diff_cover_since,
+                        prefix=coverage_prefix,
+                        context_lines=diff_cover_context,
+                    )
 
             # Return the exit code from the last process
             logger.info(f"Exiting with code {exit_code}")
