@@ -95,8 +95,9 @@ def parse_diff_hunks(
 ) -> dict[str, list[tuple[int, int]]]:
     """Parse git diff to get changed line ranges per file.
 
-    Runs ``git diff --unified=0 <commitish>`` and extracts the
-    ``@@`` hunk headers to determine which lines were added/modified.
+    Uses three-dot diff (``commitish...HEAD``) to compare against the
+    merge-base, so only the current branch's changes are shown — not
+    changes from the base branch advancing.
 
     Args:
         commitish: Git ref to diff against (e.g. "origin/dev").
@@ -107,7 +108,7 @@ def parse_diff_hunks(
         Both start and end are 1-indexed inclusive.
     """
     result = subprocess.run(
-        ["git", "diff", "--unified=0", "--diff-filter=ACMR", commitish],
+        ["git", "diff", "--unified=0", "--diff-filter=ACMR", f"{commitish}...HEAD"],
         capture_output=True,
         text=True,
         cwd=repo_root,
