@@ -675,6 +675,14 @@ def main(
                     for f in gcda_files:
                         f.unlink()
 
+            # Strip accidental --unittest / -u from rippled args (already added by run_rippled)
+            rippled_args = list(rippled_args)
+            if rippled_args and rippled_args[0] in ("--unittest", "-u"):
+                logger.warning(
+                    f"Stripping redundant '{rippled_args[0]}' from args (-u is added automatically)"
+                )
+                rippled_args = rippled_args[1:]
+
             # Run rippled with the appropriate arguments
             logger.info(f"Running rippled with args: {' '.join(rippled_args)}")
             env = os.environ.copy()
