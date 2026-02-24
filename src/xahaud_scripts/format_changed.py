@@ -179,21 +179,18 @@ def format_shell_file(file_path: Path, root_dir: Path) -> bool:
 
 
 def format_python_file(file_path: Path, root_dir: Path) -> bool:
-    """Format a Python file using black."""
+    """Format a Python file using ruff."""
     logger.info(f"Formatting Python file: {file_path.relative_to(root_dir)}")
 
-    # Use black from the same environment as the current Python executable
-    black_path = Path(sys.executable).parent / "black"
+    ruff_path = Path(sys.executable).parent / "ruff"
 
-    # Check if black exists next to the Python executable
-    if not black_path.exists():
-        logger.error(f"black not found at {black_path}")
-        logger.error("Make sure black is installed in the current Python environment")
+    if not ruff_path.exists():
+        logger.error(f"ruff not found at {ruff_path}")
+        logger.error("Make sure ruff is installed in the current Python environment")
         sys.exit(1)
 
     try:
-        # Use black with default settings
-        subprocess.run([str(black_path), str(file_path)], check=True)
+        subprocess.run([str(ruff_path), "format", str(file_path)], check=True)
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"Error formatting {file_path}: {e}")
