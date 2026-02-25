@@ -623,38 +623,18 @@ def main(
         )
 
     # ── Verify .gcno files exist for coverage ──
-    if coverage and not any(build_path.rglob("*.gcno")):
-        console.print(
-            "[yellow]No .gcno files found — forcing clean rebuild "
-            "to regenerate coverage instrumentation...[/yellow]"
-        )
-        if use_preset:
-            run_cmd(
-                [
-                    "cmake",
-                    "--build",
-                    "--preset",
-                    preset_name,
-                    "--clean-first",
-                    "--parallel",
-                    str(jobs),
-                ],
-                cwd=root,
+    # Each .gcda (runtime) needs a matching .gcno (compile-time) for gcovr.
+    # If .gcno files are missing, gcovr silently produces empty results.
+    if coverage:
+        gcno_count = sum(1 for _ in build_path.rglob("*.gcno"))
+        if gcno_count == 0:
+            console.print(
+                "[bold red]No .gcno files found in build tree. "
+                "Coverage will produce empty results.[/bold red]\n"
+                "[yellow]Run a clean rebuild to regenerate them: "
+                "cmake --build build --clean-first[/yellow]"
             )
-        else:
-            run_cmd(
-                [
-                    "cmake",
-                    "--build",
-                    str(build_path),
-                    "--config",
-                    build_type,
-                    "--clean-first",
-                    "--parallel",
-                    str(jobs),
-                ],
-                cwd=root,
-            )
+            sys.exit(1)
 
     # Classify test patterns into beast vs gtest
     beast_patterns = []
