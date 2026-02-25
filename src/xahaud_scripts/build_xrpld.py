@@ -603,6 +603,16 @@ def main(
             cwd=root,
         )
 
+    # ── Clear stale coverage data before build ──
+    if coverage and not skip_test:
+        stale = list(build_path.rglob("*.gcda")) + list(build_path.rglob("*.gcno"))
+        if stale:
+            console.print(
+                f"[yellow]Clearing {len(stale)} stale .gcda/.gcno files...[/yellow]"
+            )
+            for f in stale:
+                f.unlink()
+
     # ── Build ──
     console.rule("[bold blue]Build")
     if use_preset:
@@ -670,14 +680,6 @@ def main(
                 "[bold red]Could not find xrpld binary in build tree[/bold red]"
             )
             sys.exit(1)
-
-    # ── Clear stale coverage data ──
-    if coverage and not skip_test:
-        gcda_files = list(build_path.rglob("*.gcda"))
-        if gcda_files:
-            console.print(f"[yellow]Clearing {len(gcda_files)} .gcda files...[/yellow]")
-            for f in gcda_files:
-                f.unlink()
 
     # ── Test ──
     if not skip_test:
