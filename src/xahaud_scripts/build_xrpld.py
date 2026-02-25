@@ -333,6 +333,34 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
             )
 
 
+def _find_gtest_binary(build_path: Path, target: str, build_type: str) -> Path:
+    """Find a gtest binary in the build tree.
+
+    Searches conan cmake_layout path first, then standard locations.
+    """
+    # Conan cmake_layout: build/build/{Type}/src/tests/libxrpl/{target}
+    type_dir = build_path / "build" / build_type / "src" / "tests" / "libxrpl"
+    # Standard layout: build/src/tests/libxrpl/{target}
+    std_dir = build_path / "src" / "tests" / "libxrpl"
+
+    for search_dir in [type_dir, std_dir]:
+        candidate = search_dir / target
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            debug(f"Found gtest binary: {candidate}")
+            return candidate
+
+    # Fallback: rglob
+    for match in build_path.rglob(target):
+        if match.is_file() and os.access(match, os.X_OK):
+            debug(f"Found gtest binary (rglob): {match}")
+            return match
+
+    console.print(
+        f"[bold red]Could not find gtest binary '{target}' in build tree[/bold red]"
+    )
+    sys.exit(1)
+
+
 def run_cmd(
     cmd: list[str], *, cwd: Path | None = None, env: dict | None = None
 ) -> None:
@@ -576,9 +604,22 @@ def main(
             cwd=root,
         )
 
+    # Classify test patterns into beast vs gtest
+    beast_patterns = []
+    gtest_targets: list[tuple[str, str | None]] = []  # (target, optional filter)
+    for pat in test_patterns:
+        if pat.startswith("xrpl.test."):
+            parts = pat.split(":", 1)
+            gtest_targets.append((parts[0], parts[1] if len(parts) > 1 else None))
+        else:
+            beast_patterns.append(pat)
+
+    needs_beast = not test_patterns or beast_patterns
+    needs_xrpld = (not skip_test and needs_beast) or coverage
+
     # Find the xrpld binary (may be nested when conan cmake_layout is used)
     xrpld_binary = None
-    if not skip_test or coverage:
+    if needs_xrpld:
         # Prefer build-type-specific path (conan cmake_layout: build/build/{Type}/)
         type_dir = build_path / "build" / build_type
         for search_dir in [type_dir, build_path]:
@@ -614,29 +655,44 @@ def main(
     # ── Test ──
     if not skip_test:
         console.rule("[bold blue]Tests")
-        if test_patterns:
-            for i, pat in enumerate(test_patterns):
-                console.print(f"[bold]Run {i + 1}/{len(test_patterns)}:[/bold] {pat}")
+
+        # Run beast-style tests
+        if needs_beast:
+            if beast_patterns:
+                for i, pat in enumerate(beast_patterns):
+                    console.print(
+                        f"[bold]Run {i + 1}/{len(beast_patterns)}:[/bold] {pat}"
+                    )
+                    run_cmd(
+                        [
+                            str(xrpld_binary),
+                            "--unittest",
+                            pat,
+                            "--unittest-jobs",
+                            str(jobs),
+                        ],
+                        cwd=root,
+                    )
+            else:
                 run_cmd(
                     [
                         str(xrpld_binary),
                         "--unittest",
-                        pat,
                         "--unittest-jobs",
                         str(jobs),
                     ],
                     cwd=root,
                 )
-        else:
-            run_cmd(
-                [
-                    str(xrpld_binary),
-                    "--unittest",
-                    "--unittest-jobs",
-                    str(jobs),
-                ],
-                cwd=root,
-            )
+
+        # Run gtest targets
+        for target, gtest_filter in gtest_targets:
+            binary = _find_gtest_binary(build_path, target, build_type)
+            label = f"{target}:{gtest_filter}" if gtest_filter else target
+            console.print(f"[bold]GTest:[/bold] {label}")
+            cmd = [str(binary)]
+            if gtest_filter:
+                cmd.append(f"--gtest_filter={gtest_filter}")
+            run_cmd(cmd, cwd=root)
 
     # ── Coverage Report ──
     if coverage:
@@ -686,7 +742,7 @@ def main(
             "include/xrpl/beast/test",
             "-e",
             "include/xrpl/beast/unit_test",
-            f"--object-directory={xrpld_binary.parent if xrpld_binary else build_path}",
+            f"--object-directory={build_path}",
         ]
 
         # Resolve files to filter
