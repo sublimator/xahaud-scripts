@@ -756,7 +756,7 @@ def main(
             "include/xrpl/beast/test",
             "-e",
             "include/xrpl/beast/unit_test",
-            f"--object-directory={build_path}",
+            f"--object-directory={xrpld_binary.parent if xrpld_binary else build_path}",
         ]
 
         # TODO: --cover-diff should narrow gcovr to only changed files for
