@@ -622,6 +622,40 @@ def main(
             cwd=root,
         )
 
+    # ── Verify .gcno files exist for coverage ──
+    if coverage and not any(build_path.rglob("*.gcno")):
+        console.print(
+            "[yellow]No .gcno files found — forcing clean rebuild "
+            "to regenerate coverage instrumentation...[/yellow]"
+        )
+        if use_preset:
+            run_cmd(
+                [
+                    "cmake",
+                    "--build",
+                    "--preset",
+                    preset_name,
+                    "--clean-first",
+                    "--parallel",
+                    str(jobs),
+                ],
+                cwd=root,
+            )
+        else:
+            run_cmd(
+                [
+                    "cmake",
+                    "--build",
+                    str(build_path),
+                    "--config",
+                    build_type,
+                    "--clean-first",
+                    "--parallel",
+                    str(jobs),
+                ],
+                cwd=root,
+            )
+
     # Classify test patterns into beast vs gtest
     beast_patterns = []
     gtest_targets: list[tuple[str, str | None]] = []  # (target, optional filter)
