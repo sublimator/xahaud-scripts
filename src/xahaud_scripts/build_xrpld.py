@@ -18,6 +18,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from xahaud_scripts.utils.coverage_diff import parse_gcovr_exclusions
+
 console = Console()
 VERBOSE = False
 
@@ -226,6 +228,14 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
                 f"  {filepath}: {len(line_cov)} executable lines in coverage, "
                 f"{len(ranges)} diff hunks"
             )
+
+        # Parse GCOVR_EXCL markers
+        excluded = parse_gcovr_exclusions(root / filepath)
+        if excluded:
+            debug(
+                f"  {filepath}: {len(excluded)} lines excluded via GCOVR_EXCL markers"
+            )
+
         uncovered_ranges: list[tuple[int, int]] = []
         file_changed = 0
         file_covered = 0
@@ -233,6 +243,12 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
         for start, end in ranges:
             run_start = None
             for lineno in range(start, end + 1):
+                if lineno in excluded:
+                    debug(f"    L{lineno}: excluded (GCOVR_EXCL)")
+                    if run_start is not None:
+                        uncovered_ranges.append((run_start, lineno - 1))
+                        run_start = None
+                    continue
                 hits = line_cov.get(lineno)
                 if hits is None:
                     # Non-executable line (comments, braces, etc.) — don't count

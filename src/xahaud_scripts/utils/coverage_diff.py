@@ -38,6 +38,37 @@ SOURCE_EXTENSIONS = (".cpp", ".h", ".c", ".hpp", ".ipp")
 # Directories to skip (test files, external deps)
 SKIP_PREFIXES = ("src/test/", "src/tests/", "external/")
 
+# gcovr exclusion markers
+_RE_EXCL_LINE = re.compile(r"\bGCOVR_EXCL_LINE\b")
+_RE_EXCL_START = re.compile(r"\bGCOVR_EXCL_START\b")
+_RE_EXCL_STOP = re.compile(r"\bGCOVR_EXCL_STOP\b")
+
+
+def parse_gcovr_exclusions(filepath: str | Path) -> set[int]:
+    """Parse GCOVR_EXCL_LINE/START/STOP markers from a source file.
+
+    Returns the set of 1-indexed line numbers that should be excluded
+    from coverage accounting.
+    """
+    path = Path(filepath)
+    if not path.exists():
+        return set()
+
+    excluded: set[int] = set()
+    in_block = False
+
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        if _RE_EXCL_START.search(line):
+            in_block = True
+            excluded.add(lineno)
+        elif _RE_EXCL_STOP.search(line):
+            excluded.add(lineno)
+            in_block = False
+        elif in_block or _RE_EXCL_LINE.search(line):
+            excluded.add(lineno)
+
+    return excluded
+
 
 @dataclass
 class DiffCoverageResult:
@@ -268,8 +299,17 @@ def compute_diff_coverage(
         for start, end in ranges:
             all_changed.update(range(start, end + 1))
 
-        # Find coverage data for this file
+        # Remove lines excluded by GCOVR_EXCL markers
         abs_path = os.path.join(repo_root, rel_path)
+        excluded = parse_gcovr_exclusions(abs_path)
+        if excluded & all_changed:
+            logger.debug(
+                f"{rel_path}: excluding {len(excluded & all_changed)} lines "
+                f"via GCOVR_EXCL markers"
+            )
+            all_changed -= excluded
+
+        # Find coverage data for this file
         real_path = os.path.realpath(abs_path)
         file_cov = cov_by_realpath.get(real_path)
 
