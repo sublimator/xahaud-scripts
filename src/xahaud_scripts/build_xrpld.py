@@ -833,5 +833,42 @@ def main(
     console.print("\n[bold green]Done![/bold green]")
 
 
+@click.command("coverage-diff")
+@click.option(
+    "--since",
+    default="origin/develop",
+    help="Commitish to diff against (default: origin/develop).",
+)
+@click.option(
+    "--build-dir",
+    type=click.Path(),
+    default="build",
+    help="Build directory containing coverage.json.",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
+def coverage_diff(since: str, build_dir: str, verbose: bool) -> None:
+    """Show uncovered diff lines from an existing coverage.json.
+
+    Reads the JSON report from a previous coverage run — no build,
+    test, or gcovr execution needed.
+    """
+    global VERBOSE  # noqa: PLW0603
+    VERBOSE = verbose
+
+    root = _find_root()
+    build_path = root / build_dir
+    json_report = build_path / "coverage" / "coverage.json"
+
+    if not json_report.exists():
+        console.print(
+            f"[bold red]No coverage.json found at {json_report}[/bold red]\n"
+            f"Run [bold]xr-build --coverage[/bold] first to generate it."
+        )
+        sys.exit(1)
+
+    console.print(f"[dim]Using {json_report}[/dim]")
+    show_uncovered_diff(since, json_report, root)
+
+
 if __name__ == "__main__":
     main()
