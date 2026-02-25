@@ -797,7 +797,10 @@ def main(
 
         if filter_files:
             for ff in filter_files:
-                gcovr_cmd += ["--filter", ff]
+                # gcovr --filter is a regex matched against absolute paths,
+                # so convert relative paths to absolute for exact matching.
+                abs_ff = str(root / ff)
+                gcovr_cmd += ["--filter", re.escape(abs_ff)]
 
         json_report = report_dir / "coverage.json"
         run_cmd(gcovr_cmd + ["--json", str(json_report)], cwd=root)
