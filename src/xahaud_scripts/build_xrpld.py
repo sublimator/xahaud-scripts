@@ -759,8 +759,6 @@ def main(
             f"--object-directory={build_path}",
         ]
 
-        # Resolve files to filter
-        filter_files = list(cover_file)
         if cover_diff:
             result = subprocess.run(
                 [
@@ -793,14 +791,6 @@ def main(
                 console.print(f"[bold]Covering {len(diff_files)} changed files:[/bold]")
                 for df in diff_files:
                     console.print(f"  [dim]{df}[/dim]")
-                filter_files.extend(diff_files)
-
-        if filter_files:
-            for ff in filter_files:
-                # gcovr --filter is a regex matched against absolute paths,
-                # so convert relative paths to absolute for exact matching.
-                abs_ff = str(root / ff)
-                gcovr_cmd += ["--filter", re.escape(abs_ff)]
 
         json_report = report_dir / "coverage.json"
         run_cmd(gcovr_cmd + ["--json", str(json_report)], cwd=root)
