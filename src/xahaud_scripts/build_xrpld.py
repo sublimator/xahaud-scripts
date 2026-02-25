@@ -755,38 +755,12 @@ def main(
             f"--object-directory={build_path}",
         ]
 
-        if cover_diff:
-            result = subprocess.run(
-                [
-                    "git",
-                    "diff",
-                    "--name-only",
-                    "--diff-filter=ACMR",
-                    cover_diff,
-                ],
-                capture_output=True,
-                text=True,
-                cwd=root,
-            )
-            if result.returncode != 0:
-                console.print(
-                    f"[bold red]git diff failed: {result.stderr.strip()}[/bold red]"
-                )
-                sys.exit(1)
-            diff_files = [
-                f
-                for f in result.stdout.strip().splitlines()
-                if f.endswith((".cpp", ".h", ".hpp", ".ipp", ".c"))
-                and not f.startswith(("src/test/", "src/tests/", "external/"))
-            ]
-            if not diff_files:
-                console.print(
-                    f"[yellow]No source files changed since {cover_diff}[/yellow]"
-                )
-            else:
-                console.print(f"[bold]Covering {len(diff_files)} changed files:[/bold]")
-                for df in diff_files:
-                    console.print(f"  [dim]{df}[/dim]")
+        # TODO: --cover-diff should narrow gcovr to only changed files for
+        # speed, but gcovr's --filter regex doesn't reliably match source
+        # paths (tried both relative and absolute). For now we just run
+        # gcovr on everything and let show_uncovered_diff filter the JSON
+        # output to diff-changed files. Revisit if gcovr adds a proper
+        # file-list filter option.
 
         json_report = report_dir / "coverage.json"
         run_cmd(gcovr_cmd + ["--json", str(json_report)], cwd=root)
