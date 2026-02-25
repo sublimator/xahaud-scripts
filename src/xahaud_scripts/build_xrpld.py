@@ -466,10 +466,6 @@ def main(
         os.environ["PATH"] = venv_bin + os.pathsep + os.environ.get("PATH", "")
         debug(f"Added {venv_bin} to PATH")
 
-    # --cover-show-uncovered-diff implies --cover-diff origin/develop
-    if uncovered_diff and not cover_diff:
-        cover_diff = "origin/develop"
-
     root = _find_root()
     build_path = root / build_dir
     build_type = "Debug" if (is_debug or coverage) else "Release"
