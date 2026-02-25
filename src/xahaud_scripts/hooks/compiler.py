@@ -21,7 +21,7 @@ class BinaryChecker:
         "wasmcc": "curl https://raw.githubusercontent.com/aspect-build/aspect-cli/main/docs/aspect/wasmcc/install.sh | sh",
         "hook-cleaner": "git clone https://github.com/RichardAH/hook-cleaner-c.git && cd hook-cleaner-c && make && cp hook-cleaner ~/.local/bin/",
         "wat2wasm": "brew install wabt",
-        "clang-format": "brew install clang-format",
+        "clang-format": "mise install clang-format",
     }
 
     def check_binary(self, name: str) -> str | None:

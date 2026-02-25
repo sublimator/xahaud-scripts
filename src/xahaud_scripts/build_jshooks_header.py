@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from xahaud_scripts.utils.paths import get_xahaud_root
+from xahaud_scripts.utils.shell_utils import get_mise_tool_cmd
 
 
 def resolve_qjsc_path(cli_option, working_dir):
@@ -298,7 +299,8 @@ std::map<std::string, std::vector<uint8_t>> jswasm = {{"""
     # Format the output file using clang-format
     logging.info("Formatting output file...")
     try:
-        subprocess.run(["clang-format", "-i", output_file], check=True)
+        cf_cmd = get_mise_tool_cmd("clang-format")
+        subprocess.run([*cf_cmd, "-i", output_file], check=True)
         logging.info(f"Successfully generated {output_file} with {counter} hooks")
     except subprocess.CalledProcessError:
         logging.warning(

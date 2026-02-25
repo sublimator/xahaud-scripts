@@ -23,6 +23,7 @@ import click
 from xahaud_scripts.hooks import BinaryChecker, CompilationCache, WasmCompiler
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
+from xahaud_scripts.utils.shell_utils import get_mise_tool_cmd
 
 logger = make_logger(__name__)
 
@@ -105,16 +106,16 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
         Uses --assume-filename so clang-format finds the project's .clang-format
         file based on the output file's location.
         """
+        cf_cmd = get_mise_tool_cmd("clang-format")
         result = subprocess.run(
-            [
-                "clang-format",
-                f"--assume-filename={self.output_file}",
-            ],
+            [*cf_cmd, f"--assume-filename={self.output_file}"],
             input=unformatted_content,
             capture_output=True,
             text=True,
-            check=True,
         )
+        if result.returncode != 0:
+            logger.error(f"clang-format stderr: {result.stderr.strip()}")
+            result.check_returncode()
         return result.stdout
 
     def write(
@@ -148,7 +149,14 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
             logger.info("Using cached clang-format output")
             formatted_content = cache_file.read_text()
         else:
-            logger.info("Formatting with clang-format")
+            # Log which clang-format we're using
+            cf_cmd = get_mise_tool_cmd("clang-format")
+            cf_version = subprocess.run(
+                [*cf_cmd, "--version"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            logger.info(f"Formatting with {' '.join(cf_cmd)} ({cf_version})")
             formatted_content = self._format_content(unformatted_content)
             cache_file.write_text(formatted_content)
             logger.debug(f"Cached formatted output: {content_hash[:16]}...")

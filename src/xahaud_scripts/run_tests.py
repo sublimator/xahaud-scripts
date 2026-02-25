@@ -682,6 +682,13 @@ def main(
                     f"Stripping redundant '{rippled_args[0]}' from args (-u is added automatically)"
                 )
                 rippled_args = rippled_args[1:]
+            elif rippled_args and rippled_args[0].startswith("--unittest="):
+                # --unittest=SuiteName → just keep SuiteName
+                suite = rippled_args[0].split("=", 1)[1]
+                logger.warning(
+                    "Stripping redundant '--unittest=' from args (-u is added automatically)"
+                )
+                rippled_args = [suite] + rippled_args[1:]
 
             # Run rippled with the appropriate arguments
             logger.info(f"Running rippled with args: {' '.join(rippled_args)}")

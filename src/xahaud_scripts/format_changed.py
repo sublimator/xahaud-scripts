@@ -8,6 +8,7 @@ from pathlib import Path
 
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
+from xahaud_scripts.utils.shell_utils import get_mise_tool_cmd
 
 logger = make_logger(__name__)
 
@@ -145,10 +146,11 @@ def get_git_dirty_files(
 
 
 def format_cpp_file(file_path: Path, root_dir: Path) -> bool:
-    """Format a C++ file using clang-format."""
+    """Format a C++ file using clang-format (via mise)."""
     logger.info(f"Formatting C++ file: {file_path.relative_to(root_dir)}")
     try:
-        subprocess.run(["clang-format", "-i", str(file_path)], check=True)
+        cf_cmd = get_mise_tool_cmd("clang-format")
+        subprocess.run([*cf_cmd, "-i", str(file_path)], check=True)
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"Error formatting {file_path}: {e}")

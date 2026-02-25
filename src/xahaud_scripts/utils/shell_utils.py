@@ -20,6 +20,18 @@ def check_tool_exists(tool_name: str) -> bool:
     return exists
 
 
+def get_mise_tool_cmd(tool: str) -> list[str]:
+    """Get the command prefix to run a tool via mise.
+
+    Uses ``mise exec <tool> -- <tool>`` so the configured version is always
+    used, even when the shell hasn't been activated.  Falls back to bare
+    ``<tool>`` when mise is not installed.
+    """
+    if shutil.which("mise"):
+        return ["mise", "exec", tool, "--", tool]
+    return [tool]
+
+
 def get_llvm_tool_command(tool_name: str) -> list[str]:
     """Get the command to run an LLVM tool, using xcrun on macOS if available."""
     if sys.platform == "darwin" and check_tool_exists("xcrun"):
