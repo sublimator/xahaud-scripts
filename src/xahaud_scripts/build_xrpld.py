@@ -584,14 +584,14 @@ def main(
             cwd=root,
         )
 
-    # ── Clear stale coverage data before build ──
+    # ── Clear stale .gcda before tests ──
+    # Only delete .gcda (runtime), NOT .gcno (compile-time). Deleting .gcno
+    # breaks coverage when cmake skips recompilation (nothing changed).
     if coverage and not skip_test:
-        stale = list(build_path.rglob("*.gcda")) + list(build_path.rglob("*.gcno"))
-        if stale:
-            console.print(
-                f"[yellow]Clearing {len(stale)} stale .gcda/.gcno files...[/yellow]"
-            )
-            for f in stale:
+        gcda_files = list(build_path.rglob("*.gcda"))
+        if gcda_files:
+            console.print(f"[yellow]Clearing {len(gcda_files)} .gcda files...[/yellow]")
+            for f in gcda_files:
                 f.unlink()
 
     # ── Build ──
