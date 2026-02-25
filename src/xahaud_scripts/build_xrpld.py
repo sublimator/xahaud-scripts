@@ -421,6 +421,11 @@ def run_cmd(
 @click.option("--skip-test", is_flag=True, help="Skip test execution.")
 @click.option("--clean", is_flag=True, help="Remove build dir before starting.")
 @click.option(
+    "--clean-build",
+    is_flag=True,
+    help="Clean object files before building (regenerates .gcno for coverage).",
+)
+@click.option(
     "--jobs",
     type=int,
     default=multiprocessing.cpu_count(),
@@ -450,6 +455,7 @@ def main(
     conan: bool,
     skip_test: bool,
     clean: bool,
+    clean_build: bool,
     jobs: int,
     build_dir: str,
     patches: bool,
@@ -596,31 +602,15 @@ def main(
 
     # ── Build ──
     console.rule("[bold blue]Build")
+    build_cmd: list[str] = ["cmake", "--build"]
     if use_preset:
-        run_cmd(
-            [
-                "cmake",
-                "--build",
-                "--preset",
-                preset_name,
-                "--parallel",
-                str(jobs),
-            ],
-            cwd=root,
-        )
+        build_cmd += ["--preset", preset_name]
     else:
-        run_cmd(
-            [
-                "cmake",
-                "--build",
-                str(build_path),
-                "--config",
-                build_type,
-                "--parallel",
-                str(jobs),
-            ],
-            cwd=root,
-        )
+        build_cmd += [str(build_path), "--config", build_type]
+    if clean_build:
+        build_cmd += ["--clean-first"]
+    build_cmd += ["--parallel", str(jobs)]
+    run_cmd(build_cmd, cwd=root)
 
     # ── Verify .gcno files exist for coverage ──
     # Each .gcda (runtime) needs a matching .gcno (compile-time) for gcovr.
