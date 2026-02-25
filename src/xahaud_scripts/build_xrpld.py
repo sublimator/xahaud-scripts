@@ -214,9 +214,11 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
     for filepath, ranges in sorted(hunks.items()):
         # Skip test files and non-source
         if not filepath.endswith(SOURCE_EXTS):
+            debug(f"  skip (not source): {filepath}")
             skipped_files += 1
             continue
         if any(filepath.startswith(p) for p in SKIP_PREFIXES):
+            debug(f"  skip (test/external): {filepath}")
             skipped_files += 1
             continue
 
@@ -330,6 +332,11 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
                     )
                 else:
                     console.print(f"  [red]{label}[/red]: uncovered")
+
+    debug(
+        f"summary: {total_diff_files} diff files, {skipped_files} skipped, "
+        f"{total_covered}/{total_changed} covered"
+    )
 
     if total_changed > 0:
         pct = total_covered / total_changed * 100
@@ -473,6 +480,10 @@ def main(
     if venv_bin not in os.environ.get("PATH", ""):
         os.environ["PATH"] = venv_bin + os.pathsep + os.environ.get("PATH", "")
         debug(f"Added {venv_bin} to PATH")
+
+    # --cover-show-uncovered-diff implies --cover-diff origin/develop
+    if uncovered_diff and not cover_diff:
+        cover_diff = "origin/develop"
 
     root = _find_root()
     build_path = root / build_dir
