@@ -170,6 +170,41 @@ class RPCClient(Protocol):
         """
         ...
 
+    def runtime_config(
+        self,
+        node_id: int,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Send a runtime_config RPC to a node.
+
+        Args:
+            node_id: The node ID (0, 1, 2, etc.)
+            params: Optional params (set/clear/clear_all).
+                    Empty params returns current config.
+
+        Returns:
+            The runtime_config result dict, or None if query failed
+        """
+        ...
+
+    def connect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to connect to a peer.
+
+        Args:
+            node_id: The node ID to send the connect RPC to.
+            ip: IP address of the peer to connect to.
+            port: Peer port of the target node.
+
+        Returns:
+            The connect result dict, or None if query failed.
+        """
+        ...
+
     def get_node_data(
         self,
         node_id: int,

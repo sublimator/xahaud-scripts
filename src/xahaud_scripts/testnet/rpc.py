@@ -210,6 +210,32 @@ class RequestsRPCClient:
         params = {"inject": True} if inject else {}
         return self._call(node_id, "ping", params)
 
+    def runtime_config(
+        self,
+        node_id: int,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Send a runtime_config RPC to a node.
+
+        Args:
+            node_id: The node ID (0, 1, 2, etc.)
+            params: Optional params (set/clear/clear_all).
+                    Empty params returns current config.
+
+        Returns:
+            The runtime_config result dict, or None if query failed
+        """
+        return self._call(node_id, "runtime_config", params or {})
+
+    def connect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to connect to a peer."""
+        return self._call(node_id, "connect", {"ip": ip, "port": port})
+
     def get_node_data(
         self,
         node_id: int,

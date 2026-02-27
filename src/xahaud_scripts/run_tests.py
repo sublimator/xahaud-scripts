@@ -84,7 +84,7 @@ def build_rippled(
     ccache_debug: bool = False,
     target: str = "rippled",
     log_line_numbers: bool = True,
-    build_type: str = "Debug",
+    build_type: str = "Release",
     dry_run: bool = False,
     unity: bool = False,
 ) -> bool:
@@ -416,7 +416,7 @@ def run_rippled(
 @click.option(
     "--build-type",
     type=click.Choice(["Debug", "Release", "Coverage"], case_sensitive=False),
-    default="Debug",
+    default="Release",
     help="CMake build type: Debug, Release, or Coverage (Debug + coverage instrumentation + report).",
 )
 @click.option(
@@ -548,7 +548,7 @@ def main(
     if coverage and build_type.lower() != "debug":
         raise click.UsageError(
             f"--coverage requires Debug build, but --build-type={build_type} was specified. "
-            "Coverage instrumentation only works with --build-type=Debug (the default)."
+            "Coverage instrumentation only works with --build-type=Debug."
         )
 
     # Check environment variable for ccache if not explicitly set

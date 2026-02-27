@@ -69,6 +69,7 @@ class TestNetwork:
         self._rpc = rpc_client
         self._process_mgr = process_manager
         self._nodes: list[NodeInfo] = []
+        self._rc_specs: list[str] = []
 
     @property
     def nodes(self) -> list[NodeInfo]:
@@ -90,10 +91,16 @@ class TestNetwork:
         """Get base directory."""
         return self._base_dir
 
+    @property
+    def rc_specs(self) -> list[str]:
+        """Get runtime config specs (from generate or network.json)."""
+        return list(self._rc_specs)
+
     def generate(
         self,
         log_levels: dict[str, str] | None = None,
         find_ports: bool = False,
+        rc_specs: list[str] | None = None,
     ) -> None:
         """Generate all node configurations.
 
@@ -122,6 +129,9 @@ class TestNetwork:
             process_manager=self._process_mgr,
             find_ports=find_ports,
         )
+
+        # Store runtime config specs
+        self._rc_specs = rc_specs or []
 
         # Save network.json
         self._save_network_info()
@@ -455,7 +465,7 @@ class TestNetwork:
 
     def _save_network_info(self) -> None:
         """Save network.json with network metadata."""
-        network_info = {
+        network_info: dict[str, Any] = {
             "network_id": self._config.network_id,
             "node_count": self._config.node_count,
             "base_port_peer": self._config.base_port_peer,
@@ -475,6 +485,11 @@ class TestNetwork:
                 for node in self._nodes
             ],
         }
+
+        # Persist runtime config specs if any
+        rc_specs = getattr(self, "_rc_specs", [])
+        if rc_specs:
+            network_info["runtime_config"] = rc_specs
 
         network_file = self._base_dir / "network.json"
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -526,6 +541,13 @@ class TestNetwork:
             # Update RPC client to use the correct ports
             self._rpc.base_port_rpc = network_info["base_port_rpc"]
 
+        # Load runtime config specs if present
+        self._rc_specs = network_info.get("runtime_config", [])
+
         logger.info(f"Loaded {len(self._nodes)} nodes from network.json")
         for node in self._nodes:
             logger.info(f"  Node {node.id}: config={node.config_path}")
+        if self._rc_specs:
+            logger.info(f"  Runtime config specs: {len(self._rc_specs)}")
+            for spec in self._rc_specs:
+                logger.info(f"    {spec}")

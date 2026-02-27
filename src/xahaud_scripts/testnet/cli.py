@@ -195,6 +195,13 @@ def testnet(
     default=False,
     help="Auto-find free ports if defaults are in use (default: error if ports in use).",
 )
+@click.option(
+    "--rc",
+    "rc_specs",
+    multiple=True,
+    help="Runtime config spec. Format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. "
+    "Persisted in network.json, auto-applied on run. Can be repeated.",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -202,6 +209,7 @@ def generate(
     log_level_suite: str | None,
     log_levels: tuple[str, ...],
     find_ports: bool,
+    rc_specs: tuple[str, ...],
 ) -> None:
     """Generate configs for all nodes.
 
@@ -212,8 +220,9 @@ def generate(
         testnet generate
         testnet generate --node-count 3
         testnet generate --log-level-suite consensus
-        testnet generate --log-level-suite consensus --log-level Shuffle=debug
-        testnet generate --find-ports  # Auto-find free ports if defaults in use
+        testnet generate --rc delay=200,jitter=50
+        testnet generate --rc delay=200 --rc n0@n2:drop=100
+        testnet generate --find-ports
     """
     from xahaud_scripts.testnet.generator import LOG_LEVEL_SUITES
 
@@ -239,16 +248,32 @@ def generate(
             else:
                 logger.info(f"Log level disabled: {partition}")
 
+    # Validate --rc specs (parse to catch errors early)
+    if rc_specs:
+        from xahaud_scripts.testnet.cli_handlers.rc import parse_rc_spec
+
+        for spec in rc_specs:
+            parse_rc_spec(spec)  # raises on invalid
+        logger.info(f"Runtime config specs: {len(rc_specs)}")
+        for spec in rc_specs:
+            logger.info(f"  {spec}")
+
     from xahaud_scripts.testnet.generator import PortConflictError
 
     network = _create_network(ctx, node_count=node_count)
     try:
-        network.generate(log_levels=log_level_dict, find_ports=find_ports)
+        network.generate(
+            log_levels=log_level_dict,
+            find_ports=find_ports,
+            rc_specs=list(rc_specs) if rc_specs else None,
+        )
     except PortConflictError as e:
         raise click.ClickException(str(e)) from e
 
     click.echo(f"\nGenerated configs for {node_count} nodes")
     click.echo(f"  Base directory: {network.base_dir}")
+    if rc_specs:
+        click.echo(f"  Runtime config: {len(rc_specs)} spec(s) persisted")
     click.echo("\nValidator public keys:")
     for node in network.nodes:
         click.echo(f"  Node {node.id} [{node.role}]: {node.public_key}")
@@ -347,6 +372,19 @@ def generate(
     default=False,
     help="Kill all nodes after test script finishes (keeps configs/logs)",
 )
+@click.option(
+    "--rc",
+    "rc_specs",
+    multiple=True,
+    help="Runtime config spec (overrides/adds to generate-time specs). "
+    "Format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. Can be repeated.",
+)
+@click.option(
+    "--rc-clear",
+    is_flag=True,
+    default=False,
+    help="Ignore generate-time --rc specs for this run.",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -371,6 +409,8 @@ def run(
     test_script: Path | None,
     test_script_log_file: Path | None,
     test_script_teardown: bool,
+    rc_specs: tuple[str, ...],
+    rc_clear: bool,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -466,6 +506,36 @@ def run(
 
     if ctx.get_parameter_source("slave_delay") == ParameterSource.COMMANDLINE:
         no_delays = False
+
+    # Build runtime config env vars from --rc specs
+    # Load generate-time specs from network.json, merge with run-time overrides
+    if not rc_clear:
+        import contextlib
+
+        with contextlib.suppress(FileNotFoundError):
+            network._load_network_info()
+
+    if not rc_clear and (network.rc_specs or rc_specs):
+        from xahaud_scripts.testnet.cli_handlers.rc import (
+            build_runtime_config_envs,
+            parse_rc_spec,
+        )
+
+        # Validate run-time specs
+        for spec in rc_specs:
+            parse_rc_spec(spec)
+
+        # Merge: generate-time specs + run-time overrides
+        all_specs_raw = list(network.rc_specs if not rc_clear else []) + list(rc_specs)
+        if all_specs_raw and network.nodes:
+            all_specs = [parse_rc_spec(s) for s in all_specs_raw]
+            rc_envs = build_runtime_config_envs(all_specs, network.nodes)
+
+            for nid, json_val in rc_envs.items():
+                if nid not in node_env:
+                    node_env[nid] = {}
+                node_env[nid]["XAHAU_RUNTIME_CONFIG"] = json_val
+                logger.info(f"  n{nid}: XAHAU_RUNTIME_CONFIG={json_val}")
 
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
@@ -777,6 +847,123 @@ def topology(ctx: click.Context) -> None:
     display_topology(network.rpc_client, network.nodes)
 
 
+@testnet.command("topology-graph")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output file path (without extension). Default: testnet/topology",
+)
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(["png", "svg", "pdf"], case_sensitive=False),
+    default="png",
+    help="Output format (default: png).",
+)
+@click.pass_context
+def topology_graph(ctx: click.Context, output: str | None, fmt: str) -> None:
+    """Generate a directed graph of peer connections.
+
+    Queries each node's peers and renders a Graphviz digraph
+    showing outbound connections between nodes.
+
+    \b
+    Examples:
+        x-testnet topology-graph
+        x-testnet topology-graph -f svg
+        x-testnet topology-graph -o /tmp/net
+    """
+    import graphviz
+
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    # Build address → node name lookup
+    addr_to_node: dict[str, str] = {}
+    for node in network.nodes:
+        addr_to_node[f"127.0.0.1:{node.port_peer}"] = f"n{node.id}"
+
+    dot = graphviz.Digraph(
+        "topology",
+        format=fmt,
+        graph_attr={"rankdir": "LR", "label": "Peer Topology", "fontsize": "16"},
+        node_attr={"shape": "circle", "style": "filled", "fillcolor": "lightblue"},
+        edge_attr={"color": "#666666"},
+    )
+
+    # Add all nodes
+    for node in network.nodes:
+        label = f"n{node.id}\n:{node.port_peer}"
+        dot.node(f"n{node.id}", label=label)
+
+    # Query peers and add edges
+    for node in network.nodes:
+        peers = network.rpc_client.peers(node.id)
+        if peers is None:
+            # Mark offline nodes
+            dot.node(f"n{node.id}", fillcolor="salmon")
+            continue
+
+        for peer in peers:
+            address = peer.get("address", "")
+            # If address resolves to a known node's listening port,
+            # this is an outbound connection (we connected to them).
+            # Ephemeral ports are inbound — skip (the other side draws it).
+            peer_name = addr_to_node.get(address)
+            if peer_name is not None:
+                dot.edge(f"n{node.id}", peer_name)
+
+    out_path = output or str(network.base_dir / "topology")
+    rendered = dot.render(out_path, cleanup=True)
+    click.echo(f"Topology graph: {rendered}")
+
+    # Try to open it
+    import subprocess
+
+    subprocess.Popen(["open", rendered], stderr=subprocess.DEVNULL)
+
+
+@testnet.command()
+@click.argument("source")
+@click.argument("target")
+@click.pass_context
+def connect(ctx: click.Context, source: str, target: str) -> None:
+    """Tell a node to connect to a peer.
+
+    SOURCE initiates an outbound connection to TARGET.
+
+    \b
+    Examples:
+        x-testnet connect n1 n2
+    """
+    source_id = _parse_node_spec(source)
+    target_id = _parse_node_spec(target)
+
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    # Resolve target's peer port
+    target_node = next((n for n in network.nodes if n.id == target_id), None)
+    if target_node is None:
+        raise click.ClickException(f"Unknown node: n{target_id}")
+
+    result = network.rpc_client.connect(source_id, "127.0.0.1", target_node.port_peer)
+    if result is None:
+        click.echo(f"Failed to reach n{source_id} (offline?)")
+    elif result.get("status") == "success":
+        click.echo(f"n{source_id} → n{target_id}: connecting")
+    else:
+        click.echo(f"n{source_id} → n{target_id}: {result}")
+
+
 @testnet.command()
 @click.pass_context
 def ports(ctx: click.Context) -> None:
@@ -896,6 +1083,158 @@ def clean(ctx: click.Context) -> None:
     network = _create_network(ctx)
     network.clean()
     click.echo("Cleaned up generated files")
+
+
+# ---------------------------------------------------------------------------
+# rc command group (runtime config via RPC)
+# ---------------------------------------------------------------------------
+
+
+@testnet.group()
+@click.pass_context
+def rc(ctx: click.Context) -> None:
+    """Manage runtime config (send delays, jitter, packet drops).
+
+    Controls the runtime_config RPC on running nodes to simulate
+    network conditions for testing.
+
+    Spec format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+
+    \b
+    Params: delay (ms), jitter (ms), drop (0-100%), msg (type names joined with +)
+    Msg types: proposal, validation, transaction, manifests, ledger_data, get_ledger
+
+    \b
+    Examples:
+        x-testnet rc show
+        x-testnet rc set delay=200,jitter=50
+        x-testnet rc set n0@n2:drop=100,msg=proposal
+        x-testnet rc clear
+    """
+    pass
+
+
+@rc.command("show")
+@click.argument("node", required=False)
+@click.pass_context
+def rc_show(ctx: click.Context, node: str | None) -> None:
+    """Show runtime config on all nodes (or a specific node).
+
+    Queries every node via RPC and displays the active config.
+
+    \b
+    Examples:
+        x-testnet rc show            # all nodes
+        x-testnet rc show n0         # node 0 only
+    """
+    from xahaud_scripts.testnet.cli_handlers.rc import rc_show_handler
+
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    node_ids = None
+    if node is not None:
+        node_ids = [_parse_node_spec(node)]
+
+    rc_show_handler(network.rpc_client, network.nodes, node_ids)
+
+
+@rc.command("set")
+@click.argument("specs", nargs=-1, required=True)
+@click.pass_context
+def rc_set(ctx: click.Context, specs: tuple[str, ...]) -> None:
+    """Set runtime config on running nodes.
+
+    SPECS are runtime config specs in DSL format.
+
+    \b
+    Examples:
+        x-testnet rc set delay=200
+        x-testnet rc set delay=200,jitter=50
+        x-testnet rc set n0:delay=500
+        x-testnet rc set n0@n2:drop=100,msg=proposal
+        x-testnet rc set n0@n2:drop=100 n2@n0:drop=100
+    """
+    from xahaud_scripts.testnet.cli_handlers.rc import (
+        parse_rc_spec,
+        rc_set_handler,
+    )
+
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    parsed = [parse_rc_spec(s) for s in specs]
+    rc_set_handler(network.rpc_client, network.nodes, parsed)
+
+
+@rc.command("clear")
+@click.argument("target", required=False)
+@click.pass_context
+def rc_clear(ctx: click.Context, target: str | None) -> None:
+    """Clear runtime config on running nodes.
+
+    TARGET is optional — clear a specific node or node@peer, or omit to clear all.
+
+    \b
+    Examples:
+        x-testnet rc clear                  # clear_all on all nodes
+        x-testnet rc clear n0               # clear_all on n0
+        x-testnet rc clear n0@n2            # clear n2 target on n0
+    """
+    from xahaud_scripts.testnet.cli_handlers.rc import rc_clear_handler
+
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    node_ids = None
+    peer_ids = None
+
+    if target is not None:
+        if "@" in target:
+            node_part, peer_part = target.split("@", 1)
+            node_ids = [_parse_node_spec(node_part)]
+            peer_ids = [_parse_node_spec(peer_part)]
+        else:
+            node_ids = [_parse_node_spec(target)]
+
+    rc_clear_handler(network.rpc_client, network.nodes, node_ids, peer_ids)
+
+
+@rc.command("raw")
+@click.argument("node")
+@click.argument("json_params")
+@click.pass_context
+def rc_raw(ctx: click.Context, node: str, json_params: str) -> None:
+    """Send raw runtime_config RPC JSON to a node.
+
+    \b
+    Examples:
+        x-testnet rc raw n0 '{"set":{"*":{"send_delay_ms":200}}}'
+        x-testnet rc raw n0 '{"clear_all":true}'
+    """
+    node_id = _parse_node_spec(node)
+    network = _create_network(ctx)
+
+    try:
+        params = json.loads(json_params)
+    except json.JSONDecodeError as e:
+        raise click.BadParameter(f"Invalid JSON: {e}") from e
+
+    result = network.rpc_client.runtime_config(node_id, params)
+    if result is None:
+        click.echo(f"Failed to reach n{node_id} (offline?)")
+        sys.exit(1)
+    else:
+        click.echo(json.dumps(result, indent=2))
 
 
 @testnet.command("create-config")

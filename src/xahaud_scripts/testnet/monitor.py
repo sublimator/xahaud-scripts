@@ -368,19 +368,26 @@ def display_topology(
     """
     console.print("\n[bold]Network Peer Topology[/bold]\n")
 
+    # Build address → node name lookup (peer listening ports)
+    addr_to_node: dict[str, str] = {}
+    for n in nodes:
+        addr_to_node[f"127.0.0.1:{n.port_peer}"] = f"n{n.id}"
+
     for node in nodes:
         peers = rpc_client.peers(node.id)
 
         if peers is None:
-            console.print(f"Node {node.id} [{node.role}]: [red]Query failed[/red]\n")
+            console.print(f"n{node.id} [{node.role}]: [red]Query failed[/red]\n")
             continue
 
-        console.print(f"Node {node.id} [{node.role}] - {len(peers)} peer(s):")
+        console.print(f"n{node.id} [{node.role}] - {len(peers)} peer(s):")
         for peer in peers:
             address = peer.get("address", "unknown")
+            peer_name = addr_to_node.get(address)
+            label = f"{peer_name} ({address})" if peer_name else address
             peer_type = peer.get("type", "null")
             uptime = peer.get("uptime", 0)
-            console.print(f"  -> {address} (type: {peer_type}, uptime: {uptime}s)")
+            console.print(f"  -> {label} (type: {peer_type}, uptime: {uptime}s)")
         console.print()
 
 
