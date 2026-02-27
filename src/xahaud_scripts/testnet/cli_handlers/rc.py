@@ -273,7 +273,7 @@ def rc_show_handler(
 
     table = Table(title="Runtime Config")
     table.add_column("Node", style="cyan", no_wrap=True)
-    table.add_column("RPC", style="dim", no_wrap=True)
+    table.add_column("Peer", style="dim", no_wrap=True)
     table.add_column("Target", style="green")
     table.add_column("Delay ms", justify="right")
     table.add_column("Jitter ms", justify="right")
@@ -284,23 +284,23 @@ def rc_show_handler(
 
     for nid in target_ids:
         node = node_by_id.get(nid)
-        rpc_label = f":{node.port_rpc}" if node else ""
+        peer_label = f":{node.port_peer}" if node else ""
 
         result = rpc_client.runtime_config(nid)
         if result is None:
-            table.add_row(f"n{nid}", rpc_label, "[red]offline[/red]", "", "", "", "")
+            table.add_row(f"n{nid}", peer_label, "[red]offline[/red]", "", "", "", "")
             continue
 
         configs = result.get("configs", {})
         if not configs:
-            table.add_row(f"n{nid}", rpc_label, "[dim]—[/dim]", "", "", "", "")
+            table.add_row(f"n{nid}", peer_label, "[dim]—[/dim]", "", "", "", "")
             continue
 
         any_data = True
         first = True
         for target, cfg in sorted(configs.items()):
             node_label = f"n{nid}" if first else ""
-            rpc_col = rpc_label if first else ""
+            peer_col = peer_label if first else ""
             first = False
 
             # Reverse-resolve peer address to node name
@@ -317,7 +317,7 @@ def rc_show_handler(
 
             table.add_row(
                 node_label,
-                rpc_col,
+                peer_col,
                 target_label,
                 str(delay) if delay is not None else "—",
                 str(jitter) if jitter is not None else "—",
