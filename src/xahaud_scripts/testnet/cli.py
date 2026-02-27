@@ -916,7 +916,13 @@ def topology_graph(ctx: click.Context, output: str | None, fmt: str) -> None:
             # Ephemeral ports are inbound — skip (the other side draws it).
             peer_name = addr_to_node.get(address)
             if peer_name is not None:
-                dot.edge(f"n{node.id}", peer_name)
+                dot.edge(
+                    f"n{node.id}",
+                    peer_name,
+                    dir="both",
+                    arrowtail="dotnormal",
+                    arrowhead="normal",
+                )
 
     out_path = output or str(network.base_dir / "topology")
     rendered = dot.render(out_path, cleanup=True)
