@@ -937,7 +937,12 @@ def topology_graph(ctx: click.Context, output: str | None, fmt: str) -> None:
 @testnet.command()
 @click.argument("source")
 @click.argument("target")
-@click.option("--bi", is_flag=True, default=False, help="Bidirectional: both sides connect to each other.")
+@click.option(
+    "--bi",
+    is_flag=True,
+    default=False,
+    help="Bidirectional: both sides connect to each other.",
+)
 @click.pass_context
 def connect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
     """Tell a node to connect to a peer.
@@ -978,7 +983,12 @@ def connect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
 @testnet.command()
 @click.argument("source")
 @click.argument("target")
-@click.option("--bi", is_flag=True, default=False, help="Bidirectional: both sides disconnect from each other.")
+@click.option(
+    "--bi",
+    is_flag=True,
+    default=False,
+    help="Bidirectional: both sides disconnect from each other.",
+)
 @click.pass_context
 def disconnect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
     """Tell a node to disconnect from a peer.
