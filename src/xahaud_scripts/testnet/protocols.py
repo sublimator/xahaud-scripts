@@ -205,6 +205,24 @@ class RPCClient(Protocol):
         """
         ...
 
+    def disconnect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to disconnect from a peer.
+
+        Args:
+            node_id: The node ID to send the disconnect RPC to.
+            ip: IP address of the peer to disconnect from.
+            port: Peer port of the target node.
+
+        Returns:
+            The disconnect result dict, or None if query failed.
+        """
+        ...
+
     def get_node_data(
         self,
         node_id: int,

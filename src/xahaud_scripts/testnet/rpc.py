@@ -6,6 +6,7 @@ for querying and controlling xahaud nodes.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import requests
@@ -67,11 +68,15 @@ class RequestsRPCClient:
             "params": [params or {}],
         }
 
+        logger.debug(f"RPC n{node_id} -> {url}: {json.dumps(payload)}")
+
         try:
             response = requests.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
-            return data.get("result")
+            result = data.get("result")
+            logger.debug(f"RPC n{node_id} <- {json.dumps(result)}")
+            return result
         except requests.exceptions.Timeout:
             logger.debug(f"RPC timeout for {method} on node {node_id}")
             return None
@@ -235,6 +240,15 @@ class RequestsRPCClient:
     ) -> dict[str, Any] | None:
         """Tell a node to connect to a peer."""
         return self._call(node_id, "connect", {"ip": ip, "port": port})
+
+    def disconnect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to disconnect from a peer."""
+        return self._call(node_id, "disconnect", {"ip": ip, "port": port})
 
     def get_node_data(
         self,

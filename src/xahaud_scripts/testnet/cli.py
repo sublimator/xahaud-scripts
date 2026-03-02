@@ -937,8 +937,9 @@ def topology_graph(ctx: click.Context, output: str | None, fmt: str) -> None:
 @testnet.command()
 @click.argument("source")
 @click.argument("target")
+@click.option("--bi", is_flag=True, default=False, help="Bidirectional: both sides connect to each other.")
 @click.pass_context
-def connect(ctx: click.Context, source: str, target: str) -> None:
+def connect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
     """Tell a node to connect to a peer.
 
     SOURCE initiates an outbound connection to TARGET.
@@ -946,28 +947,74 @@ def connect(ctx: click.Context, source: str, target: str) -> None:
     \b
     Examples:
         x-testnet connect n1 n2
+        x-testnet connect --bi n1 n2
     """
-    source_id = _parse_node_spec(source)
-    target_id = _parse_node_spec(target)
-
     network = _create_network(ctx)
     try:
         network._load_network_info()
     except FileNotFoundError as e:
         raise click.ClickException(str(e)) from e
 
-    # Resolve target's peer port
-    target_node = next((n for n in network.nodes if n.id == target_id), None)
-    if target_node is None:
-        raise click.ClickException(f"Unknown node: n{target_id}")
+    pairs = [(source, target)]
+    if bi:
+        pairs.append((target, source))
 
-    result = network.rpc_client.connect(source_id, "127.0.0.1", target_node.port_peer)
-    if result is None:
-        click.echo(f"Failed to reach n{source_id} (offline?)")
-    elif result.get("status") == "success":
-        click.echo(f"n{source_id} → n{target_id}: connecting")
-    else:
-        click.echo(f"n{source_id} → n{target_id}: {result}")
+    for src, tgt in pairs:
+        src_id = _parse_node_spec(src)
+        tgt_id = _parse_node_spec(tgt)
+        tgt_node = next((n for n in network.nodes if n.id == tgt_id), None)
+        if tgt_node is None:
+            raise click.ClickException(f"Unknown node: n{tgt_id}")
+
+        result = network.rpc_client.connect(src_id, "127.0.0.1", tgt_node.port_peer)
+        if result is None:
+            click.echo(f"n{src_id} → n{tgt_id}: failed (offline?)")
+        elif result.get("status") == "success":
+            click.echo(f"n{src_id} → n{tgt_id}: connecting")
+        else:
+            click.echo(f"n{src_id} → n{tgt_id}: {result}")
+
+
+@testnet.command()
+@click.argument("source")
+@click.argument("target")
+@click.option("--bi", is_flag=True, default=False, help="Bidirectional: both sides disconnect from each other.")
+@click.pass_context
+def disconnect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
+    """Tell a node to disconnect from a peer.
+
+    SOURCE drops its connection to TARGET.
+
+    \b
+    Examples:
+        x-testnet disconnect n1 n2
+        x-testnet disconnect --bi n1 n2
+    """
+    network = _create_network(ctx)
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    pairs = [(source, target)]
+    if bi:
+        pairs.append((target, source))
+
+    for src, tgt in pairs:
+        src_id = _parse_node_spec(src)
+        tgt_id = _parse_node_spec(tgt)
+        tgt_node = next((n for n in network.nodes if n.id == tgt_id), None)
+        if tgt_node is None:
+            raise click.ClickException(f"Unknown node: n{tgt_id}")
+
+        result = network.rpc_client.disconnect(src_id, "127.0.0.1", tgt_node.port_peer)
+        if result is None:
+            click.echo(f"n{src_id} ✕ n{tgt_id}: failed (offline?)")
+        elif result.get("status") == "success":
+            msg = result.get("message", "disconnected")
+            click.echo(f"n{src_id} ✕ n{tgt_id}: {msg}")
+        else:
+            click.echo(f"n{src_id} ✕ n{tgt_id}: {result}")
 
 
 @testnet.command()
