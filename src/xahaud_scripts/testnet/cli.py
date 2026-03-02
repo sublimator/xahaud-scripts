@@ -1164,7 +1164,7 @@ def rc(ctx: click.Context) -> None:
     Spec format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
 
     \b
-    Params: delay (ms), jitter (ms), drop (0-100%), msg (type names joined with +)
+    Params: delay (ms), jitter (ms), drop (0-100%), rngdrop (0-100%), msg (type names joined with +)
     Msg types: proposal, validation, transaction, manifests, ledger_data, get_ledger
 
     \b

@@ -46,6 +46,7 @@ PARAM_MAP = {
     "delay": "send_delay_ms",
     "jitter": "send_delay_jitter_ms",
     "drop": "send_drop_pct",
+    "rngdrop": "rng_claim_drop_pct",
 }
 
 
@@ -58,6 +59,7 @@ class RuntimeConfigSpec:
     delay: int | None = None
     jitter: int | None = None
     drop: float | None = None
+    rngdrop: float | None = None
     msg: list[str] = field(default_factory=list)
 
     def to_rpc_config(self) -> dict[str, Any]:
@@ -69,6 +71,8 @@ class RuntimeConfigSpec:
             cfg["send_delay_jitter_ms"] = self.jitter
         if self.drop is not None:
             cfg["send_drop_pct"] = self.drop
+        if self.rngdrop is not None:
+            cfg["rng_claim_drop_pct"] = self.rngdrop
         if self.msg:
             cfg["message_types"] = self.msg
         return cfg
@@ -134,6 +138,10 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             result.drop = _parse_float(value, "drop")
             if not (0 <= result.drop <= 100):
                 raise click.BadParameter("drop must be 0-100")
+        elif key == "rngdrop":
+            result.rngdrop = _parse_float(value, "rngdrop")
+            if not (0 <= result.rngdrop <= 100):
+                raise click.BadParameter("rngdrop must be 0-100")
         elif key == "msg":
             types = value.split("+")
             for t in types:
@@ -145,7 +153,7 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             result.msg = types
         else:
             raise click.BadParameter(
-                f"Unknown param: {key!r}. Valid: delay, jitter, drop, msg"
+                f"Unknown param: {key!r}. Valid: delay, jitter, drop, rngdrop, msg"
             )
 
     return result
@@ -278,6 +286,7 @@ def rc_show_handler(
     table.add_column("Delay ms", justify="right")
     table.add_column("Jitter ms", justify="right")
     table.add_column("Drop %", justify="right")
+    table.add_column("RNG Drop %", justify="right")
     table.add_column("Msg Types")
 
     any_data = False
@@ -288,12 +297,14 @@ def rc_show_handler(
 
         result = rpc_client.runtime_config(nid)
         if result is None:
-            table.add_row(f"n{nid}", peer_label, "[red]offline[/red]", "", "", "", "")
+            table.add_row(
+                f"n{nid}", peer_label, "[red]offline[/red]", "", "", "", "", ""
+            )
             continue
 
         configs = result.get("configs", {})
         if not configs:
-            table.add_row(f"n{nid}", peer_label, "[dim]—[/dim]", "", "", "", "")
+            table.add_row(f"n{nid}", peer_label, "[dim]—[/dim]", "", "", "", "", "")
             continue
 
         any_data = True
@@ -313,6 +324,7 @@ def rc_show_handler(
             delay = cfg.get("send_delay_ms")
             jitter = cfg.get("send_delay_jitter_ms")
             drop = cfg.get("send_drop_pct")
+            rngdrop = cfg.get("rng_claim_drop_pct")
             msg_types = cfg.get("message_types", [])
 
             table.add_row(
@@ -322,6 +334,7 @@ def rc_show_handler(
                 str(delay) if delay is not None else "—",
                 str(jitter) if jitter is not None else "—",
                 f"{drop}" if drop is not None else "—",
+                f"{rngdrop}" if rngdrop is not None else "—",
                 "+".join(msg_types) if msg_types else "all",
             )
 
