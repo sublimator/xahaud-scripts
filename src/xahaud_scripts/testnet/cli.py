@@ -385,6 +385,11 @@ def generate(
     default=False,
     help="Ignore generate-time --rc specs for this run.",
 )
+@click.option(
+    "--generate-txns",
+    default=None,
+    help="Generate random txns each ledger. Format: N or MIN-MAX (e.g., 5-15).",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -411,6 +416,7 @@ def run(
     test_script_teardown: bool,
     rc_specs: tuple[str, ...],
     rc_clear: bool,
+    generate_txns: str | None,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -557,9 +563,46 @@ def run(
         desktop=desktop,
     )
 
+    # Parse --generate-txns
+    min_txns = max_txns = 0
+    if generate_txns:
+        if test_script:
+            raise click.UsageError(
+                "--generate-txns and --test-script are mutually exclusive."
+            )
+        if "-" in generate_txns:
+            parts = generate_txns.split("-", 1)
+            min_txns, max_txns = int(parts[0]), int(parts[1])
+        else:
+            min_txns = max_txns = int(generate_txns)
+        if min_txns < 1 or max_txns < min_txns:
+            raise click.BadParameter(
+                f"Invalid range: {generate_txns}. Use N or MIN-MAX where MIN >= 1 and MAX >= MIN.",
+                param_hint="--generate-txns",
+            )
+
     network.run(launch_config)
 
-    if test_script:
+    if generate_txns:
+        import asyncio
+
+        from xahaud_scripts.testnet.testing import run_txn_generator_with_monitor
+
+        ws_url = f"ws://localhost:{network._config.base_port_ws}"
+        try:
+            asyncio.run(
+                run_txn_generator_with_monitor(
+                    min_txns=min_txns,
+                    max_txns=max_txns,
+                    ws_url=ws_url,
+                    network_config=network._config,
+                    rpc_client=network._rpc,
+                    tracked_amendment=amendment_id,
+                )
+            )
+        except KeyboardInterrupt:
+            logger.info("Txn generator stopped")
+    elif test_script:
         # Run test script with monitor in background
         import asyncio
         import logging

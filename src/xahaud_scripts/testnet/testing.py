@@ -20,6 +20,7 @@ Example test script:
 import asyncio
 import contextlib
 import importlib.util
+import random
 from dataclasses import dataclass
 from hashlib import sha512
 from pathlib import Path
@@ -622,6 +623,200 @@ async def run_test_with_monitor(
         await run_script()
     finally:
         # Stop monitor when script finishes
+        stop_event.set()
+        monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor_task
+
+
+async def run_txn_generator_with_monitor(
+    min_txns: int,
+    max_txns: int,
+    ws_url: str,
+    network_config: Any,
+    rpc_client: Any,
+    tracked_amendment: str | None = None,
+) -> None:
+    """Run a transaction generator with the network monitor in background.
+
+    Creates test accounts from genesis, then on each ledger close submits
+    random payments from genesis to those accounts.
+
+    Args:
+        min_txns: Minimum transactions per ledger
+        max_txns: Maximum transactions per ledger
+        ws_url: WebSocket URL to connect to
+        network_config: NetworkConfig for the monitor
+        rpc_client: RPCClient for the monitor
+        tracked_amendment: Optional amendment ID to track
+    """
+    from xrpl.asyncio.transaction import sign
+    from xrpl.core.binarycodec import encode
+    from xrpl.models import AccountInfo as AccountInfoRequest
+    from xrpl.models import Fee, Ledger, ServerInfo
+    from xrpl.models.requests import SubmitOnly
+
+    from xahaud_scripts.testnet.monitor import NetworkMonitor
+
+    stop_event = asyncio.Event()
+
+    monitor = NetworkMonitor(
+        rpc_client=rpc_client,
+        network_config=network_config,
+        tracked_amendment=tracked_amendment,
+    )
+
+    async def run_monitor() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor.monitor(stop_event=stop_event)
+
+    async def run_generator() -> None:
+        await wait_for_network_ready(ws_url)
+
+        logger.info(f"Connecting to {ws_url}...")
+        async with AsyncWebsocketClient(ws_url) as raw_client:
+            client = XahauClient(raw_client)
+            await patch_definitions_from_server(client)
+
+            genesis_wallet = Wallet.from_seed(
+                GENESIS_SEED, algorithm=CryptoAlgorithm.SECP256K1
+            )
+
+            # Create and fund test accounts (batch submit, no wait)
+            accounts = []
+            logger.info(f"Creating {max_txns} txn generator accounts...")
+            for i in range(max_txns):
+                acct = create_account_info(f"txgen-{i}")
+                accounts.append(acct)
+
+            # Get current state for batch funding
+            fee_response = await client.request(Fee())
+            base_fee = fee_response.result.get("drops", {}).get("base_fee", "10")
+            server_response = await client.request(ServerInfo())
+            network_id = server_response.result.get("info", {}).get("network_id")
+            acct_response = await client.request(
+                AccountInfoRequest(account=genesis_wallet.classic_address)
+            )
+            genesis_seq = acct_response.result["account_data"]["Sequence"]
+            ledger_response = await client.request(Ledger())
+            current_ledger = get_ledger_index(ledger_response.result)
+
+            # Subscribe to ledger + transactions streams
+            import json as _json
+
+            import websockets
+
+            ws_raw = await websockets.connect(ws_url, open_timeout=10)
+            try:
+                await ws_raw.send(
+                    _json.dumps(
+                        {
+                            "id": 1,
+                            "command": "subscribe",
+                            "streams": ["ledger", "transactions"],
+                        }
+                    )
+                )
+                await ws_raw.recv()  # subscription response
+
+                # Submit all funding txns in a burst
+                logger.info(f"Funding {max_txns} accounts from genesis...")
+                pending_hashes: set[str] = set()
+                for acct in accounts:
+                    payment = Payment(
+                        account=genesis_wallet.classic_address,
+                        destination=acct.address,
+                        amount=str(1000 * 1_000_000),
+                        fee=base_fee,
+                        sequence=genesis_seq,
+                        last_ledger_sequence=current_ledger + 20,
+                        network_id=network_id,
+                    )
+                    signed_tx = sign(payment, genesis_wallet)
+                    tx_blob = encode(signed_tx.to_xrpl())
+                    response = await client.request(SubmitOnly(tx_blob=tx_blob))
+                    result = response.result
+                    engine_result = result.get("engine_result", "???")
+                    tx_hash = result.get("tx_json", {}).get("hash")
+                    if tx_hash:
+                        pending_hashes.add(tx_hash)
+                    if engine_result != "tesSUCCESS":
+                        logger.warning(f"  Fund {acct.name}: {engine_result}")
+                    genesis_seq += 1
+
+                # Wait for all funding txns to validate via transactions stream
+                logger.info(
+                    f"Waiting for {len(pending_hashes)} funding txns to validate..."
+                )
+                while pending_hashes:
+                    message = await ws_raw.recv()
+                    data = _json.loads(message)
+                    if data.get("type") == "transaction" and data.get("validated"):
+                        tx_hash = data.get("transaction", {}).get("hash")
+                        if tx_hash and tx_hash in pending_hashes:
+                            pending_hashes.discard(tx_hash)
+                            logger.info(
+                                f"  Funded ({max_txns - len(pending_hashes)}"
+                                f"/{max_txns})"
+                            )
+
+                logger.info(
+                    f"Txn generator ready: {min_txns}-{max_txns} txns/ledger, "
+                    f"genesis seq={genesis_seq}"
+                )
+
+                while True:
+                    message = await ws_raw.recv()
+                    data = _json.loads(message)
+
+                    if data.get("type") != "ledgerClosed":
+                        continue
+
+                    ledger_index = data.get("ledger_index", 0)
+                    k = random.randint(min_txns, max_txns)
+                    destinations = random.choices(accounts, k=k)
+
+                    results: dict[str, int] = {}
+                    for dest in destinations:
+                        payment = Payment(
+                            account=genesis_wallet.classic_address,
+                            destination=dest.address,
+                            amount="1000000",  # 1 XAH
+                            fee=base_fee,
+                            sequence=genesis_seq,
+                            last_ledger_sequence=ledger_index + 20,
+                            network_id=network_id,
+                        )
+                        signed_tx = sign(payment, genesis_wallet)
+                        tx_blob = encode(signed_tx.to_xrpl())
+
+                        response = await client.request(SubmitOnly(tx_blob=tx_blob))
+                        engine_result = response.result.get("engine_result", "unknown")
+                        results[engine_result] = results.get(engine_result, 0) + 1
+
+                        if engine_result in ("tefPAST_SEQ", "tefMAX_LEDGER"):
+                            # Re-fetch sequence on sequence errors
+                            acct_response = await client.request(
+                                AccountInfoRequest(
+                                    account=genesis_wallet.classic_address
+                                )
+                            )
+                            genesis_seq = acct_response.result["account_data"][
+                                "Sequence"
+                            ]
+                        else:
+                            genesis_seq += 1
+
+                    stats = ", ".join(f"{r}:{n}" for r, n in results.items())
+                    logger.info(f"Ledger {ledger_index}: submitted {k} txns ({stats})")
+            finally:
+                await ws_raw.close()
+
+    monitor_task = asyncio.create_task(run_monitor())
+
+    try:
+        await run_generator()
+    finally:
         stop_event.set()
         monitor_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
