@@ -1486,13 +1486,13 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     "--time-start",
     "-s",
     default=None,
-    help="Only show entries at or after this time (HH:MM:SS in UTC, or relative: -5m, -30s, -1h)",
+    help="Start filter: HH:MM:SS, -30s (from end), or +30s (from start)",
 )
 @click.option(
     "--time-end",
     "-e",
     default=None,
-    help="Only show entries at or before this time (HH:MM:SS in UTC)",
+    help="End filter: HH:MM:SS or +1m (from start)",
 )
 @click.option(
     "--nodes",
@@ -1525,25 +1525,71 @@ def logs_search(
         x-testnet logs-search "LedgerConsensus.*accepted"
         x-testnet logs-search Shuffle --tail 1000
         x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
+        x-testnet logs-search -s +0 -e +30s           # first 30 seconds from start
         x-testnet logs-search -n 0-2                  # only n0, n1, n2
-        x-testnet logs-search -n 1,3,5                # only n1, n3, n5
+        x-testnet logs-search @consensus              # use preset from .logs-search.json
+
+    Presets: create .logs-search.json in the testnet dir with named configs:
+
+        {"consensus": {"pattern": "LedgerConsensus", "tail": 1000}}
+
+    Use @name as the pattern to load a preset. CLI flags override preset values.
     """
+    import json
     import re
     from datetime import datetime, timedelta
 
     from xahaud_scripts.testnet.cli_handlers import logs_search_handler
 
-    def parse_relative(s: str) -> timedelta | None:
-        """Parse relative time like -5m, -30s, -1h, -2h30m."""
-        rel_match = re.match(r"^-(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", s)
+    xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
+    base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
+
+    # Load preset if pattern starts with @
+    if pattern.startswith("@"):
+        preset_name = pattern[1:]
+        preset_file = base_dir / ".logs-search.json"
+        if not preset_file.exists():
+            raise click.ClickException(f"No .logs-search.json found in {base_dir}")
+        presets = json.loads(preset_file.read_text())
+        if preset_name not in presets:
+            available = ", ".join(sorted(presets.keys()))
+            raise click.ClickException(
+                f"Unknown preset: {preset_name!r}. Available: {available}"
+            )
+        preset = presets[preset_name]
+        click.echo(f"Preset @{preset_name}: {preset}", err=True)
+
+        # Preset provides defaults — CLI flags override
+        pattern = preset.get("pattern", ".")
+        if tail is None:
+            tail = preset.get("tail")
+        if limit is None:
+            limit = preset.get("limit")
+        if time_start is None:
+            time_start = preset.get("time_start")
+        if time_end is None:
+            time_end = preset.get("time_end")
+        if nodes is None:
+            nodes = preset.get("nodes")
+        if not no_sort:
+            no_sort = preset.get("no_sort", False)
+
+    def parse_relative(s: str) -> tuple[str, timedelta] | None:
+        """Parse relative time like -5m, +30s, -1h, +2h30m.
+
+        Returns (sign, delta) or None if not a relative time.
+        """
+        rel_match = re.match(r"^([+-])(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", s)
         if not rel_match:
             return None
-        hours = int(rel_match.group(1) or 0)
-        minutes = int(rel_match.group(2) or 0)
-        seconds = int(rel_match.group(3) or 0)
-        if hours == 0 and minutes == 0 and seconds == 0:
+        sign = rel_match.group(1)
+        hours = int(rel_match.group(2) or 0)
+        minutes = int(rel_match.group(3) or 0)
+        seconds = int(rel_match.group(4) or 0)
+        if hours == 0 and minutes == 0 and seconds == 0 and sign == "-":
             raise click.BadParameter(f"Invalid relative time: {s}")
-        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        # +0 is valid (means "from the very start")
+        return sign, timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
     def parse_absolute(s: str) -> datetime:
         """Parse absolute time like HH:MM:SS or HH:MM:SS.ffffff."""
@@ -1553,26 +1599,38 @@ def logs_search(
             except ValueError:
                 continue
         raise click.BadParameter(
-            f"Invalid time format: {s} (use HH:MM:SS, HH:MM:SS.ffffff, or relative like -5m, -30s, -1h)"
+            f"Invalid time format: {s} (use HH:MM:SS, -5m, +30s, etc.)"
         )
 
-    # Resolve time arguments — relative start is handled separately
-    relative_start: timedelta | None = None
+    # Resolve time arguments — relative offsets are passed through as deltas
+    relative_start: timedelta | None = None  # -30s: offset from end
+    offset_start: timedelta | None = None  # +30s: offset from beginning
+    offset_end: timedelta | None = None  # +1m: offset from beginning
     parsed_time_start: datetime | None = None
     parsed_time_end: datetime | None = None
 
     if time_start is not None:
         rel = parse_relative(time_start)
         if rel is not None:
-            relative_start = rel
+            sign, delta = rel
+            if sign == "-":
+                relative_start = delta
+            else:
+                offset_start = delta
         else:
             parsed_time_start = parse_absolute(time_start)
 
     if time_end is not None:
-        parsed_time_end = parse_absolute(time_end)
-
-    xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
-    base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
+        rel = parse_relative(time_end)
+        if rel is not None:
+            sign, delta = rel
+            if sign == "-":
+                raise click.BadParameter(
+                    "Relative end time with - not supported (use +N for offset from start)"
+                )
+            offset_end = delta
+        else:
+            parsed_time_end = parse_absolute(time_end)
 
     logs_search_handler(
         base_dir=base_dir,
@@ -1583,6 +1641,8 @@ def logs_search(
         time_start=parsed_time_start,
         time_end=parsed_time_end,
         relative_start=relative_start,
+        offset_start=offset_start,
+        offset_end=offset_end,
         nodes=nodes,
     )
 

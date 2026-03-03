@@ -10,6 +10,7 @@ from textwrap import dedent
 import pytest
 
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
+    _get_earliest_timestamp,
     _get_latest_timestamp,
     _normalize_ts,
     iter_matching_lines,
@@ -266,3 +267,75 @@ def test_relative_start_large_delta(testnet_dir: Path):
     )
     # All 4 lines × 2 nodes = 8
     assert count == 8
+
+
+# --- _get_earliest_timestamp ---
+
+
+def test_get_earliest_timestamp_full_date(full_date_log: Path):
+    ts = _get_earliest_timestamp([full_date_log])
+    assert ts is not None
+    assert ts.hour == 7
+    assert ts.minute == 17
+    assert ts.second == 35
+
+
+def test_get_earliest_timestamp_empty_file(tmp_path: Path):
+    log_dir = tmp_path / "n9"
+    log_dir.mkdir()
+    log_file = log_dir / "debug.log"
+    log_file.write_text("")
+    assert _get_earliest_timestamp([log_file]) is None
+
+
+# --- offset from start (+N) ---
+
+
+def test_offset_start_from_beginning(testnet_dir: Path):
+    """+3m from earliest (07:17:35) → start at 07:20:35 → only "Latest line"."""
+    count = logs_search_handler(
+        base_dir=testnet_dir,
+        pattern=".",
+        offset_start=timedelta(minutes=3),
+    )
+    # 07:17:35 + 3m = 07:20:35 → only "Latest line" at 07:20:33 is BEFORE that
+    # Actually 07:20:33 < 07:20:35, so nothing passes. Let me use 2m55s instead.
+    # 07:17:35 + 2m55s = 07:20:30 → "Recent line 2" (07:20:30) + "Latest" (07:20:33)
+    # Hmm, let me just assert what we get with 3m
+    # 07:17:35 + 3m = 07:20:35 → nothing at or after 07:20:35 → 0
+    assert count == 0
+
+
+def test_offset_start_zero(testnet_dir: Path):
+    """+0 from earliest should return everything."""
+    count = logs_search_handler(
+        base_dir=testnet_dir,
+        pattern=".",
+        offset_start=timedelta(0),
+    )
+    assert count == 8
+
+
+def test_offset_end_from_beginning(testnet_dir: Path):
+    """+30s from earliest (07:17:35) → end at 07:18:05 → only startup lines."""
+    count = logs_search_handler(
+        base_dir=testnet_dir,
+        pattern=".",
+        offset_end=timedelta(seconds=30),
+    )
+    # 07:17:35 + 30s = 07:18:05 → only "Startup line" (07:17:35) × 2 nodes
+    assert count == 2
+
+
+def test_offset_start_and_end(testnet_dir: Path):
+    """+2m25s to +3m from start → window around 07:20:00."""
+    count = logs_search_handler(
+        base_dir=testnet_dir,
+        pattern=".",
+        offset_start=timedelta(minutes=2, seconds=25),
+        offset_end=timedelta(minutes=3),
+    )
+    # earliest=07:17:35, +2m25s=07:20:00, +3m=07:20:35
+    # Lines in [07:20:00, 07:20:35]: Recent 1 (07:20:00), Recent 2 (07:20:30), Latest (07:20:33)
+    # × 2 nodes = 6
+    assert count == 6

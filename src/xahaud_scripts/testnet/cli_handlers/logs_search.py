@@ -207,6 +207,33 @@ def _get_latest_timestamp(
     return latest
 
 
+def _get_earliest_timestamp(
+    log_files: list[Path], scan_lines: int = 50
+) -> datetime | None:
+    """Get the earliest timestamp across all log files by scanning their heads.
+
+    Args:
+        log_files: Log files to scan.
+        scan_lines: Number of lines from the start to scan per file.
+
+    Returns:
+        The earliest timestamp found, or None.
+    """
+    earliest: datetime | None = None
+    for log_file in log_files:
+        try:
+            with open(log_file) as f:
+                for _, line in zip(range(scan_lines), f, strict=False):
+                    ts = parse_timestamp(line)
+                    if ts is not None:
+                        if earliest is None or ts < earliest:
+                            earliest = ts
+                        break  # First timestamp from this file is enough
+        except OSError:
+            continue
+    return earliest
+
+
 def logs_search_handler(
     base_dir: Path,
     pattern: str,
@@ -216,6 +243,8 @@ def logs_search_handler(
     time_start: datetime | None = None,
     time_end: datetime | None = None,
     relative_start: timedelta | None = None,
+    offset_start: timedelta | None = None,
+    offset_end: timedelta | None = None,
     nodes: str | None = None,
 ) -> int:
     """Search all node logs for a regex pattern and merge by timestamp.
@@ -228,8 +257,9 @@ def logs_search_handler(
         limit: Maximum number of results to display
         time_start: Only include entries at or after this time
         time_end: Only include entries at or before this time
-        relative_start: If set, compute time_start as (latest log timestamp - delta).
-                        Takes precedence over time_start.
+        relative_start: If set, compute time_start as (latest - delta).
+        offset_start: If set, compute time_start as (earliest + delta).
+        offset_end: If set, compute time_end as (earliest + delta).
         nodes: Node spec like '0-2,5' to filter which nodes to search
 
     Returns:
@@ -288,13 +318,27 @@ def logs_search_handler(
         for missing in missing_logs:
             click.echo(f"  {missing.parent.name}/debug.log (not found)", err=True)
 
-    # Resolve relative start from actual log timestamps (no clock dependency)
+    # Resolve relative/offset times from actual log timestamps (no clock dependency)
     if relative_start is not None:
         latest = _get_latest_timestamp(log_files)
         if latest is not None:
             time_start = latest - relative_start
             click.echo(
                 f"  Latest log: {latest}, start: {time_start} (-{relative_start})",
+                err=True,
+            )
+        else:
+            click.echo("  Warning: could not find any timestamps in logs", err=True)
+
+    if offset_start is not None or offset_end is not None:
+        earliest = _get_earliest_timestamp(log_files)
+        if earliest is not None:
+            if offset_start is not None:
+                time_start = earliest + offset_start
+            if offset_end is not None:
+                time_end = earliest + offset_end
+            click.echo(
+                f"  Earliest log: {earliest}, start: {time_start}, end: {time_end}",
                 err=True,
             )
         else:
