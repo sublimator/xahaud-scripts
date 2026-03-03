@@ -1529,7 +1529,7 @@ def logs_search(
         x-testnet logs-search -n 0-2                  # only n0, n1, n2
         x-testnet logs-search @consensus              # use preset from .logs-search.json
 
-    Presets: create .logs-search.json in the testnet dir with named configs:
+    Presets: create .logs-search.json in cwd with named configs:
 
         {"consensus": {"pattern": "LedgerConsensus", "tail": 1000}}
 
@@ -1547,9 +1547,9 @@ def logs_search(
     # Load preset if pattern starts with @
     if pattern.startswith("@"):
         preset_name = pattern[1:]
-        preset_file = base_dir / ".logs-search.json"
+        preset_file = Path.cwd() / ".logs-search.json"
         if not preset_file.exists():
-            raise click.ClickException(f"No .logs-search.json found in {base_dir}")
+            raise click.ClickException(f"No .logs-search.json found in {Path.cwd()}")
         presets = json.loads(preset_file.read_text())
         if preset_name not in presets:
             available = ", ".join(sorted(presets.keys()))
