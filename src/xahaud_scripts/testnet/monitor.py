@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import subprocess
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,12 +48,50 @@ def format_uptime(seconds: float) -> str:
         return f"{hours}h {mins}m"
 
 
+def _get_rippled_cpu() -> dict[int, float]:
+    """Get CPU% for each rippled node by parsing ps output.
+
+    Matches nodes by looking for /nN/xahaud.cfg in command line args.
+
+    Returns:
+        Dict mapping node_id -> cpu_percent
+    """
+    try:
+        result = subprocess.check_output(
+            ["ps", "aux"], text=True, stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError:
+        return {}
+
+    cpu_by_node: dict[int, float] = {}
+    for line in result.splitlines():
+        if "rippled" not in line and "xahaud" not in line:
+            continue
+        if "grep" in line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            cpu = float(parts[2])
+        except ValueError:
+            continue
+        # Find node ID from config path: .../nN/xahaud.cfg
+        match = re.search(r"/n(\d+)/xahaud\.cfg", line)
+        if match:
+            node_id = int(match.group(1))
+            cpu_by_node[node_id] = cpu
+
+    return cpu_by_node
+
+
 def display_network_status(
     node_data: dict[int, dict[str, Any]],
     node_count: int,
     tracked_amendment: str | None = None,
     ledger_events: dict[int, dict[str, Any]] | None = None,
     uptime_seconds: float | None = None,
+    cpu_by_node: dict[int, float] | None = None,
 ) -> None:
     """Display network status as a rich table.
 
@@ -60,6 +100,7 @@ def display_network_status(
         node_count: Number of nodes
         tracked_amendment: Optional amendment ID being tracked
         uptime_seconds: Optional uptime in seconds to display
+        cpu_by_node: Optional dict mapping node_id -> CPU percentage
     """
     title = f"Network Status ({node_count} nodes)"
     if tracked_amendment:
@@ -76,10 +117,14 @@ def display_network_status(
     table.add_column("Quorum", justify="right", style="blue")
     table.add_column("Conv", justify="right", style="white")
     table.add_column("Amend", style="white")
+    table.add_column("CPU%", justify="right", style="magenta")
     table.add_column("Δt", justify="right", style="cyan")
 
     for node_id in range(node_count):
         data = node_data.get(node_id, {})
+
+        cpu = cpu_by_node.get(node_id) if cpu_by_node else None
+        cpu_str = f"{cpu:.0f}" if cpu is not None else "-"
 
         if data.get("error"):
             table.add_row(
@@ -93,6 +138,7 @@ def display_network_status(
                 "-",
                 "-",
                 "-",
+                cpu_str,
                 f"{data.get('response_time', 0):.3f}s",
             )
             continue
@@ -110,6 +156,7 @@ def display_network_status(
                 "-",
                 "-",
                 "-",
+                cpu_str,
                 f"{data.get('response_time', 0):.3f}s",
             )
             continue
@@ -166,6 +213,7 @@ def display_network_status(
             str(validation_quorum),
             converge_str,
             amend_display,
+            cpu_str,
             f"{data.get('response_time', 0):.3f}s",
         )
 
@@ -760,12 +808,14 @@ class NetworkMonitor:
 
                     # Fetch node data in parallel
                     node_data = self._fetch_all_node_data()
+                    cpu_by_node = _get_rippled_cpu()
                     self._update_convergence_stats(node_data)
                     display_network_status(
                         node_data,
                         node_count,
                         self.tracked_amendment,
                         uptime_seconds=uptime,
+                        cpu_by_node=cpu_by_node,
                     )
                     self._display_convergence_averages()
 
@@ -896,6 +946,7 @@ class NetworkMonitor:
                     )
 
                     node_data = self._fetch_all_node_data()
+                    cpu_by_node = _get_rippled_cpu()
                     self._update_convergence_stats(node_data)
                     display_network_status(
                         node_data,
@@ -903,6 +954,7 @@ class NetworkMonitor:
                         self.tracked_amendment,
                         last_ledger_events,
                         uptime_seconds=uptime,
+                        cpu_by_node=cpu_by_node,
                     )
 
                     # Update stats

@@ -1486,13 +1486,13 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     "--time-start",
     "-s",
     default=None,
-    help="Only show entries at or after this time (HH:MM:SS, -5m, -30s, -1h)",
+    help="Only show entries at or after this time (HH:MM:SS in UTC, or relative: -5m, -30s, -1h)",
 )
 @click.option(
     "--time-end",
     "-e",
     default=None,
-    help="Only show entries at or before this time (HH:MM:SS, -5m, -30s, -1h)",
+    help="Only show entries at or before this time (HH:MM:SS in UTC)",
 )
 @click.option(
     "--nodes",
@@ -1533,27 +1533,20 @@ def logs_search(
 
     from xahaud_scripts.testnet.cli_handlers import logs_search_handler
 
-    # Parse time arguments (absolute or relative)
-    def parse_time(s: str | None) -> datetime | None:
-        if s is None:
-            return None
-
-        # Check for relative time: -5m, -30s, -1h, -2h30m, etc.
+    def parse_relative(s: str) -> timedelta | None:
+        """Parse relative time like -5m, -30s, -1h, -2h30m."""
         rel_match = re.match(r"^-(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", s)
-        if rel_match:
-            hours = int(rel_match.group(1) or 0)
-            minutes = int(rel_match.group(2) or 0)
-            seconds = int(rel_match.group(3) or 0)
-            if hours == 0 and minutes == 0 and seconds == 0:
-                raise click.BadParameter(f"Invalid relative time: {s}")
-            delta = timedelta(hours=hours, minutes=minutes, seconds=seconds)
-            # Log timestamps are time-only (year=1900), so compute relative to now's time
-            now = datetime.now()
-            target = now - delta
-            # Return with year=1900 to match log timestamp format
-            return target.replace(year=1900, month=1, day=1)
+        if not rel_match:
+            return None
+        hours = int(rel_match.group(1) or 0)
+        minutes = int(rel_match.group(2) or 0)
+        seconds = int(rel_match.group(3) or 0)
+        if hours == 0 and minutes == 0 and seconds == 0:
+            raise click.BadParameter(f"Invalid relative time: {s}")
+        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
-        # Absolute time formats
+    def parse_absolute(s: str) -> datetime:
+        """Parse absolute time like HH:MM:SS or HH:MM:SS.ffffff."""
         for fmt in ["%H:%M:%S.%f", "%H:%M:%S"]:
             try:
                 return datetime.strptime(s, fmt)
@@ -1562,6 +1555,21 @@ def logs_search(
         raise click.BadParameter(
             f"Invalid time format: {s} (use HH:MM:SS, HH:MM:SS.ffffff, or relative like -5m, -30s, -1h)"
         )
+
+    # Resolve time arguments — relative start is handled separately
+    relative_start: timedelta | None = None
+    parsed_time_start: datetime | None = None
+    parsed_time_end: datetime | None = None
+
+    if time_start is not None:
+        rel = parse_relative(time_start)
+        if rel is not None:
+            relative_start = rel
+        else:
+            parsed_time_start = parse_absolute(time_start)
+
+    if time_end is not None:
+        parsed_time_end = parse_absolute(time_end)
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
@@ -1572,8 +1580,9 @@ def logs_search(
         tail=tail,
         no_sort=no_sort,
         limit=limit,
-        time_start=parse_time(time_start),
-        time_end=parse_time(time_end),
+        time_start=parsed_time_start,
+        time_end=parsed_time_end,
+        relative_start=relative_start,
         nodes=nodes,
     )
 

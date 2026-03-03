@@ -9,7 +9,7 @@ import heapq
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -51,6 +51,18 @@ def parse_timestamp(line: str) -> datetime | None:
     return None
 
 
+def _normalize_ts(ts: datetime, reference: datetime) -> datetime:
+    """Normalize ts to be comparable with reference.
+
+    If reference is time-only (year=1900), strip date from ts too.
+    This handles the mismatch between full-date log timestamps (year=2026)
+    and time-only filter values (year=1900).
+    """
+    if reference.year == 1900 and ts.year != 1900:
+        return ts.replace(year=1900, month=1, day=1)
+    return ts
+
+
 def iter_matching_lines(
     log_file: Path,
     node_id: int,
@@ -83,10 +95,10 @@ def iter_matching_lines(
                     # Skip continuation lines (no timestamp = part of multi-line entry)
                     if ts is None:
                         continue
-                    # Filter by time range
-                    if time_start and ts < time_start:
+                    # Filter by time range (normalize to handle year mismatch)
+                    if time_start and _normalize_ts(ts, time_start) < time_start:
                         continue
-                    if time_end and ts > time_end:
+                    if time_end and _normalize_ts(ts, time_end) > time_end:
                         continue
                     yield LogEntry(
                         timestamp=ts,
@@ -167,6 +179,34 @@ def parse_node_spec(spec: str) -> set[int]:
     return result
 
 
+def _get_latest_timestamp(
+    log_files: list[Path], scan_lines: int = 50
+) -> datetime | None:
+    """Get the latest timestamp across all log files by scanning their tails.
+
+    Args:
+        log_files: Log files to scan.
+        scan_lines: Number of lines from the end to scan per file.
+
+    Returns:
+        The latest timestamp found, or None.
+    """
+    latest: datetime | None = None
+    for log_file in log_files:
+        try:
+            with open(log_file) as f:
+                lines = f.readlines()[-scan_lines:]
+            for line in reversed(lines):
+                ts = parse_timestamp(line)
+                if ts is not None:
+                    if latest is None or ts > latest:
+                        latest = ts
+                    break  # First (latest) timestamp from this file is enough
+        except OSError:
+            continue
+    return latest
+
+
 def logs_search_handler(
     base_dir: Path,
     pattern: str,
@@ -175,6 +215,7 @@ def logs_search_handler(
     limit: int | None = None,
     time_start: datetime | None = None,
     time_end: datetime | None = None,
+    relative_start: timedelta | None = None,
     nodes: str | None = None,
 ) -> int:
     """Search all node logs for a regex pattern and merge by timestamp.
@@ -187,6 +228,8 @@ def logs_search_handler(
         limit: Maximum number of results to display
         time_start: Only include entries at or after this time
         time_end: Only include entries at or before this time
+        relative_start: If set, compute time_start as (latest log timestamp - delta).
+                        Takes precedence over time_start.
         nodes: Node spec like '0-2,5' to filter which nodes to search
 
     Returns:
@@ -244,6 +287,18 @@ def logs_search_handler(
     if missing_logs:
         for missing in missing_logs:
             click.echo(f"  {missing.parent.name}/debug.log (not found)", err=True)
+
+    # Resolve relative start from actual log timestamps (no clock dependency)
+    if relative_start is not None:
+        latest = _get_latest_timestamp(log_files)
+        if latest is not None:
+            time_start = latest - relative_start
+            click.echo(
+                f"  Latest log: {latest}, start: {time_start} (-{relative_start})",
+                err=True,
+            )
+        else:
+            click.echo("  Warning: could not find any timestamps in logs", err=True)
 
     count = 0
 

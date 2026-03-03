@@ -274,12 +274,12 @@ class TmuxLauncher:
         if not self._session_created:
             return
 
-        # Check for headless mode (no iTerm window)
-        if os.environ.get("TMUX_MODE", "").lower() == "headless":
+        # Headless by default — set TMUX_MODE=attach to open iTerm window
+        if os.environ.get("TMUX_MODE", "").lower() != "attach":
             logger.info(
-                f"Headless mode: tmux session '{TMUX_SESSION_NAME}' running in background"
+                f"tmux session '{TMUX_SESSION_NAME}' running in background. "
+                f"Attach with: tmux attach -t {TMUX_SESSION_NAME}"
             )
-            logger.info(f"  Attach with: tmux attach -t {TMUX_SESSION_NAME}")
             return
 
         # Switch to target desktop if specified
