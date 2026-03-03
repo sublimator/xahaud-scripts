@@ -20,11 +20,14 @@ uv tool install --force --editable .
 
 ## Available Commands
 
-- `x-run-tests` - Run xahaud tests with coverage support
+- `x-run-tests` - Build and run xahaud tests (conan, ccache, coverage, lldb)
 - `x-testnet` - Launch and manage local test networks
-- `x-get-job` - Fetch GitHub Actions job details
+- `x-get-job` - Fetch GitHub Actions job details and logs
 - `x-build-jshooks-header` - Build JS hooks header file
-- `x-format-changed` - Format changed files in git
+- `x-build-test-hooks` - Extract and compile WASM test hooks from C++ source
+- `x-format-changed` - Format changed files in git (C++, Python, shell, CMake)
+- `xr-build` - Build xrpld with coverage, patches, and cmake presets
+- `xr-coverage-diff` - Show uncovered lines from existing coverage data
 
 ## Development
 
