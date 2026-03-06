@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -708,3 +709,68 @@ class TestNetwork:
             nid: stop_results.get(nid, False) and start_results.get(nid, False)
             for nid in node_ids
         }
+
+    def snapshot(self, name: str | None = None, keep_db: bool = False) -> Path:
+        """Copy the network directory into runs/YYYYMMDD-HHMMSS[-name]/.
+
+        Copies the entire testnet dir verbatim (excluding runs/) so that
+        all existing tooling (logs-search, etc.) works against the snapshot
+        with the same directory structure.
+
+        Args:
+            name: Optional label for the snapshot
+            keep_db: If True, include db/ directories (large). Default: exclude.
+
+        Returns:
+            Path to the snapshot directory
+        """
+        if not self._nodes:
+            self._load_network_info()
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        dir_name = f"{timestamp}-{name}" if name else timestamp
+        runs_dir = self._base_dir / "runs"
+        snapshot_dir = runs_dir / dir_name
+
+        exclude = ["runs"]
+        if not keep_db:
+            exclude.append("db")
+
+        logger.info(f"Snapshotting {self._base_dir} -> {snapshot_dir}")
+
+        shutil.copytree(
+            self._base_dir,
+            snapshot_dir,
+            ignore=shutil.ignore_patterns(*exclude),
+        )
+
+        # Write metadata.json at snapshot root
+        metadata: dict[str, Any] = {
+            "timestamp": timestamp,
+            "source_dir": str(self._base_dir),
+            "label": name,
+            "node_count": len(self._nodes),
+        }
+
+        # Add git info if available
+        try:
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            metadata["git_branch"] = branch
+            metadata["git_commit"] = commit
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+        with open(snapshot_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(f"Snapshot saved to {snapshot_dir}")
+        return snapshot_dir

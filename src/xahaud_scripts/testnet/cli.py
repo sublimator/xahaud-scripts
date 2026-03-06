@@ -1556,6 +1556,83 @@ def clean(ctx: click.Context) -> None:
     click.echo("Cleaned up generated files")
 
 
+@testnet.command()
+@click.argument("name", required=False)
+@click.option(
+    "--keep-db",
+    is_flag=True,
+    default=False,
+    help="Include db/ directories in snapshot (large).",
+)
+@click.pass_context
+def snapshot(ctx: click.Context, name: str | None, keep_db: bool) -> None:
+    """Snapshot current network state for later inspection.
+
+    Copies the testnet directory (configs, logs, network.json) into
+    runs/YYYYMMDD-HHMMSS[-NAME]/. Creates a 'latest' symlink.
+
+    Database files (db/) are excluded by default to save space.
+
+    \b
+    Examples:
+        x-testnet snapshot
+        x-testnet snapshot before-restart
+        x-testnet snapshot --keep-db full-state
+    """
+    network = _create_network(ctx)
+
+    try:
+        snapshot_dir = network.snapshot(name, keep_db=keep_db)
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    click.echo(f"Snapshot: {snapshot_dir}")
+
+
+def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
+    """Resolve a snapshot name to a directory path.
+
+    Supports:
+        'latest'  → runs/latest (symlink)
+        exact     → runs/<name> (exact match)
+        suffix    → runs/*-<name> (suffix match)
+    """
+    runs_dir = base_dir / "runs"
+    if not runs_dir.is_dir():
+        raise click.ClickException(
+            f"No snapshots found. Run 'x-testnet snapshot' first.\n"
+            f"Expected: {runs_dir}"
+        )
+
+    if snapshot_name == "latest":
+        # Most recent by name (timestamp-prefixed, so alphabetical = chronological)
+        dirs = sorted(
+            (p for p in runs_dir.iterdir() if p.is_dir()),
+            key=lambda p: p.name,
+        )
+        if not dirs:
+            raise click.ClickException(
+                "No snapshots found. Run 'x-testnet snapshot' first."
+            )
+        return dirs[-1]
+
+    # Exact match
+    exact = runs_dir / snapshot_name
+    if exact.is_dir():
+        return exact
+
+    # Suffix match (name without timestamp prefix)
+    matches = sorted(p for p in runs_dir.glob(f"*-{snapshot_name}") if p.is_dir())
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = [m.name for m in matches]
+        raise click.ClickException(
+            f"Ambiguous snapshot '{snapshot_name}'. Matches: {names}"
+        )
+    raise click.ClickException(f"Snapshot not found: {snapshot_name}")
+
+
 # ---------------------------------------------------------------------------
 # rc command group (runtime config via RPC)
 # ---------------------------------------------------------------------------
@@ -1908,6 +1985,12 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     default=None,
     help="Which nodes to search (e.g., '0-2', '1,3,5', '0-2,5,7-9')",
 )
+@click.option(
+    "--snapshot",
+    "snapshot_name",
+    default=None,
+    help="Search snapshot instead of live network. Use 'latest' or snapshot name.",
+)
 @click.pass_context
 def logs_search(
     ctx: click.Context,
@@ -1918,6 +2001,7 @@ def logs_search(
     time_start: str | None,
     time_end: str | None,
     nodes: str | None,
+    snapshot_name: str | None,
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -1926,6 +2010,7 @@ def logs_search(
     Uses a heap-based streaming merge to efficiently handle large log files
     without loading everything into memory.
 
+    \b
     Examples:
         x-testnet logs-search -s -5m                  # all logs, last 5 minutes
         x-testnet logs-search -s -30s --limit 100     # last 30 seconds, max 100 lines
@@ -1936,6 +2021,8 @@ def logs_search(
         x-testnet logs-search -s +0 -e +30s           # first 30 seconds from start
         x-testnet logs-search -n 0-2                  # only n0, n1, n2
         x-testnet logs-search @consensus              # use preset from .logs-search.json
+        x-testnet logs-search --snapshot latest "pattern"
+        x-testnet logs-search --snapshot before-restart "pattern"
 
     Presets: create .logs-search.json in cwd with named configs:
 
@@ -1951,6 +2038,11 @@ def logs_search(
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
+
+    # Swap to snapshot directory if requested
+    if snapshot_name:
+        base_dir = _resolve_snapshot(base_dir, snapshot_name)
+        click.echo(f"Searching snapshot: {base_dir}", err=True)
 
     # Load preset if pattern starts with @
     if pattern.startswith("@"):
