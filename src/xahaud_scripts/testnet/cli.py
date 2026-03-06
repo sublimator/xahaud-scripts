@@ -891,8 +891,11 @@ def server_info(ctx: click.Context, node: str) -> None:
     if result:
         click.echo(json.dumps(result, indent=2))
     else:
-        click.echo(f"Failed to get server_info from node {node_id}")
-        sys.exit(1)
+        port = network._config.port_rpc(node_id)
+        raise click.ClickException(
+            f"Failed to get server_info from n{node_id} "
+            f"(http://127.0.0.1:{port}). Node may be down."
+        )
 
 
 @testnet.command("server-definitions")
@@ -924,7 +927,11 @@ def server_definitions(ctx: click.Context, node: str, output: Path | None) -> No
 
     result = network.rpc_client.server_definitions(node_id)
     if not result:
-        raise click.ClickException(f"Failed to get server_definitions from {node}")
+        port = network._config.port_rpc(node_id)
+        raise click.ClickException(
+            f"Failed to get server_definitions from {node} "
+            f"(http://127.0.0.1:{port}). Node may be down."
+        )
 
     # Remove status field, keep the definitions
     result.pop("status", None)
@@ -984,7 +991,11 @@ def ledger(
         transactions=True,
     )
     if not result:
-        raise click.ClickException(f"Failed to get ledger from {node}")
+        port = network._config.port_rpc(node_id)
+        raise click.ClickException(
+            f"Failed to get ledger {ledger_index} from {node} "
+            f"(http://127.0.0.1:{port}). Node may be down or ledger not available."
+        )
 
     formatted = json.dumps(result, indent=2)
 
