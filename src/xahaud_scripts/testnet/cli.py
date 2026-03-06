@@ -1368,6 +1368,121 @@ def dump_conf(ctx: click.Context) -> None:
 
 
 @testnet.command()
+@click.argument("nodes", required=False)
+@click.pass_context
+def stop(ctx: click.Context, nodes: str | None) -> None:
+    """Stop specific nodes (sends Ctrl+C to tmux panes).
+
+    NODES: n0,n1 or ^n0 for exclusion. Defaults to all nodes.
+
+    \b
+    Examples:
+        x-testnet stop n1,n2
+        x-testnet stop ^n0
+        x-testnet stop
+    """
+    network = _create_network(ctx)
+
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    node_count = len(network.nodes)
+    node_ids = (
+        _parse_node_list(nodes, node_count=node_count)
+        if nodes
+        else list(range(node_count))
+    )
+
+    try:
+        results = network.stop_nodes(node_ids)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    for nid, ok in results.items():
+        status = "stopped" if ok else "failed"
+        click.echo(f"n{nid}: {status}")
+
+
+@testnet.command()
+@click.argument("nodes", required=False)
+@click.pass_context
+def start(ctx: click.Context, nodes: str | None) -> None:
+    """Start stopped nodes (re-sends launch command to tmux panes).
+
+    NODES: n0,n1 or ^n0 for exclusion. Defaults to all nodes.
+
+    \b
+    Examples:
+        x-testnet start n1,n2
+        x-testnet start ^n0
+        x-testnet start
+    """
+    network = _create_network(ctx)
+
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    node_count = len(network.nodes)
+    node_ids = (
+        _parse_node_list(nodes, node_count=node_count)
+        if nodes
+        else list(range(node_count))
+    )
+
+    try:
+        results = network.start_nodes(node_ids)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    for nid, ok in results.items():
+        status = "started" if ok else "failed"
+        click.echo(f"n{nid}: {status}")
+
+
+@testnet.command()
+@click.argument("nodes", required=False)
+@click.option("--delay", type=float, default=0, help="Seconds to wait between stop and start")
+@click.pass_context
+def restart(ctx: click.Context, nodes: str | None, delay: float) -> None:
+    """Restart nodes (stop, optional delay, start).
+
+    NODES: n0,n1 or ^n0 for exclusion. Defaults to all nodes.
+
+    \b
+    Examples:
+        x-testnet restart n1,n2
+        x-testnet restart n1 --delay 10
+        x-testnet restart
+    """
+    network = _create_network(ctx)
+
+    try:
+        network._load_network_info()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+    node_count = len(network.nodes)
+    node_ids = (
+        _parse_node_list(nodes, node_count=node_count)
+        if nodes
+        else list(range(node_count))
+    )
+
+    try:
+        results = network.restart_nodes(node_ids, delay=delay)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    for nid, ok in results.items():
+        status = "restarted" if ok else "failed"
+        click.echo(f"n{nid}: {status}")
+
+
+@testnet.command()
 @click.pass_context
 def teardown(ctx: click.Context) -> None:
     """Kill all running test network processes."""

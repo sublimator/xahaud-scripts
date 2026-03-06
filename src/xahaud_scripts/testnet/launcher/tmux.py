@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from xahaud_scripts.utils.logging import make_logger
 
@@ -83,6 +83,8 @@ class TmuxLauncher:
         self._pane_count = 0
         self._base_dir: Path | None = None
         self._desktop: int | None = None
+        self._pane_ids: dict[int, str] = {}
+        self._launch_commands: dict[int, str] = {}
 
     def is_available(self) -> bool:
         """Check if tmux is available on this system."""
@@ -99,11 +101,16 @@ class TmuxLauncher:
             True if launch succeeded, False otherwise
         """
         try:
-            if not self._session_created:
-                self._create_session(node, config)
-            else:
-                self._create_pane(node, config)
+            cmd = self._build_full_command(node, config)
+            self._launch_commands[node.id] = cmd
+            self._desktop = config.desktop
 
+            if not self._session_created:
+                pane_id = self._create_session(node, cmd)
+            else:
+                pane_id = self._create_pane(node, cmd)
+
+            self._pane_ids[node.id] = pane_id
             self._pane_count += 1
             return True
 
@@ -113,11 +120,14 @@ class TmuxLauncher:
                 logger.error(f"  Error: {e.stderr.decode()}")
             return False
 
-    def _create_session(self, node: NodeInfo, config: LaunchConfig) -> None:
-        """Create the tmux session with the first node."""
-        # Track base_dir and desktop for finalize()
+    def _create_session(self, node: NodeInfo, cmd: str) -> str:
+        """Create the tmux session with the first node.
+
+        Returns:
+            The tmux pane ID (e.g. "%0") for the created pane.
+        """
+        # Track base_dir for finalize()
         self._base_dir = node.node_dir.parent
-        self._desktop = config.desktop
 
         # Kill any existing session
         subprocess.run(
@@ -128,8 +138,8 @@ class TmuxLauncher:
         role = "[EXPLOIT]" if node.is_injector else "[CLEAN]"
         window_name = f"n{node.id}{role}"
 
-        # Create new detached session
-        subprocess.run(
+        # Create new detached session and capture pane ID
+        result = subprocess.run(
             [
                 "tmux",
                 "new-session",
@@ -140,28 +150,37 @@ class TmuxLauncher:
                 window_name,
                 "-c",
                 str(node.node_dir),
+                "-P",
+                "-F",
+                "#{pane_id}",
             ],
             check=True,
             capture_output=True,
+            text=True,
         )
+        pane_id = result.stdout.strip()
 
         # Send the startup command
-        cmd = self._build_full_command(node, config)
         subprocess.run(
-            ["tmux", "send-keys", "-t", TMUX_SESSION_NAME, cmd, "Enter"],
+            ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
             check=True,
             capture_output=True,
         )
 
         self._session_created = True
         logger.info(f"Created tmux session '{TMUX_SESSION_NAME}' with node {node.id}")
+        return pane_id
 
-    def _create_pane(self, node: NodeInfo, config: LaunchConfig) -> None:
-        """Create a new pane for a node."""
+    def _create_pane(self, node: NodeInfo, cmd: str) -> str:
+        """Create a new pane for a node.
+
+        Returns:
+            The tmux pane ID (e.g. "%3") for the created pane.
+        """
         role = "[EXPLOIT]" if node.is_injector else "[CLEAN]"
 
-        # Split the window and create new pane
-        subprocess.run(
+        # Split the window, create new pane, and capture pane ID
+        result = subprocess.run(
             [
                 "tmux",
                 "split-window",
@@ -169,10 +188,15 @@ class TmuxLauncher:
                 TMUX_SESSION_NAME,
                 "-c",
                 str(node.node_dir),
+                "-P",
+                "-F",
+                "#{pane_id}",
             ],
             check=True,
             capture_output=True,
+            text=True,
         )
+        pane_id = result.stdout.strip()
 
         # Rebalance panes to tiled layout
         subprocess.run(
@@ -182,14 +206,14 @@ class TmuxLauncher:
         )
 
         # Send the startup command to the new pane
-        cmd = self._build_full_command(node, config)
         subprocess.run(
-            ["tmux", "send-keys", "-t", TMUX_SESSION_NAME, cmd, "Enter"],
+            ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
             check=True,
             capture_output=True,
         )
 
         logger.info(f"Created pane for node {node.id} {role}")
+        return pane_id
 
     def _build_full_command(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build the full command with env vars and startup flags."""
@@ -266,6 +290,115 @@ class TmuxLauncher:
             parts.extend(config.extra_args)
 
         return " ".join(parts)
+
+    @property
+    def launch_state(self) -> dict[str, Any]:
+        """Get launch state for persistence."""
+        return {
+            "launcher": "tmux",
+            "pane_ids": {str(k): v for k, v in self._pane_ids.items()},
+            "launch_commands": {str(k): v for k, v in self._launch_commands.items()},
+        }
+
+    def load_launch_state(self, state: dict[str, Any]) -> None:
+        """Restore state from persisted launch_state."""
+        self._pane_ids = {int(k): v for k, v in state.get("pane_ids", {}).items()}
+        self._launch_commands = {
+            int(k): v for k, v in state.get("launch_commands", {}).items()
+        }
+
+    def is_session_alive(self) -> bool:
+        """Check if the tmux session is alive."""
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", TMUX_SESSION_NAME],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    def _list_live_pane_ids(self) -> set[str]:
+        """Query tmux for currently existing pane IDs in the session."""
+        try:
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "list-panes",
+                    "-t",
+                    TMUX_SESSION_NAME,
+                    "-F",
+                    "#{pane_id}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return set(result.stdout.strip().splitlines())
+        except subprocess.CalledProcessError:
+            return set()
+
+    def _validate_pane(self, node_id: int) -> str | None:
+        """Get pane ID for node, validating it still exists.
+
+        Returns pane ID if valid, None with error log if stale/missing.
+        """
+        pane_id = self._pane_ids.get(node_id)
+        if not pane_id:
+            logger.error(f"No pane ID recorded for node {node_id}")
+            return None
+        live = self._list_live_pane_ids()
+        if pane_id not in live:
+            logger.error(
+                f"Pane {pane_id} for node {node_id} no longer exists "
+                f"(was it manually closed?). Live panes: {live}"
+            )
+            return None
+        return pane_id
+
+    def stop_node(self, node_id: int) -> bool:
+        """Send Ctrl+C to node's tmux pane."""
+        pane_id = self._validate_pane(node_id)
+        if not pane_id:
+            return False
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "C-c", ""],
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to stop node {node_id}: {e}")
+            return False
+
+    def start_node(self, node_id: int, command: str) -> bool:
+        """Send launch command to node's tmux pane.
+
+        Clears prompt first (C-c C-u) to avoid appending to junk.
+        """
+        pane_id = self._validate_pane(node_id)
+        if not pane_id:
+            return False
+        try:
+            # Clear any partial input
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "C-c", ""],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "C-u", ""],
+                check=True,
+                capture_output=True,
+            )
+            # Send command
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, command, "Enter"],
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to start node {node_id}: {e}")
+            return False
 
     def finalize(self) -> None:
         """Attach to the tmux session after all nodes are launched."""

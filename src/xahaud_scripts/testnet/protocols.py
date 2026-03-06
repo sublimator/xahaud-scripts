@@ -69,6 +69,38 @@ class Launcher(Protocol):
 
 
 @runtime_checkable
+class ControllableLauncher(Launcher, Protocol):
+    """Launcher that supports per-node lifecycle control."""
+
+    def stop_node(self, node_id: int) -> bool:
+        """Stop a specific node."""
+        ...
+
+    def start_node(self, node_id: int, command: str) -> bool:
+        """Start a specific node with the given command."""
+        ...
+
+    def is_session_alive(self) -> bool:
+        """Check if the launcher session is alive."""
+        ...
+
+    def load_launch_state(self, state: dict[str, Any]) -> None:
+        """Restore launcher state from persisted launch_state."""
+        ...
+
+    @property
+    def launch_state(self) -> dict[str, Any]:
+        """Get launch state for persistence.
+
+        Returns dict with at minimum:
+          - "launcher": str (launcher type identifier)
+          - "pane_ids": dict[str, str] (node_id -> pane_id)
+          - "launch_commands": dict[str, str] (node_id -> command)
+        """
+        ...
+
+
+@runtime_checkable
 class RPCClient(Protocol):
     """Protocol for RPC communication with xahaud nodes.
 

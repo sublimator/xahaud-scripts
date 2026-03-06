@@ -70,6 +70,7 @@ class TestNetwork:
         self._process_mgr = process_manager
         self._nodes: list[NodeInfo] = []
         self._rc_specs: list[str] = []
+        self._launch_state: dict[str, Any] = {}
 
     @property
     def nodes(self) -> list[NodeInfo]:
@@ -268,6 +269,13 @@ class TestNetwork:
 
         # Finalize launcher (e.g., attach to tmux session)
         self._launcher.finalize()
+
+        # Persist launch state for lifecycle commands (stop/start/restart)
+        from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+        if isinstance(self._launcher, ControllableLauncher):
+            self._launch_state = self._launcher.launch_state
+            self._save_network_info()
 
         logger.info("Network launched!")
         logger.info(f"  Node 0 RPC: http://127.0.0.1:{self._config.base_port_rpc}")
@@ -492,6 +500,10 @@ class TestNetwork:
         if rc_specs:
             network_info["runtime_config"] = rc_specs
 
+        # Persist launch state if any
+        if self._launch_state:
+            network_info["launch_state"] = self._launch_state
+
         network_file = self._base_dir / "network.json"
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -545,6 +557,20 @@ class TestNetwork:
         # Load runtime config specs if present
         self._rc_specs = network_info.get("runtime_config", [])
 
+        # Load and restore launch state
+        self._launch_state = network_info.get("launch_state", {})
+        if self._launch_state:
+            from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+            saved_type = self._launch_state.get("launcher")
+            if isinstance(self._launcher, ControllableLauncher):
+                self._launcher.load_launch_state(self._launch_state)
+            elif saved_type:
+                logger.warning(
+                    f"Network was launched with '{saved_type}' launcher but "
+                    f"current launcher does not support per-node control"
+                )
+
         logger.info(f"Loaded {len(self._nodes)} nodes from network.json")
         for node in self._nodes:
             logger.info(f"  Node {node.id}: config={node.config_path}")
@@ -552,3 +578,110 @@ class TestNetwork:
             logger.info(f"  Runtime config specs: {len(self._rc_specs)}")
             for spec in self._rc_specs:
                 logger.info(f"    {spec}")
+
+    def _get_node(self, node_id: int) -> NodeInfo | None:
+        """Get a node by ID, or None if not found."""
+        for node in self._nodes:
+            if node.id == node_id:
+                return node
+        return None
+
+    def _ensure_controllable(self) -> None:
+        """Load network info and validate launcher supports lifecycle control."""
+        from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+        if not self._nodes:
+            self._load_network_info()
+        if not isinstance(self._launcher, ControllableLauncher):
+            raise RuntimeError("Launcher does not support per-node control")
+        if not self._launcher.is_session_alive():
+            raise RuntimeError("Launcher session not found. Is the network running?")
+
+    def stop_nodes(self, node_ids: list[int]) -> dict[int, bool]:
+        """Stop specific nodes by sending Ctrl+C to their panes.
+
+        Args:
+            node_ids: List of node IDs to stop
+
+        Returns:
+            Dict mapping node_id -> success
+        """
+        from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+        self._ensure_controllable()
+        assert isinstance(self._launcher, ControllableLauncher)
+
+        results = {}
+        for nid in node_ids:
+            node = self._get_node(nid)
+            if node is None:
+                logger.warning(f"Unknown node: n{nid}")
+                results[nid] = False
+                continue
+            if not self._process_mgr.is_port_listening(node.port_rpc):
+                logger.warning(
+                    f"Node {nid} may already be stopped "
+                    f"(port {node.port_rpc} not listening)"
+                )
+            results[nid] = self._launcher.stop_node(nid)
+        return results
+
+    def start_nodes(self, node_ids: list[int]) -> dict[int, bool]:
+        """Start specific nodes by re-sending their launch commands.
+
+        Args:
+            node_ids: List of node IDs to start
+
+        Returns:
+            Dict mapping node_id -> success
+        """
+        from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+        self._ensure_controllable()
+        assert isinstance(self._launcher, ControllableLauncher)
+
+        if not self._launch_state.get("launch_commands"):
+            raise RuntimeError("No launch commands found. Re-run 'x-testnet run'.")
+
+        results = {}
+        for nid in node_ids:
+            node = self._get_node(nid)
+            if node is None:
+                logger.warning(f"Unknown node: n{nid}")
+                results[nid] = False
+                continue
+            cmd = self._launch_state["launch_commands"].get(str(nid))
+            if not cmd:
+                logger.error(f"No saved command for node {nid}")
+                results[nid] = False
+                continue
+            if self._process_mgr.is_port_listening(node.port_rpc):
+                logger.warning(
+                    f"Node {nid} may already be running "
+                    f"(port {node.port_rpc} listening)"
+                )
+            results[nid] = self._launcher.start_node(nid, cmd)
+        return results
+
+    def restart_nodes(
+        self, node_ids: list[int], delay: float = 0
+    ) -> dict[int, bool]:
+        """Restart specific nodes (stop, optional delay, start).
+
+        Args:
+            node_ids: List of node IDs to restart
+            delay: Seconds to wait between stop and start
+
+        Returns:
+            Dict mapping node_id -> success (True only if both stop and start succeeded)
+        """
+        stop_results = self.stop_nodes(node_ids)
+        if delay > 0:
+            time.sleep(delay)
+        else:
+            time.sleep(0.5)  # brief pause for process cleanup
+        start_results = self.start_nodes(node_ids)
+        return {
+            nid: stop_results.get(nid, False) and start_results.get(nid, False)
+            for nid in node_ids
+        }
