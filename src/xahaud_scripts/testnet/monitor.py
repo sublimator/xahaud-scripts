@@ -144,6 +144,7 @@ def display_network_status(
     for name in feature_names:
         table.add_column(name, style="white", no_wrap=True)
 
+    table.add_column("Blkd", justify="center", style="red")
     table.add_column("CPU%", justify="right", style="magenta")
     table.add_column("Version", style="dim", no_wrap=True)
     table.add_column("Δt", justify="right", style="cyan")
@@ -167,7 +168,7 @@ def display_network_status(
                 "-",
             ]
             row.extend("-" for _ in feature_names)
-            row.extend([cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            row.extend(["-", cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
             table.add_row(*row)
             continue
 
@@ -185,7 +186,7 @@ def display_network_status(
                 "-",
             ]
             row.extend("-" for _ in feature_names)
-            row.extend([cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            row.extend(["-", cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
             table.add_row(*row)
             continue
 
@@ -242,8 +243,13 @@ def display_network_status(
             feat = feature_statuses.get(name, {})
             row.append(_format_feature_status(feat) if feat else "-")
 
+        # Amendment blocked
+        blocked = state.get("amendment_blocked", False)
+        blocked_str = "[bold red]YES[/bold red]" if blocked else ""
+
         row.extend(
             [
+                blocked_str,
                 cpu_str,
                 version_str,
                 f"{data.get('response_time', 0):.3f}s",
