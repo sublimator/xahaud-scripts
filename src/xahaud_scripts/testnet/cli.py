@@ -2079,7 +2079,7 @@ def logs_search(
 
         Returns (sign, delta) or None if not a relative time.
         """
-        rel_match = re.match(r"^([+-])(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", s)
+        rel_match = re.match(r"^([+-])(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$", s)
         if not rel_match:
             return None
         sign = rel_match.group(1)
