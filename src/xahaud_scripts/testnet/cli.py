@@ -409,6 +409,18 @@ def generate(
     "default binary dir. Can be repeated.",
 )
 @click.option(
+    "--no-monitor",
+    is_flag=True,
+    default=False,
+    help="Launch nodes and exit without monitoring (network keeps running).",
+)
+@click.option(
+    "--no-teardown",
+    is_flag=True,
+    default=False,
+    help="Ctrl+C detaches monitor but keeps network running.",
+)
+@click.option(
     "--track-feature",
     "track_features",
     multiple=True,
@@ -455,6 +467,8 @@ def run(
     rc_specs: tuple[str, ...],
     rc_clear: bool,
     generate_txns: str | None,
+    no_monitor: bool,
+    no_teardown: bool,
     node_binaries: tuple[str, ...],
     track_features: tuple[str, ...],
     start_ledger: int | None,
@@ -676,6 +690,10 @@ def run(
 
     network.run(launch_config)
 
+    if no_monitor:
+        logger.info("Network launched (--no-monitor). Attach with: x-testnet monitor")
+        return
+
     if generate_txns:
         import asyncio
 
@@ -744,9 +762,47 @@ def run(
         else:
             # After test script (success, interrupted, or failed), continue monitoring
             logger.info("Continuing to monitor (Ctrl-C to stop)...")
-            network.monitor(tracked_features=tracked)
+            network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
     else:
-        network.monitor(tracked_features=tracked)
+        network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
+
+
+@testnet.command()
+@click.option(
+    "--track-feature",
+    "track_features",
+    multiple=True,
+    help="Track amendment feature status per node. Can be repeated for multiple features.",
+)
+@click.option(
+    "--launcher",
+    type=click.Choice(["tmux", "iterm-panes", "iterm"]),
+    default=None,
+    help="Launcher type (default: tmux)",
+)
+@click.pass_context
+def monitor(
+    ctx: click.Context,
+    track_features: tuple[str, ...],
+    launcher: str | None,
+) -> None:
+    """Attach monitor to a running network.
+
+    Connects to an existing network (from network.json) and displays
+    live status. Ctrl+C detaches without killing nodes.
+
+    \b
+    Examples:
+        x-testnet monitor
+        x-testnet monitor --track-feature ConsensusEntropy
+    """
+    network = _create_network(ctx, launcher_type=launcher)
+
+    tracked = (
+        [resolve_feature_name(f) for f in track_features] if track_features else None
+    )
+
+    network.monitor(tracked_features=tracked, teardown_on_exit=False)
 
 
 @testnet.command()

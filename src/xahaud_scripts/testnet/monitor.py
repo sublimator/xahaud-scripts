@@ -569,6 +569,7 @@ class NetworkMonitor:
         network_config: NetworkConfig,
         tracked_features: list[str] | None = None,
         base_dir: Path | None = None,
+        start_time: float | None = None,
     ) -> None:
         """Initialize the network monitor.
 
@@ -577,12 +578,14 @@ class NetworkMonitor:
             network_config: Network configuration
             tracked_features: Optional list of feature names to track
             base_dir: Testnet base dir (for reading vote timestamp)
+            start_time: Network launch timestamp (epoch seconds). If provided,
+                uptime is calculated from this instead of monitor start.
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_features = tracked_features or []
         self._base_dir = base_dir
-        self._start_time: float | None = None
+        self._start_time: float | None = start_time
 
         # Convergence tracking
         self._total_conv_sum: float = 0.0  # Sum of all convergence times
@@ -836,7 +839,8 @@ class NetworkMonitor:
         """
         node_count = self.network_config.node_count
         last_ledger_index = 0
-        self._start_time = time.time()
+        if self._start_time is None:
+            self._start_time = time.time()
 
         try:
             async with self._ws_manager:
@@ -943,6 +947,20 @@ class NetworkMonitor:
                     else:
                         missed_events_count += 1
                         self._enter_stall()  # Mark stall start (only counts once per stall)
+
+                        # Refresh the status table so node state is visible during stalls
+                        uptime = self._get_uptime()
+                        node_data = self._fetch_all_node_data()
+                        cpu_by_node = _get_rippled_cpu()
+                        self._update_convergence_stats(node_data)
+                        display_network_status(
+                            node_data,
+                            node_count,
+                            self.tracked_features or None,
+                            last_ledger_events,
+                            uptime_seconds=uptime,
+                            cpu_by_node=cpu_by_node,
+                        )
 
                         # Show detailed diagnostics
                         diag = self._ws_manager.get_diagnostics()

@@ -71,6 +71,7 @@ class TestNetwork:
         self._nodes: list[NodeInfo] = []
         self._rc_specs: list[str] = []
         self._launch_state: dict[str, Any] = {}
+        self._start_time: float | None = None
 
     @property
     def nodes(self) -> list[NodeInfo]:
@@ -96,6 +97,11 @@ class TestNetwork:
     def rc_specs(self) -> list[str]:
         """Get runtime config specs (from generate or network.json)."""
         return list(self._rc_specs)
+
+    @property
+    def start_time(self) -> float | None:
+        """Get network launch timestamp (epoch seconds)."""
+        return self._start_time
 
     def generate(
         self,
@@ -270,12 +276,15 @@ class TestNetwork:
         # Finalize launcher (e.g., attach to tmux session)
         self._launcher.finalize()
 
-        # Persist launch state for lifecycle commands (stop/start/restart)
+        # Record launch time and persist launch state
+        self._start_time = time.time()
+
         from xahaud_scripts.testnet.protocols import ControllableLauncher
 
         if isinstance(self._launcher, ControllableLauncher):
             self._launch_state = self._launcher.launch_state
-            self._save_network_info()
+
+        self._save_network_info()
 
         logger.info("Network launched!")
         logger.info(f"  Node 0 RPC: http://127.0.0.1:{self._config.base_port_rpc}")
@@ -285,12 +294,15 @@ class TestNetwork:
         self,
         tracked_features: list[str] | None = None,
         stop_after_first_ledger: bool = False,
+        teardown_on_exit: bool = True,
     ) -> int:
         """Start the monitoring loop.
 
         Args:
             tracked_features: Optional list of feature names to track
             stop_after_first_ledger: If True, stop after first ledger closes
+            teardown_on_exit: If True, kill nodes on Ctrl+C. If False, just
+                detach (nodes keep running).
 
         Returns:
             Ledger index when stopped (0 if failed)
@@ -304,6 +316,7 @@ class TestNetwork:
             network_config=self._config,
             tracked_features=tracked_features,
             base_dir=self._base_dir,
+            start_time=self._start_time,
         )
 
         if stop_after_first_ledger:
@@ -315,11 +328,14 @@ class TestNetwork:
             asyncio.run(monitor.monitor())
             return 0
         except KeyboardInterrupt:
-            logger.info("Monitoring stopped by user")
-            # Shutdown nodes via launcher (kills processes + closes window)
-            killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
-            if killed:
-                logger.info(f"Killed {killed} rippled processes")
+            if teardown_on_exit:
+                logger.info("Monitoring stopped by user")
+                # Shutdown nodes via launcher (kills processes + closes window)
+                killed = self._launcher.shutdown(self._base_dir, self._process_mgr)
+                if killed:
+                    logger.info(f"Killed {killed} rippled processes")
+            else:
+                logger.info("Monitor detached (network still running)")
             return 0
 
     def teardown(self) -> int:
@@ -500,6 +516,10 @@ class TestNetwork:
         if rc_specs:
             network_info["runtime_config"] = rc_specs
 
+        # Persist launch time
+        if self._start_time is not None:
+            network_info["start_time"] = self._start_time
+
         # Persist launch state if any
         if self._launch_state:
             network_info["launch_state"] = self._launch_state
@@ -556,6 +576,9 @@ class TestNetwork:
 
         # Load runtime config specs if present
         self._rc_specs = network_info.get("runtime_config", [])
+
+        # Load launch time
+        self._start_time = network_info.get("start_time")
 
         # Load and restore launch state
         self._launch_state = network_info.get("launch_state", {})
