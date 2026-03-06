@@ -88,8 +88,8 @@ class ControllableLauncher(Launcher, Protocol):
         """Restore launcher state from persisted launch_state."""
         ...
 
-    def capture_pane(self, node_id: int, lines: int = 1000) -> str | None:
-        """Capture terminal output from a node's pane.
+    def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
+        """Capture terminal output from a node.
 
         Args:
             node_id: The node ID to capture from

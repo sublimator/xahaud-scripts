@@ -744,8 +744,8 @@ class TestNetwork:
             for nid in node_ids
         }
 
-    def capture_pane(self, node_id: int, lines: int = 1000) -> str | None:
-        """Capture terminal output from a node's launcher pane.
+    def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
+        """Capture terminal output from a node.
 
         Args:
             node_id: Node ID to capture from
@@ -758,7 +758,7 @@ class TestNetwork:
 
         self._ensure_controllable()
         assert isinstance(self._launcher, ControllableLauncher)
-        return self._launcher.capture_pane(node_id, lines)
+        return self._launcher.capture_output(node_id, lines)
 
     def snapshot(self, name: str | None = None, keep_db: bool = False) -> Path:
         """Copy the network directory into runs/YYYYMMDD-HHMMSS[-name]/.

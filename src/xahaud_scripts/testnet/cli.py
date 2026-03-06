@@ -1622,7 +1622,7 @@ def restart(ctx: click.Context, nodes: str | None, delay: float) -> None:
         click.echo(f"n{nid}: {status}")
 
 
-@testnet.command("pane-output")
+@testnet.command("node-output")
 @click.argument("node")
 @click.argument("lines", type=int, default=1000, required=False)
 @click.option(
@@ -1633,28 +1633,32 @@ def restart(ctx: click.Context, nodes: str | None, delay: float) -> None:
     help="Write output to file instead of stdout.",
 )
 @click.pass_context
-def pane_output(ctx: click.Context, node: str, lines: int, output: Path | None) -> None:
-    """Capture terminal output from a node's tmux pane.
+def node_output(ctx: click.Context, node: str, lines: int, output: Path | None) -> None:
+    """Capture terminal output from a node.
+
+    Captures stdout/stderr from the node's launcher (tmux pane, docker logs,
+    etc.). This includes env setup, startup messages, crash output, and lldb
+    backtraces — not just debug.log content.
 
     NODE: n0, n1, etc.
     LINES: Number of scrollback lines (default: 1000).
 
     \b
     Examples:
-        x-testnet pane-output n4
-        x-testnet pane-output n4 5000
-        x-testnet pane-output n0 -o crash.log
+        x-testnet node-output n4
+        x-testnet node-output n4 5000
+        x-testnet node-output n0 -o crash.log
     """
     node_id = _parse_node_spec(node)
     network = _create_network(ctx)
 
     try:
-        text = network.capture_pane(node_id, lines)
+        text = network.capture_output(node_id, lines)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
 
     if text is None:
-        raise click.ClickException(f"Failed to capture pane for n{node_id}")
+        raise click.ClickException(f"Failed to capture output for n{node_id}")
 
     if output:
         output.write_text(text)

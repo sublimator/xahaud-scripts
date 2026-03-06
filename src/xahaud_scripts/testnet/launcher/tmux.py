@@ -363,7 +363,7 @@ class TmuxLauncher:
             return None
         return pane_id
 
-    def capture_pane(self, node_id: int, lines: int = 1000) -> str | None:
+    def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node's tmux pane.
 
         Args:
