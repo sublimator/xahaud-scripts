@@ -723,9 +723,7 @@ class TestNetwork:
             results[nid] = self._launcher.start_node(nid, cmd)
         return results
 
-    def restart_nodes(
-        self, node_ids: list[int], delay: float = 0
-    ) -> dict[int, bool]:
+    def restart_nodes(self, node_ids: list[int], delay: float = 0) -> dict[int, bool]:
         """Restart specific nodes (stop, optional delay, start).
 
         Args:

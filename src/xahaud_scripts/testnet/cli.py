@@ -1545,7 +1545,9 @@ def start(ctx: click.Context, nodes: str | None) -> None:
 
 @testnet.command()
 @click.argument("nodes", required=False)
-@click.option("--delay", type=float, default=0, help="Seconds to wait between stop and start")
+@click.option(
+    "--delay", type=float, default=0, help="Seconds to wait between stop and start"
+)
 @click.pass_context
 def restart(ctx: click.Context, nodes: str | None, delay: float) -> None:
     """Restart nodes (stop, optional delay, start).
@@ -1644,8 +1646,7 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
     runs_dir = base_dir.parent / ".testnet" / "runs"
     if not runs_dir.is_dir():
         raise click.ClickException(
-            f"No snapshots found. Run 'x-testnet snapshot' first.\n"
-            f"Expected: {runs_dir}"
+            f"No snapshots found. Run 'x-testnet snapshot' first.\nExpected: {runs_dir}"
         )
 
     if snapshot_name == "latest":
@@ -2128,7 +2129,11 @@ def logs_search(
         if not excludes:
             preset_excludes = preset.get("exclude")
             if preset_excludes:
-                excludes = tuple(preset_excludes) if isinstance(preset_excludes, list) else (preset_excludes,)
+                excludes = (
+                    tuple(preset_excludes)
+                    if isinstance(preset_excludes, list)
+                    else (preset_excludes,)
+                )
 
     def parse_relative(s: str) -> tuple[str, timedelta] | None:
         """Parse relative time like -5m, +30s, -1h, +2h30m.

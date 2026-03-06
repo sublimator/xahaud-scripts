@@ -141,7 +141,9 @@ def merge_log_streams(
     iterators: list[tuple[int, Iterator[LogEntry]]] = []
     for log_file in log_files:
         node_id = int(log_file.parent.name[1:])  # n0 -> 0, n1 -> 1, etc.
-        it = iter_matching_lines(log_file, node_id, pattern, tail, time_start, time_end, exclude)
+        it = iter_matching_lines(
+            log_file, node_id, pattern, tail, time_start, time_end, exclude
+        )
         iterators.append((node_id, it))
 
     # Initialize heap with first entry from each iterator
@@ -377,7 +379,9 @@ def logs_search_handler(
                 break
     else:
         # Use heap-based merge for sorted output
-        for entry in merge_log_streams(log_files, regex, tail, time_start, time_end, exclude):
+        for entry in merge_log_streams(
+            log_files, regex, tail, time_start, time_end, exclude
+        ):
             click.echo(entry.line)
             count += 1
             if limit and count >= limit:

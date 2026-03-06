@@ -166,9 +166,7 @@ async def wait_for_ledger_close(
                 result=current,
             )
 
-    raise TimeoutError(
-        f"No ledger close within {timeout}s on node {node_id}"
-    )
+    raise TimeoutError(f"No ledger close within {timeout}s on node {node_id}")
 
 
 async def wait_for_ledger(
@@ -249,7 +247,8 @@ async def wait_for_ledgers(
 
     target = current + count
     return await wait_for_ledger(
-        rpc, target,
+        rpc,
+        target,
         node_id=node_id,
         timeout=timeout,
         poll_interval=poll_interval,
@@ -355,7 +354,9 @@ def search_logs(
     regex = re.compile(pattern)
     matches: list[LogEntry] = []
 
-    for entry in merge_log_streams(log_files, regex, time_start=time_start, time_end=time_end):
+    for entry in merge_log_streams(
+        log_files, regex, time_start=time_start, time_end=time_end
+    ):
         matches.append(entry)
         if limit and len(matches) >= limit:
             break
@@ -410,7 +411,12 @@ def assert_log(
         AssertionError: If pattern not found or count too low.
     """
     result = search_logs(
-        base_dir, pattern, within=within, since=since, until=until, nodes=nodes,
+        base_dir,
+        pattern,
+        within=within,
+        since=since,
+        until=until,
+        nodes=nodes,
     )
     if result.count < min_count:
         window_desc = ""
@@ -442,7 +448,12 @@ def assert_not_log(
         AssertionError: If pattern is found.
     """
     result = search_logs(
-        base_dir, pattern, within=within, since=since, until=until, nodes=nodes,
+        base_dir,
+        pattern,
+        within=within,
+        since=since,
+        until=until,
+        nodes=nodes,
     )
     if result.found:
         window_desc = ""
@@ -489,7 +500,12 @@ def assert_log_order(
 
     for i, pattern in enumerate(patterns):
         result = search_logs(
-            base_dir, pattern, within=within, since=since, until=until, nodes=nodes,
+            base_dir,
+            pattern,
+            within=within,
+            since=since,
+            until=until,
+            nodes=nodes,
         )
         if not result.found:
             raise AssertionError(
@@ -573,7 +589,8 @@ class ScenarioContext:
     ) -> Operation[int]:
         """Wait until validated ledger reaches target index."""
         return await wait_for_ledger(
-            self.rpc, target,
+            self.rpc,
+            target,
             node_id=node_id,
             timeout=timeout,
             poll_interval=poll_interval,
@@ -591,7 +608,8 @@ class ScenarioContext:
     ) -> Operation[int]:
         """Wait for N more ledgers to close from the current position."""
         return await wait_for_ledgers(
-            self.rpc, count,
+            self.rpc,
+            count,
             node_id=node_id,
             timeout=timeout,
             poll_interval=poll_interval,
@@ -612,9 +630,13 @@ class ScenarioContext:
     ) -> LogSearchResult:
         """Search logs with optional time window and node filtering."""
         return search_logs(
-            self.base_dir, pattern,
-            within=within, since=since, until=until,
-            nodes=nodes, limit=limit,
+            self.base_dir,
+            pattern,
+            within=within,
+            since=since,
+            until=until,
+            nodes=nodes,
+            limit=limit,
         )
 
     def assert_log(
@@ -629,9 +651,13 @@ class ScenarioContext:
     ) -> LogSearchResult:
         """Assert that a pattern appears in logs."""
         return assert_log(
-            self.base_dir, pattern,
-            within=within, since=since, until=until,
-            nodes=nodes, min_count=min_count,
+            self.base_dir,
+            pattern,
+            within=within,
+            since=since,
+            until=until,
+            nodes=nodes,
+            min_count=min_count,
         )
 
     def assert_not_log(
@@ -645,8 +671,11 @@ class ScenarioContext:
     ) -> LogSearchResult:
         """Assert that a pattern does NOT appear in logs."""
         return assert_not_log(
-            self.base_dir, pattern,
-            within=within, since=since, until=until,
+            self.base_dir,
+            pattern,
+            within=within,
+            since=since,
+            until=until,
             nodes=nodes,
         )
 
@@ -661,8 +690,11 @@ class ScenarioContext:
     ) -> list[LogSearchResult]:
         """Assert that patterns appear in order in logs."""
         return assert_log_order(
-            self.base_dir, patterns,
-            within=within, since=since, until=until,
+            self.base_dir,
+            patterns,
+            within=within,
+            since=since,
+            until=until,
             nodes=nodes,
         )
 
@@ -688,9 +720,7 @@ def load_scenario_script(script_path: Path) -> Any:
     spec.loader.exec_module(module)
 
     if not hasattr(module, "scenario"):
-        raise ValueError(
-            f"Script must define 'async def scenario(ctx)': {script_path}"
-        )
+        raise ValueError(f"Script must define 'async def scenario(ctx)': {script_path}")
 
     fn = module.scenario
     if not callable(fn):
