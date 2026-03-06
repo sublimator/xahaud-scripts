@@ -250,6 +250,29 @@ class RequestsRPCClient:
         """Tell a node to disconnect from a peer."""
         return self._call(node_id, "disconnect", {"ip": ip, "port": port})
 
+    def feature(
+        self,
+        node_id: int,
+        feature_name: str | None = None,
+        vetoed: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Query or vote on an amendment feature.
+
+        Args:
+            node_id: The node ID (0, 1, 2, etc.)
+            feature_name: Feature name or hash (None = list all)
+            vetoed: True to reject, False to accept (None = query only)
+
+        Returns:
+            The feature result dict, or None if query failed
+        """
+        params: dict[str, Any] = {}
+        if feature_name is not None:
+            params["feature"] = feature_name
+        if vetoed is not None:
+            params["vetoed"] = vetoed
+        return self._call(node_id, "feature", params)
+
     def get_node_data(
         self,
         node_id: int,

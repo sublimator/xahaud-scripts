@@ -72,8 +72,17 @@ def _parse_node_spec(spec: str) -> int:
     raise click.BadParameter(f"Invalid node spec: {spec}. Use n0, n1, etc.")
 
 
-def _parse_node_list(specs: str) -> list[int]:
-    """Parse 'n0,n1,n2' to list of node IDs."""
+def _parse_node_list(specs: str, node_count: int = 5) -> list[int]:
+    """Parse node list with optional exclusion.
+
+    Formats:
+        'n0,n1,n2'   → [0, 1, 2]
+        '^n1'         → all nodes except 1
+        '^n0,n3'      → all nodes except 0 and 3
+    """
+    if specs.startswith("^"):
+        excluded = [_parse_node_spec(s.strip()) for s in specs[1:].split(",")]
+        return [i for i in range(node_count) if i not in excluded]
     return [_parse_node_spec(s.strip()) for s in specs.split(",")]
 
 
@@ -919,6 +928,98 @@ def logs(
     node_id = _parse_node_spec(node) if node else None
     network = _create_network(ctx)
     network.set_log_level(partition, severity, node_id)
+
+
+@testnet.command()
+@click.argument("name")
+@click.argument("action", required=False, type=click.Choice(["accept", "reject"]))
+@click.argument("nodes", required=False)
+@click.option(
+    "-n",
+    "--node-count",
+    type=int,
+    default=5,
+    help="Total node count (for ^ exclusion, default: 5)",
+)
+@click.pass_context
+def feature(
+    ctx: click.Context,
+    name: str,
+    action: str | None,
+    nodes: str | None,
+    node_count: int,
+) -> None:
+    """Query or vote on an amendment feature.
+
+    NAME is the feature name or hash (e.g., ConsensusEntropy).
+
+    Without ACTION, shows the feature status. With accept/reject, votes
+    on the feature.
+
+    NODES is optional: n0,n1 for specific nodes, ^n1 for all except n1.
+    Defaults to all nodes.
+
+    Examples:
+
+        testnet feature ConsensusEntropy
+        testnet feature ConsensusEntropy accept
+        testnet feature ConsensusEntropy reject n0,n1
+        testnet feature ConsensusEntropy accept ^n1
+    """
+    network = _create_network(ctx, node_count=node_count)
+
+    if nodes:
+        node_ids = _parse_node_list(nodes, node_count=node_count)
+    else:
+        node_ids = list(range(node_count))
+
+    vetoed: bool | None = None
+    if action == "accept":
+        vetoed = False
+    elif action == "reject":
+        vetoed = True
+
+    for node_id in node_ids:
+        result = network.rpc_client.feature(node_id, feature_name=name, vetoed=vetoed)
+        if result is None:
+            click.echo(f"n{node_id}: connection failed")
+            continue
+
+        if "error" in result:
+            click.echo(f"n{node_id}: {result.get('error_message', result['error'])}")
+            continue
+
+        if action:
+            # Vote response — show the specific feature status
+            feature_data = result.get(name)
+            if feature_data:
+                status = "accepted" if not feature_data.get("vetoed") else "rejected"
+                click.echo(f"n{node_id}: {status}")
+            else:
+                # Try to find by hash match in result keys
+                for key, val in result.items():
+                    if key == "status":
+                        continue
+                    if isinstance(val, dict) and "name" in val:
+                        status = "accepted" if not val.get("vetoed") else "rejected"
+                        click.echo(f"n{node_id}: {val['name']} -> {status}")
+                        break
+                else:
+                    click.echo(f"n{node_id}: {json.dumps(result, indent=2)}")
+        else:
+            # Query response — show feature info
+            feature_data = result.get(name)
+            if feature_data:
+                click.echo(f"n{node_id}: {json.dumps(feature_data, indent=2)}")
+            else:
+                for key, val in result.items():
+                    if key == "status":
+                        continue
+                    if isinstance(val, dict) and "name" in val:
+                        click.echo(f"n{node_id}: {json.dumps(val, indent=2)}")
+                        break
+                else:
+                    click.echo(f"n{node_id}: {json.dumps(result, indent=2)}")
 
 
 @testnet.command()

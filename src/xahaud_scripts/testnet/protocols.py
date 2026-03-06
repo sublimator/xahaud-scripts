@@ -223,6 +223,15 @@ class RPCClient(Protocol):
         """
         ...
 
+    def feature(
+        self,
+        node_id: int,
+        feature_name: str | None = None,
+        vetoed: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Query or vote on an amendment feature."""
+        ...
+
     def get_node_data(
         self,
         node_id: int,
