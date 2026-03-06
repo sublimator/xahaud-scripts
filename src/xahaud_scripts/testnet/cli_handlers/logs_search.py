@@ -70,6 +70,7 @@ def iter_matching_lines(
     tail: int | None = None,
     time_start: datetime | None = None,
     time_end: datetime | None = None,
+    exclude: re.Pattern[str] | None = None,
 ) -> Iterator[LogEntry]:
     """Iterate over matching lines from a log file.
 
@@ -80,6 +81,7 @@ def iter_matching_lines(
         tail: If set, only read last N lines
         time_start: Only include entries at or after this time
         time_end: Only include entries at or before this time
+        exclude: If set, skip lines that match this pattern
 
     Yields:
         LogEntry objects for matching lines
@@ -91,6 +93,8 @@ def iter_matching_lines(
 
             for line in lines:
                 if pattern.search(line):
+                    if exclude and exclude.search(line):
+                        continue
                     ts = parse_timestamp(line)
                     # Skip continuation lines (no timestamp = part of multi-line entry)
                     if ts is None:
@@ -115,6 +119,7 @@ def merge_log_streams(
     tail: int | None = None,
     time_start: datetime | None = None,
     time_end: datetime | None = None,
+    exclude: re.Pattern[str] | None = None,
 ) -> Iterator[LogEntry]:
     """Merge multiple log files by timestamp using a heap.
 
@@ -127,6 +132,7 @@ def merge_log_streams(
         tail: If set, only read last N lines from each file
         time_start: Only include entries at or after this time
         time_end: Only include entries at or before this time
+        exclude: If set, skip lines that match this pattern
 
     Yields:
         LogEntry objects in timestamp order
@@ -135,7 +141,7 @@ def merge_log_streams(
     iterators: list[tuple[int, Iterator[LogEntry]]] = []
     for log_file in log_files:
         node_id = int(log_file.parent.name[1:])  # n0 -> 0, n1 -> 1, etc.
-        it = iter_matching_lines(log_file, node_id, pattern, tail, time_start, time_end)
+        it = iter_matching_lines(log_file, node_id, pattern, tail, time_start, time_end, exclude)
         iterators.append((node_id, it))
 
     # Initialize heap with first entry from each iterator
@@ -246,6 +252,7 @@ def logs_search_handler(
     offset_start: timedelta | None = None,
     offset_end: timedelta | None = None,
     nodes: str | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> int:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -261,6 +268,7 @@ def logs_search_handler(
         offset_start: If set, compute time_start as (earliest + delta).
         offset_end: If set, compute time_end as (earliest + delta).
         nodes: Node spec like '0-2,5' to filter which nodes to search
+        exclude_patterns: Regex patterns to exclude from results
 
     Returns:
         Number of matching lines found
@@ -270,6 +278,14 @@ def logs_search_handler(
         regex = re.compile(pattern)
     except re.error as e:
         raise click.BadParameter(f"Invalid regex: {e}") from e
+
+    # Compile exclude pattern (join multiple with |)
+    exclude: re.Pattern[str] | None = None
+    if exclude_patterns:
+        try:
+            exclude = re.compile("|".join(exclude_patterns))
+        except re.error as e:
+            raise click.BadParameter(f"Invalid exclude regex: {e}") from e
 
     # Check base_dir exists
     if not base_dir.exists():
@@ -351,7 +367,7 @@ def logs_search_handler(
         for log_file in log_files:
             node_id = int(log_file.parent.name[1:])
             for entry in iter_matching_lines(
-                log_file, node_id, regex, tail, time_start, time_end
+                log_file, node_id, regex, tail, time_start, time_end, exclude
             ):
                 click.echo(entry.line)
                 count += 1
@@ -361,7 +377,7 @@ def logs_search_handler(
                 break
     else:
         # Use heap-based merge for sorted output
-        for entry in merge_log_streams(log_files, regex, tail, time_start, time_end):
+        for entry in merge_log_streams(log_files, regex, tail, time_start, time_end, exclude):
             click.echo(entry.line)
             count += 1
             if limit and count >= limit:

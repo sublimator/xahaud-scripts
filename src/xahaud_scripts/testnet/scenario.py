@@ -4,31 +4,34 @@ Provides timing anchors (Marker, Range, Operation) and log assertions
 that work against live networks or archived snapshots. Reuses the
 logs_search backend for all log operations.
 
-Example usage in a scenario script:
+Scenario scripts define:
 
-    from xahaud_scripts.testnet.scenario import ScenarioContext
-
-    async def scenario(ctx: ScenarioContext):
+    async def scenario(ctx):
         await ctx.wait_for_ledger(10)
         pre = ctx.mark("pre-kill")
-        ctx.stop_nodes([1, 2])
         await ctx.sleep(5)
         post = ctx.mark("post-kill")
 
         window = pre.until(post)
         ctx.assert_log("LedgerConsensus", within=window, nodes=[0, 3, 4])
         ctx.assert_not_log("error", within=window)
+
+Run via:
+
+    x-testnet run --scenario-script my_scenario.py
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib.util
 import re
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.protocols import RPCClient
@@ -123,6 +126,49 @@ def _get_validated_ledger(rpc: RPCClient, node_id: int = 0) -> int | None:
 # ---------------------------------------------------------------------------
 # Wait primitives
 # ---------------------------------------------------------------------------
+
+
+async def wait_for_ledger_close(
+    rpc: RPCClient,
+    *,
+    node_id: int = 0,
+    timeout: float = 120,
+    poll_interval: float = 1.0,
+    name: str | None = None,
+) -> Operation[int]:
+    """Wait for the next ledger close event.
+
+    Polls until the validated ledger advances. Handles the node not being
+    ready yet (no validated ledger) — keeps polling until one appears and
+    then waits for it to advance.
+
+    Returns:
+        Operation with the new ledger index as result.
+
+    Raises:
+        TimeoutError: If no close observed within timeout.
+    """
+    label = name or "ledger-close"
+    started = now_marker(f"{label}-start")
+    baseline = _get_validated_ledger(rpc, node_id)
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        await asyncio.sleep(poll_interval)
+        current = _get_validated_ledger(rpc, node_id)
+        if current is not None and (baseline is None or current > baseline):
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for_ledger_close",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=current,
+            )
+
+    raise TimeoutError(
+        f"No ledger close within {timeout}s on node {node_id}"
+    )
 
 
 async def wait_for_ledger(
@@ -463,3 +509,238 @@ def assert_log_order(
         results.append(result)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# ScenarioContext — the "we call you" interface
+# ---------------------------------------------------------------------------
+
+
+class ScenarioContext:
+    """Context passed to scenario scripts.
+
+    Wraps RPC client, base_dir, and all scenario primitives into a single
+    object that the framework passes to ``async def scenario(ctx)``.
+    """
+
+    def __init__(
+        self,
+        rpc: RPCClient,
+        base_dir: Path,
+        node_count: int,
+    ) -> None:
+        self.rpc = rpc
+        self.base_dir = base_dir
+        self.node_count = node_count
+
+    # -- Timing ------------------------------------------------------------
+
+    def mark(self, name: str) -> Marker:
+        """Create a Marker anchored to the current time."""
+        return now_marker(name)
+
+    async def sleep(self, seconds: float) -> None:
+        """Async sleep."""
+        await asyncio.sleep(seconds)
+
+    # -- Wait primitives ---------------------------------------------------
+
+    async def wait_for_ledger_close(
+        self,
+        *,
+        node_id: int = 0,
+        timeout: float = 120,
+        poll_interval: float = 1.0,
+        name: str | None = None,
+    ) -> Operation[int]:
+        """Wait for the next ledger close event."""
+        return await wait_for_ledger_close(
+            self.rpc,
+            node_id=node_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name,
+        )
+
+    async def wait_for_ledger(
+        self,
+        target: int,
+        *,
+        node_id: int = 0,
+        timeout: float = 120,
+        poll_interval: float = 1.0,
+        name: str | None = None,
+    ) -> Operation[int]:
+        """Wait until validated ledger reaches target index."""
+        return await wait_for_ledger(
+            self.rpc, target,
+            node_id=node_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name,
+        )
+
+    async def wait_for_ledgers(
+        self,
+        count: int,
+        *,
+        node_id: int = 0,
+        timeout: float = 120,
+        poll_interval: float = 1.0,
+        name: str | None = None,
+    ) -> Operation[int]:
+        """Wait for N more ledgers to close from the current position."""
+        return await wait_for_ledgers(
+            self.rpc, count,
+            node_id=node_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name,
+        )
+
+    # -- Log operations ----------------------------------------------------
+
+    def search_logs(
+        self,
+        pattern: str,
+        *,
+        within: Range | None = None,
+        since: Marker | None = None,
+        until: Marker | None = None,
+        nodes: list[int] | None = None,
+        limit: int | None = None,
+    ) -> LogSearchResult:
+        """Search logs with optional time window and node filtering."""
+        return search_logs(
+            self.base_dir, pattern,
+            within=within, since=since, until=until,
+            nodes=nodes, limit=limit,
+        )
+
+    def assert_log(
+        self,
+        pattern: str,
+        *,
+        within: Range | None = None,
+        since: Marker | None = None,
+        until: Marker | None = None,
+        nodes: list[int] | None = None,
+        min_count: int = 1,
+    ) -> LogSearchResult:
+        """Assert that a pattern appears in logs."""
+        return assert_log(
+            self.base_dir, pattern,
+            within=within, since=since, until=until,
+            nodes=nodes, min_count=min_count,
+        )
+
+    def assert_not_log(
+        self,
+        pattern: str,
+        *,
+        within: Range | None = None,
+        since: Marker | None = None,
+        until: Marker | None = None,
+        nodes: list[int] | None = None,
+    ) -> LogSearchResult:
+        """Assert that a pattern does NOT appear in logs."""
+        return assert_not_log(
+            self.base_dir, pattern,
+            within=within, since=since, until=until,
+            nodes=nodes,
+        )
+
+    def assert_log_order(
+        self,
+        patterns: list[str],
+        *,
+        within: Range | None = None,
+        since: Marker | None = None,
+        until: Marker | None = None,
+        nodes: list[int] | None = None,
+    ) -> list[LogSearchResult]:
+        """Assert that patterns appear in order in logs."""
+        return assert_log_order(
+            self.base_dir, patterns,
+            within=within, since=since, until=until,
+            nodes=nodes,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Script loading and runner
+# ---------------------------------------------------------------------------
+
+
+def load_scenario_script(script_path: Path) -> Any:
+    """Load a scenario script and return the ``scenario`` coroutine function.
+
+    The script must define ``async def scenario(ctx):``.
+
+    Raises:
+        ValueError: If script is missing the required function.
+    """
+    spec = importlib.util.spec_from_file_location("scenario_script", script_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load script: {script_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "scenario"):
+        raise ValueError(
+            f"Script must define 'async def scenario(ctx)': {script_path}"
+        )
+
+    fn = module.scenario
+    if not callable(fn):
+        raise ValueError(f"'scenario' must be a callable: {script_path}")
+
+    return fn
+
+
+async def run_scenario_with_monitor(
+    script_path: Path,
+    rpc_client: RPCClient,
+    base_dir: Path,
+    node_count: int,
+    network_config: Any,
+    tracked_features: list[str] | None = None,
+) -> None:
+    """Run a scenario script with the network monitor in background.
+
+    Args:
+        script_path: Path to the scenario script.
+        rpc_client: RPC client for the scenario context.
+        base_dir: Testnet directory (contains n0/, n1/, ...).
+        node_count: Number of nodes in the network.
+        network_config: NetworkConfig for the monitor.
+        tracked_features: Optional list of feature names to track.
+    """
+    from xahaud_scripts.testnet.monitor import NetworkMonitor
+
+    scenario_fn = load_scenario_script(script_path)
+    ctx = ScenarioContext(rpc=rpc_client, base_dir=base_dir, node_count=node_count)
+
+    stop_event = asyncio.Event()
+    monitor = NetworkMonitor(
+        rpc_client=rpc_client,
+        network_config=network_config,
+        tracked_features=tracked_features,
+    )
+
+    async def run_monitor() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor.monitor(stop_event=stop_event)
+
+    monitor_task = asyncio.create_task(run_monitor())
+
+    try:
+        logger.info(f"Running scenario: {script_path.name}")
+        await scenario_fn(ctx)
+        logger.info("Scenario completed successfully")
+    finally:
+        stop_event.set()
+        monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor_task

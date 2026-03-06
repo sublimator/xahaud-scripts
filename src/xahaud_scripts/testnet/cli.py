@@ -377,6 +377,12 @@ def generate(
     help="Log test script output to this file",
 )
 @click.option(
+    "--scenario-script",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to scenario script to run (gets ScenarioContext with RPC + log assertions)",
+)
+@click.option(
     "--test-script-teardown",
     is_flag=True,
     default=False,
@@ -463,6 +469,7 @@ def run(
     reconnect: bool,
     test_script: Path | None,
     test_script_log_file: Path | None,
+    scenario_script: Path | None,
     test_script_teardown: bool,
     rc_specs: tuple[str, ...],
     rc_clear: bool,
@@ -670,13 +677,20 @@ def run(
         desktop=desktop,
     )
 
+    # Mutual exclusion: only one of --test-script, --scenario-script, --generate-txns
+    script_opts = [
+        ("--test-script", test_script),
+        ("--scenario-script", scenario_script),
+        ("--generate-txns", generate_txns),
+    ]
+    active = [(name, val) for name, val in script_opts if val]
+    if len(active) > 1:
+        names = " and ".join(name for name, _ in active)
+        raise click.UsageError(f"{names} are mutually exclusive.")
+
     # Parse --generate-txns
     min_txns = max_txns = 0
     if generate_txns:
-        if test_script:
-            raise click.UsageError(
-                "--generate-txns and --test-script are mutually exclusive."
-            )
         if "-" in generate_txns:
             parts = generate_txns.split("-", 1)
             min_txns, max_txns = int(parts[0]), int(parts[1])
@@ -761,6 +775,36 @@ def run(
             logger.info(f"Teardown: killed {count} processes")
         else:
             # After test script (success, interrupted, or failed), continue monitoring
+            logger.info("Continuing to monitor (Ctrl-C to stop)...")
+            network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
+    elif scenario_script:
+        import asyncio
+
+        from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
+
+        try:
+            asyncio.run(
+                run_scenario_with_monitor(
+                    script_path=scenario_script,
+                    rpc_client=network._rpc,
+                    base_dir=network._base_dir,
+                    node_count=network._config.node_count,
+                    network_config=network._config,
+                    tracked_features=tracked,
+                )
+            )
+        except KeyboardInterrupt:
+            logger.info("Scenario interrupted")
+        except Exception as e:
+            logger.error(f"Scenario failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        if test_script_teardown:
+            count = network.teardown()
+            logger.info(f"Teardown: killed {count} processes")
+        else:
             logger.info("Continuing to monitor (Ctrl-C to stop)...")
             network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
     else:
@@ -1597,7 +1641,7 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
         exact     → runs/<name> (exact match)
         suffix    → runs/*-<name> (suffix match)
     """
-    runs_dir = base_dir / "runs"
+    runs_dir = base_dir.parent / ".testnet" / "runs"
     if not runs_dir.is_dir():
         raise click.ClickException(
             f"No snapshots found. Run 'x-testnet snapshot' first.\n"
@@ -1986,6 +2030,13 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     help="Which nodes to search (e.g., '0-2', '1,3,5', '0-2,5,7-9')",
 )
 @click.option(
+    "--exclude",
+    "-x",
+    "excludes",
+    multiple=True,
+    help="Exclude lines matching this regex. Can be repeated.",
+)
+@click.option(
     "--snapshot",
     "snapshot_name",
     default=None,
@@ -2001,6 +2052,7 @@ def logs_search(
     time_start: str | None,
     time_end: str | None,
     nodes: str | None,
+    excludes: tuple[str, ...],
     snapshot_name: str | None,
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
@@ -2073,6 +2125,10 @@ def logs_search(
             nodes = preset.get("nodes")
         if not no_sort:
             no_sort = preset.get("no_sort", False)
+        if not excludes:
+            preset_excludes = preset.get("exclude")
+            if preset_excludes:
+                excludes = tuple(preset_excludes) if isinstance(preset_excludes, list) else (preset_excludes,)
 
     def parse_relative(s: str) -> tuple[str, timedelta] | None:
         """Parse relative time like -5m, +30s, -1h, +2h30m.
@@ -2144,6 +2200,7 @@ def logs_search(
         offset_start=offset_start,
         offset_end=offset_end,
         nodes=nodes,
+        exclude_patterns=list(excludes) if excludes else None,
     )
 
 

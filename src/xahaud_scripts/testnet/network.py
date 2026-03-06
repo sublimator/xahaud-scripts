@@ -291,6 +291,42 @@ class TestNetwork:
         logger.info(f"  Node 0 RPC: http://127.0.0.1:{self._config.base_port_rpc}")
         logger.info(f"  Node 0 WS:  ws://127.0.0.1:{self._config.base_port_ws}")
 
+        # Dump effective env vars so it's obvious what flags are active
+        self._dump_launch_env(launch_config)
+
+    def _dump_launch_env(self, launch_config: LaunchConfig) -> None:
+        """Log effective environment variables for visibility."""
+        # Hardcoded env vars from the launcher
+        logger.info("  Environment:")
+        logger.info(f"    INJECT_TYPE={launch_config.inject_type}")
+        if launch_config.amendment_id:
+            logger.info(f"    AMENDMENT_ID={launch_config.amendment_id[:16]}...")
+        if launch_config.flood is not None:
+            logger.info(f"    FLOOD={launch_config.flood}")
+        if launch_config.n_txns is not None:
+            logger.info(f"    N_TXNS={launch_config.n_txns}")
+        if launch_config.no_check_local:
+            logger.info("    CHECK_LOCAL_PSEUDO=0")
+        if launch_config.no_check_pseudo_valid:
+            logger.info("    CHECK_PSEUDO_VALIDITY=0")
+
+        # Global extra env vars (--env NAME=VALUE)
+        for key, value in sorted(launch_config.extra_env.items()):
+            logger.info(f"    {key}={value}")
+
+        # Node-specific env vars (--env n0:NAME=VALUE)
+        for node_id in sorted(launch_config.node_env):
+            for key, value in sorted(launch_config.node_env[node_id].items()):
+                logger.info(f"    n{node_id}: {key}={value}")
+
+        # Startup flags
+        if launch_config.quorum is not None:
+            logger.info(f"    --quorum {launch_config.quorum}")
+        if launch_config.slave_net:
+            logger.info("    --net (slave nodes)")
+        if launch_config.extra_args:
+            logger.info(f"    extra args: {' '.join(launch_config.extra_args)}")
+
     def monitor(
         self,
         tracked_features: list[str] | None = None,
@@ -729,10 +765,10 @@ class TestNetwork:
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         dir_name = f"{timestamp}-{name}" if name else timestamp
-        runs_dir = self._base_dir / "runs"
+        runs_dir = self._base_dir.parent / ".testnet" / "runs"
         snapshot_dir = runs_dir / dir_name
 
-        exclude = ["runs"]
+        exclude: list[str] = []
         if not keep_db:
             exclude.append("db")
 
