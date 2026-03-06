@@ -219,7 +219,17 @@ class TmuxLauncher:
         """Build the full command with env vars and startup flags."""
         env_vars = self._build_env_vars(node, config)
         startup_flags = self._build_startup_flags(node, config)
-        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
+        binary = str(config.get_rippled_path(node.id))
+        args = f"--conf {node.config_path} {startup_flags}"
+
+        if node.id in config.lldb_nodes:
+            from xahaud_scripts.utils.lldb import create_lldb_script
+
+            script = create_lldb_script(all_threads=False)
+            cmd = f"lldb -s {script} -- {binary} {args}"
+            logger.info(f"Node {node.id} running under lldb (script: {script})")
+        else:
+            cmd = f"{binary} {args}"
 
         # Combine env vars and command
         return f"{env_vars} && {cmd}"

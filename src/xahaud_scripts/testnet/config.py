@@ -324,6 +324,7 @@ class LaunchConfig:
     node_env: dict[int, dict[str, str]] = field(default_factory=dict)
     node_rippled_paths: dict[int, Path] = field(default_factory=dict)
     desktop: int | None = None
+    lldb_nodes: set[int] = field(default_factory=set)
 
     def get_rippled_path(self, node_id: int) -> Path:
         """Get the effective binary path for a node."""

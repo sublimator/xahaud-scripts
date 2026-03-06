@@ -433,6 +433,12 @@ def generate(
     help="Track amendment feature status per node. Can be repeated for multiple features.",
 )
 @click.option(
+    "--lldb",
+    "lldb_spec",
+    default=None,
+    help="Run node(s) under lldb for crash backtraces. e.g. n0, n0,n4, or 'all'.",
+)
+@click.option(
     "--start-ledger",
     type=click.IntRange(1, 256),
     default=None,
@@ -478,6 +484,7 @@ def run(
     no_teardown: bool,
     node_binaries: tuple[str, ...],
     track_features: tuple[str, ...],
+    lldb_spec: str | None,
     start_ledger: int | None,
     majority_features: tuple[str, ...],
     extra_args: tuple[str, ...],
@@ -656,6 +663,25 @@ def run(
         for nid, path in sorted(node_rippled_paths.items()):
             logger.info(f"  n{nid}: {path}")
 
+    # Parse --lldb spec
+    lldb_nodes: set[int] = set()
+    if lldb_spec:
+        if lldb_spec.lower() == "all":
+            lldb_nodes = set(range(node_count))
+        else:
+            for part in lldb_spec.split(","):
+                part = part.strip()
+                if part.startswith("n") and part[1:].isdigit():
+                    lldb_nodes.add(int(part[1:]))
+                elif part.isdigit():
+                    lldb_nodes.add(int(part))
+                else:
+                    raise click.BadParameter(
+                        f"Invalid lldb node spec: {part}. Use n0, n1, etc.",
+                        param_hint="--lldb",
+                    )
+        logger.info(f"LLDB enabled for nodes: {sorted(lldb_nodes)}")
+
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
@@ -675,6 +701,7 @@ def run(
         node_env=node_env,
         node_rippled_paths=node_rippled_paths,
         desktop=desktop,
+        lldb_nodes=lldb_nodes,
     )
 
     # Mutual exclusion: only one of --test-script, --scenario-script, --generate-txns
