@@ -276,18 +276,18 @@ class RequestsRPCClient:
     def get_node_data(
         self,
         node_id: int,
-        tracked_amendment: str | None = None,
+        tracked_features: list[str] | None = None,
     ) -> dict[str, Any]:
         """Get comprehensive data from a node for monitoring.
 
-        Fetches both server_info and server_definitions in sequence.
+        Fetches server_info and optionally queries tracked features.
 
         Args:
             node_id: The node ID (0, 1, 2, etc.)
-            tracked_amendment: Optional amendment ID to check status
+            tracked_features: Optional list of feature names to track
 
         Returns:
-            Dict with 'node_id', 'server_info', 'amendment_status', 'error' keys
+            Dict with 'node_id', 'server_info', 'feature_statuses', 'error' keys
         """
         import time
 
@@ -296,7 +296,7 @@ class RequestsRPCClient:
         result: dict[str, Any] = {
             "node_id": node_id,
             "server_info": None,
-            "amendment_status": None,
+            "feature_statuses": {},
             "response_time": None,
             "error": None,
         }
@@ -305,19 +305,32 @@ class RequestsRPCClient:
             # Get server_info
             result["server_info"] = self.server_info(node_id)
 
-            # Get server_definitions for amendment status
-            if tracked_amendment:
-                defs = self.server_definitions(node_id)
-                if defs:
-                    if "error" in defs:
-                        result["amendment_status"] = {"status": "not_synced"}
-                    elif "features" in defs:
-                        features = defs["features"]
-                        tracked_upper = tracked_amendment.upper()
-                        if tracked_upper in features:
-                            result["amendment_status"] = features[tracked_upper]
+            # Query each tracked feature via admin feature RPC
+            if tracked_features:
+                for name in tracked_features:
+                    feat_result = self.feature(node_id, feature_name=name)
+                    if feat_result is None:
+                        result["feature_statuses"][name] = {"status": "error"}
+                    elif "error" in feat_result:
+                        result["feature_statuses"][name] = {"status": "not_synced"}
+                    else:
+                        # Find the feature data in the result
+                        # Response is {hash: {name, enabled, supported, vetoed}, status: ...}
+                        feat_data = feat_result.get(name)
+                        if feat_data:
+                            result["feature_statuses"][name] = feat_data
                         else:
-                            result["amendment_status"] = {"status": "not_found"}
+                            # Try to find by iterating (response keyed by hash)
+                            for key, val in feat_result.items():
+                                if key == "status":
+                                    continue
+                                if isinstance(val, dict):
+                                    result["feature_statuses"][name] = val
+                                    break
+                            else:
+                                result["feature_statuses"][name] = {
+                                    "status": "not_found"
+                                }
 
         except Exception as e:
             result["error"] = str(e)

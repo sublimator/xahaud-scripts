@@ -13,6 +13,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -53,61 +54,194 @@ def feature_name_to_hash(name: str) -> str:
     return digest[:32].hex().upper()  # First 256 bits = 32 bytes
 
 
+def _short_skip_index() -> str:
+    """Compute the keylet::skip() index for the short LedgerHashes SLE.
+
+    This is sha512Half(uint16_be('s')).
+    """
+    return hashlib.sha512(struct.pack(">H", ord("s"))).digest()[:32].hex().upper()
+
+
+def _make_short_skiplist_entry(
+    ledger_index: int, prior_hashes: list[str]
+) -> dict | None:
+    """Build the short LedgerHashes SLE for a synthetic ledger in 1..256.
+
+    Args:
+        ledger_index: The starting ledger index (1-256).
+        prior_hashes: Hashes of ledgers 1..ledger_index-1, oldest to newest.
+
+    Returns:
+        The LedgerHashes entry dict, or None if ledger_index is 1 (no prior hashes).
+    """
+    expected = ledger_index - 1
+    if expected == 0:
+        return None
+
+    if len(prior_hashes) != expected:
+        raise ValueError(
+            f"ledger {ledger_index} needs {expected} prior hashes, "
+            f"got {len(prior_hashes)}"
+        )
+
+    return {
+        "Flags": 0,
+        "LedgerEntryType": "LedgerHashes",
+        "Hashes": [h.upper() for h in prior_hashes],
+        "LastLedgerSequence": ledger_index - 1,
+        "index": _short_skip_index(),
+    }
+
+
+def _generate_synthetic_hashes(count: int) -> list[str]:
+    """Generate fake prior ledger hashes to satisfy short skip-list lookups.
+
+    These are deliberately fake prehistory — they only exist so that
+    hashOfSeq() returns *something* for synthetic starts <= 256.
+    This is NOT real ledger history and will not satisfy anything that
+    needs actual ancestor ledger data.
+
+    Args:
+        count: Number of hashes to generate (for ledgers 1..count).
+
+    Returns:
+        List of 64-char hex hash strings.
+    """
+    hashes = []
+    for i in range(1, count + 1):
+        h = hashlib.sha512(b"synthetic-ledger-" + str(i).encode()).digest()[:32]
+        hashes.append(h.hex().upper())
+    return hashes
+
+
+def _resolve_feature_hash(spec: str) -> str:
+    """Resolve a feature spec to its amendment hash.
+
+    Accepts:
+        @Name           — name-to-hash via sha512Half
+        ABC123... (64)  — raw 64-char hex hash
+        Name            — bare name, auto-hashed via sha512Half
+    """
+    if spec.startswith("@"):
+        return feature_name_to_hash(spec[1:])
+    if len(spec) == 64 and all(c in "0123456789abcdefABCDEF" for c in spec):
+        return spec.upper()
+    return feature_name_to_hash(spec)
+
+
+def resolve_feature_name(spec: str) -> str:
+    """Resolve a feature spec to a bare feature name (for RPC calls).
+
+    Strips leading @ if present.
+    """
+    return spec[1:] if spec.startswith("@") else spec
+
+
+def _get_or_create_amendments_entry(
+    account_state: list[dict],
+) -> dict:
+    """Find or create the Amendments SLE in accountState."""
+    for entry in account_state:
+        if entry.get("LedgerEntryType") == "Amendments":
+            return entry
+    raise ValueError("No Amendments entry found in genesis.json")
+
+
 def prepare_genesis_file(
     base_genesis: Path,
     features: list[str],
+    start_ledger: int | None = None,
+    majority_features: list[str] | None = None,
 ) -> Path:
-    """Create a modified genesis.json with custom amendments.
+    """Create a modified genesis.json with custom amendments and/or start ledger.
 
     Args:
         base_genesis: Path to the base genesis.json file
         features: List of amendment hashes or @names. Prefix with '-' to remove.
                   Use @Name syntax to compute hash from name (e.g., @RNG).
+        start_ledger: Optional starting ledger sequence number (1-256).
+        majority_features: Optional list of feature names/@hashes to pre-seed
+                          in sfMajorities of the Amendments SLE. Uses CloseTime=0
+                          so the hold time is already satisfied. Nodes must still
+                          vote yes (feature accept) before the voting ledger, or
+                          the seeded majority will be cleared via tfLostMajority.
 
     Returns:
         Path to the (possibly modified) genesis file.
-        If no features specified, returns base_genesis unchanged.
+        If no modifications needed, returns base_genesis unchanged.
     """
-    if not features:
+    if not features and start_ledger is None and not majority_features:
         return base_genesis
 
     # Load base genesis
     with open(base_genesis) as f:
         genesis = json.load(f)
 
-    # Find Amendments entry in accountState
-    amendments_entry = None
-    for entry in genesis["ledger"]["accountState"]:
-        if entry.get("LedgerEntryType") == "Amendments":
-            amendments_entry = entry
-            break
+    account_state = genesis["ledger"]["accountState"]
 
-    if amendments_entry is None:
-        raise ValueError("No Amendments entry found in genesis.json")
+    # Modify amendments if requested
+    if features:
+        amendments_entry = _get_or_create_amendments_entry(account_state)
+        current_amendments = set(amendments_entry.get("Amendments", []))
 
-    current_amendments = set(amendments_entry.get("Amendments", []))
+        for feature in features:
+            remove = feature.startswith("-")
+            if remove:
+                feature = feature[1:]
 
-    # Process feature modifications
-    for feature in features:
-        # Check for removal prefix
-        remove = feature.startswith("-")
-        if remove:
-            feature = feature[1:]
+            amendment_hash = _resolve_feature_hash(feature)
 
-        # Check for @name syntax
-        if feature.startswith("@"):
-            name = feature[1:]
-            amendment_hash = feature_name_to_hash(name)
-        else:
-            amendment_hash = feature.upper()
+            if remove:
+                current_amendments.discard(amendment_hash)
+            else:
+                current_amendments.add(amendment_hash)
 
-        if remove:
-            current_amendments.discard(amendment_hash)
-        else:
-            current_amendments.add(amendment_hash)
+        amendments_entry["Amendments"] = sorted(current_amendments)
 
-    # Update amendments array (sorted for deterministic output)
-    amendments_entry["Amendments"] = sorted(current_amendments)
+    # Pre-seed sfMajorities in the Amendments SLE.
+    # Uses CloseTime=0 (ripple epoch start) so the hold time is already satisfied.
+    # Nodes must still vote yes before the voting ledger — if validators don't
+    # advertise the amendment, the next amendment round takes the tfLostMajority
+    # path and clears the seeded majority. Testnet-only scaffolding.
+    if majority_features:
+        amendments_entry = _get_or_create_amendments_entry(account_state)
+        existing_majorities = amendments_entry.get("Majorities", [])
+
+        # Build set of already-seeded amendment hashes
+        seeded = {
+            m["Majority"]["Amendment"] for m in existing_majorities if "Majority" in m
+        }
+
+        for spec in majority_features:
+            amendment_hash = _resolve_feature_hash(spec)
+            if amendment_hash not in seeded:
+                existing_majorities.append(
+                    {"Majority": {"Amendment": amendment_hash, "CloseTime": 0}}
+                )
+
+        amendments_entry["Majorities"] = existing_majorities
+
+    # Modify start ledger if requested
+    if start_ledger is not None:
+        genesis["ledger"]["seqNum"] = str(start_ledger)
+        genesis["ledger"]["ledger_index"] = str(start_ledger)
+
+        # Inject fake short skip list so hashOfSeq() works for starts <= 256.
+        # loadLedgerFromFile() rebuilds from ledger_index + accountState;
+        # wrapper fields like hash/parent_hash are not trusted.
+        if start_ledger > 1:
+            # Remove any existing LedgerHashes entries
+            account_state[:] = [
+                e
+                for e in account_state
+                if not (
+                    isinstance(e, dict) and e.get("LedgerEntryType") == "LedgerHashes"
+                )
+            ]
+            prior_hashes = _generate_synthetic_hashes(start_ledger - 1)
+            entry = _make_short_skiplist_entry(start_ledger, prior_hashes)
+            if entry is not None:
+                account_state.append(entry)
 
     # Write to temp file
     fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="genesis_")

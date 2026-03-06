@@ -537,7 +537,7 @@ async def run_test_with_monitor(
     network_config: Any,
     rpc_client: Any,
     genesis_seed: str | None = None,
-    tracked_amendment: str | None = None,
+    tracked_features: list[str] | None = None,
 ) -> None:
     """Run a test script with the network monitor running in background.
 
@@ -550,7 +550,7 @@ async def run_test_with_monitor(
         network_config: NetworkConfig for the monitor
         rpc_client: RPCClient for the monitor
         genesis_seed: Seed for the genesis account
-        tracked_amendment: Optional amendment ID to track
+        tracked_features: Optional list of feature names to track
     """
     from xahaud_scripts.testnet.monitor import NetworkMonitor
 
@@ -574,7 +574,7 @@ async def run_test_with_monitor(
     monitor = NetworkMonitor(
         rpc_client=rpc_client,
         network_config=network_config,
-        tracked_amendment=tracked_amendment,
+        tracked_features=tracked_features,
     )
 
     async def run_monitor() -> None:
@@ -635,7 +635,7 @@ async def run_txn_generator_with_monitor(
     ws_url: str,
     network_config: Any,
     rpc_client: Any,
-    tracked_amendment: str | None = None,
+    tracked_features: list[str] | None = None,
 ) -> None:
     """Run a transaction generator with the network monitor in background.
 
@@ -648,7 +648,7 @@ async def run_txn_generator_with_monitor(
         ws_url: WebSocket URL to connect to
         network_config: NetworkConfig for the monitor
         rpc_client: RPCClient for the monitor
-        tracked_amendment: Optional amendment ID to track
+        tracked_features: Optional list of feature names to track
     """
     from xrpl.asyncio.transaction import sign
     from xrpl.core.binarycodec import encode
@@ -663,7 +663,7 @@ async def run_txn_generator_with_monitor(
     monitor = NetworkMonitor(
         rpc_client=rpc_client,
         network_config=network_config,
-        tracked_amendment=tracked_amendment,
+        tracked_features=tracked_features,
     )
 
     async def run_monitor() -> None:

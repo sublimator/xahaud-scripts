@@ -235,16 +235,16 @@ class RPCClient(Protocol):
     def get_node_data(
         self,
         node_id: int,
-        tracked_amendment: str | None = None,
+        tracked_features: list[str] | None = None,
     ) -> dict[str, Any]:
         """Get comprehensive data from a node for monitoring.
 
         Args:
             node_id: The node ID (0, 1, 2, etc.)
-            tracked_amendment: Optional amendment ID to track
+            tracked_features: Optional list of feature names to track
 
         Returns:
-            Dict with node_id, server_info, amendment_status, response_time, error
+            Dict with node_id, server_info, feature_statuses, response_time, error
         """
         ...
 

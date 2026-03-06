@@ -33,6 +33,7 @@ from xahaud_scripts.testnet.config import (
     feature_name_to_hash,
     get_bundled_genesis_file,
     prepare_genesis_file,
+    resolve_feature_name,
 )
 from xahaud_scripts.testnet.launcher import get_launcher
 from xahaud_scripts.testnet.monitor import (
@@ -407,6 +408,26 @@ def generate(
     "Without node prefix, applies to all nodes. Peer names resolved relative to "
     "default binary dir. Can be repeated.",
 )
+@click.option(
+    "--track-feature",
+    "track_features",
+    multiple=True,
+    help="Track amendment feature status per node. Can be repeated for multiple features.",
+)
+@click.option(
+    "--start-ledger",
+    type=click.IntRange(1, 256),
+    default=None,
+    help="Starting ledger sequence number for genesis (1-256, default: 1).",
+)
+@click.option(
+    "--seed-majority",
+    "majority_features",
+    multiple=True,
+    help="Pre-seed amendment majority (sfMajorities) in genesis. Nodes must still "
+    "vote yes (feature accept) before the voting ledger, or the seeded majority "
+    "will be cleared. Use with --start-ledger 255. Supports @Name or hex hash.",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -435,6 +456,9 @@ def run(
     rc_clear: bool,
     generate_txns: str | None,
     node_binaries: tuple[str, ...],
+    track_features: tuple[str, ...],
+    start_ledger: int | None,
+    majority_features: tuple[str, ...],
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -464,20 +488,35 @@ def run(
     """
     network = _create_network(ctx, node_count=node_count, launcher_type=launcher)
 
+    tracked = (
+        [resolve_feature_name(f) for f in track_features] if track_features else None
+    )
+
     if reconnect:
         # Just reconnect to existing network and start monitoring
         logger.info("Reconnecting to existing network...")
-        network.monitor(tracked_amendment=amendment_id)
+        network.monitor(tracked_features=tracked)
         return
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     rippled_path = ctx.obj.get("rippled_path") or (xahaud_root / "build" / "rippled")
 
-    # Prepare genesis file with feature modifications
+    # Prepare genesis file with feature modifications, start ledger, and majority seeding
     base_genesis = genesis_file or get_bundled_genesis_file()
-    effective_genesis = prepare_genesis_file(base_genesis, list(features))
+    effective_genesis = prepare_genesis_file(
+        base_genesis,
+        list(features),
+        start_ledger=start_ledger,
+        majority_features=list(majority_features) if majority_features else None,
+    )
 
     # Log if modifications were made
+    if start_ledger is not None:
+        logger.info(f"Starting ledger sequence: {start_ledger}")
+    if majority_features:
+        logger.info(f"Pre-seeding majority for {len(majority_features)} feature(s)")
+        for mf in majority_features:
+            logger.info(f"  {mf}")
     if features:
         logger.info(f"Created modified genesis with {len(features)} feature change(s)")
         for f in features:
@@ -651,7 +690,7 @@ def run(
                     ws_url=ws_url,
                     network_config=network._config,
                     rpc_client=network._rpc,
-                    tracked_amendment=amendment_id,
+                    tracked_features=tracked,
                 )
             )
         except KeyboardInterrupt:
@@ -684,7 +723,7 @@ def run(
                     ws_url=ws_url,
                     network_config=network._config,
                     rpc_client=network._rpc,
-                    tracked_amendment=amendment_id,
+                    tracked_features=tracked,
                 )
             )
             logger.info("Test script finished.")
@@ -705,9 +744,9 @@ def run(
         else:
             # After test script (success, interrupted, or failed), continue monitoring
             logger.info("Continuing to monitor (Ctrl-C to stop)...")
-            network.monitor(tracked_amendment=amendment_id)
+            network.monitor(tracked_features=tracked)
     else:
-        network.monitor(tracked_amendment=amendment_id)
+        network.monitor(tracked_features=tracked)
 
 
 @testnet.command()

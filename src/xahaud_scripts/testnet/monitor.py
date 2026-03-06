@@ -86,10 +86,31 @@ def _get_rippled_cpu() -> dict[int, float]:
     return cpu_by_node
 
 
+def _format_feature_status(feat: dict[str, Any]) -> str:
+    """Format a single feature status for display.
+
+    Returns short string: ON, VOTE, VETO, OFF, ?, !
+    """
+    status = feat.get("status")
+    if status == "not_found":
+        return "?"
+    if status == "not_synced":
+        return "!"
+    if status == "error":
+        return "ERR"
+    if feat.get("enabled", False):
+        return "[green]ON[/green]"
+    if feat.get("vetoed", False):
+        return "[red]VETO[/red]"
+    if feat.get("supported", False):
+        return "[yellow]VOTE[/yellow]"
+    return "OFF"
+
+
 def display_network_status(
     node_data: dict[int, dict[str, Any]],
     node_count: int,
-    tracked_amendment: str | None = None,
+    tracked_features: list[str] | None = None,
     ledger_events: dict[int, dict[str, Any]] | None = None,
     uptime_seconds: float | None = None,
     cpu_by_node: dict[int, float] | None = None,
@@ -99,13 +120,13 @@ def display_network_status(
     Args:
         node_data: Dict mapping node_id -> node data from get_node_data()
         node_count: Number of nodes
-        tracked_amendment: Optional amendment ID being tracked
+        tracked_features: Optional list of feature names to track
         uptime_seconds: Optional uptime in seconds to display
         cpu_by_node: Optional dict mapping node_id -> CPU percentage
     """
-    title = f"Network Status ({node_count} nodes)"
-    if tracked_amendment:
-        title += f" - Amendment: {tracked_amendment[:16]}..."
+    title = f"Network Status ({node_count} nodes) - {time.strftime('%H:%M:%S')}"
+    if uptime_seconds is not None:
+        title += f" (up {format_uptime(uptime_seconds)})"
 
     table = Table(title=title)
     table.add_column("Node", style="cyan", no_wrap=True)
@@ -117,7 +138,12 @@ def display_network_status(
     table.add_column("Props", justify="right", style="blue")
     table.add_column("Quorum", justify="right", style="blue")
     table.add_column("Conv", justify="right", style="white")
-    table.add_column("Amend", style="white")
+
+    # Dynamic feature columns
+    feature_names = tracked_features or []
+    for name in feature_names:
+        table.add_column(name, style="white", no_wrap=True)
+
     table.add_column("CPU%", justify="right", style="magenta")
     table.add_column("Version", style="dim", no_wrap=True)
     table.add_column("Δt", justify="right", style="cyan")
@@ -129,7 +155,7 @@ def display_network_status(
         cpu_str = f"{cpu:.0f}" if cpu is not None else "-"
 
         if data.get("error"):
-            table.add_row(
+            row = [
                 str(node_id),
                 f"ERROR: {data['error']}",
                 "-",
@@ -139,16 +165,15 @@ def display_network_status(
                 "-",
                 "-",
                 "-",
-                "-",
-                cpu_str,
-                "-",
-                f"{data.get('response_time', 0):.3f}s",
-            )
+            ]
+            row.extend("-" for _ in feature_names)
+            row.extend([cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            table.add_row(*row)
             continue
 
         server_info = data.get("server_info")
         if not server_info:
-            table.add_row(
+            row = [
                 str(node_id),
                 "NOT RESPONDING",
                 "-",
@@ -158,11 +183,10 @@ def display_network_status(
                 "-",
                 "-",
                 "-",
-                "-",
-                cpu_str,
-                "-",
-                f"{data.get('response_time', 0):.3f}s",
-            )
+            ]
+            row.extend("-" for _ in feature_names)
+            row.extend([cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            table.add_row(*row)
             continue
 
         state = server_info.get("info", {})
@@ -185,21 +209,6 @@ def display_network_status(
         else:
             ledger_hash_display = ledger_hash
 
-        # Amendment status display
-        amend_status = data.get("amendment_status", {})
-        if amend_status:
-            status = amend_status.get("status")
-            if status == "not_found":
-                amend_display = "?"
-            elif status == "not_synced":
-                amend_display = "!"
-            elif amend_status.get("enabled", False):
-                amend_display = "ON"
-            else:
-                amend_display = "OFF"
-        else:
-            amend_display = "-"
-
         # Format converge time
         if isinstance(converge_time, (int, float)):
             converge_str = f"{converge_time:.2f}"
@@ -215,7 +224,7 @@ def display_network_status(
         else:
             version_str = "-"
 
-        table.add_row(
+        row = [
             str(node_id),
             state.get("server_state", "unknown"),
             str(ledger_seq),
@@ -225,11 +234,22 @@ def display_network_status(
             str(proposers),
             str(validation_quorum),
             converge_str,
-            amend_display,
-            cpu_str,
-            version_str,
-            f"{data.get('response_time', 0):.3f}s",
+        ]
+
+        # Feature status columns
+        feature_statuses = data.get("feature_statuses", {})
+        for name in feature_names:
+            feat = feature_statuses.get(name, {})
+            row.append(_format_feature_status(feat) if feat else "-")
+
+        row.extend(
+            [
+                cpu_str,
+                version_str,
+                f"{data.get('response_time', 0):.3f}s",
+            ]
         )
+        table.add_row(*row)
 
     console.print(table)
 
@@ -534,14 +554,14 @@ class NetworkMonitor:
     Attributes:
         rpc_client: RPC client for queries
         network_config: Network configuration
-        tracked_amendment: Optional amendment ID to track
+        tracked_features: Optional list of feature names to track
     """
 
     def __init__(
         self,
         rpc_client: RPCClient,
         network_config: NetworkConfig,
-        tracked_amendment: str | None = None,
+        tracked_features: list[str] | None = None,
         base_dir: Path | None = None,
     ) -> None:
         """Initialize the network monitor.
@@ -549,12 +569,12 @@ class NetworkMonitor:
         Args:
             rpc_client: RPC client for queries
             network_config: Network configuration
-            tracked_amendment: Optional amendment ID to track
+            tracked_features: Optional list of feature names to track
             base_dir: Testnet base dir (for reading vote timestamp)
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
-        self.tracked_amendment = tracked_amendment
+        self.tracked_features = tracked_features or []
         self._base_dir = base_dir
         self._start_time: float | None = None
 
@@ -728,6 +748,11 @@ class NetworkMonitor:
         # Display txn count distributions per type
         self._display_txn_distributions()
 
+        # Vote countdown at the bottom
+        vote_str = self._get_vote_countdown()
+        if vote_str:
+            console.print(f"[yellow]{vote_str}[/yellow]")
+
     def _update_txn_stats(self, type_counts: dict[str, int]) -> None:
         """Update transaction count tracking stats.
 
@@ -834,22 +859,16 @@ class NetworkMonitor:
                     stop_event and stop_event.is_set()
                 ):
                     uptime = self._get_uptime()
-                    uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
-                    vote_str = self._get_vote_countdown()
-                    vote_line = f"\n[yellow]{vote_str}[/yellow]" if vote_str else ""
-                    console.print(
-                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
-                        f"{uptime_str}[/bold]{vote_line}\n"
-                    )
 
                     # Fetch node data in parallel
                     node_data = self._fetch_all_node_data()
                     cpu_by_node = _get_rippled_cpu()
                     self._update_convergence_stats(node_data)
+                    console.print()
                     display_network_status(
                         node_data,
                         node_count,
-                        self.tracked_amendment,
+                        self.tracked_features or None,
                         uptime_seconds=uptime,
                         cpu_by_node=cpu_by_node,
                     )
@@ -975,13 +994,6 @@ class NetworkMonitor:
 
                     # Display status after receiving events
                     uptime = self._get_uptime()
-                    uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
-                    vote_str = self._get_vote_countdown()
-                    vote_line = f"\n[yellow]{vote_str}[/yellow]" if vote_str else ""
-                    console.print(
-                        f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
-                        f"{uptime_str}[/bold]{vote_line}\n"
-                    )
 
                     node_data = self._fetch_all_node_data()
                     cpu_by_node = _get_rippled_cpu()
@@ -989,7 +1001,7 @@ class NetworkMonitor:
                     display_network_status(
                         node_data,
                         node_count,
-                        self.tracked_amendment,
+                        self.tracked_features or None,
                         last_ledger_events,
                         uptime_seconds=uptime,
                         cpu_by_node=cpu_by_node,
@@ -1025,7 +1037,9 @@ class NetworkMonitor:
         with ThreadPoolExecutor(max_workers=self.network_config.node_count) as executor:
             futures = {
                 executor.submit(
-                    self.rpc_client.get_node_data, node_id, self.tracked_amendment
+                    self.rpc_client.get_node_data,
+                    node_id,
+                    self.tracked_features or None,
                 ): node_id
                 for node_id in range(self.network_config.node_count)
             }
@@ -1105,7 +1119,9 @@ class NetworkMonitor:
 
             futures = {
                 executor.submit(
-                    self.rpc_client.get_node_data, node_id, self.tracked_amendment
+                    self.rpc_client.get_node_data,
+                    node_id,
+                    self.tracked_features or None,
                 ): node_id
                 for node_id in lagging_nodes
             }

@@ -275,13 +275,13 @@ class TestNetwork:
 
     def monitor(
         self,
-        tracked_amendment: str | None = None,
+        tracked_features: list[str] | None = None,
         stop_after_first_ledger: bool = False,
     ) -> int:
         """Start the monitoring loop.
 
         Args:
-            tracked_amendment: Optional amendment ID to track
+            tracked_features: Optional list of feature names to track
             stop_after_first_ledger: If True, stop after first ledger closes
 
         Returns:
@@ -294,7 +294,7 @@ class TestNetwork:
         monitor = NetworkMonitor(
             rpc_client=self._rpc,
             network_config=self._config,
-            tracked_amendment=tracked_amendment,
+            tracked_features=tracked_features,
             base_dir=self._base_dir,
         )
 
