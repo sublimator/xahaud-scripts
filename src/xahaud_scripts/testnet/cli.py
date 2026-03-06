@@ -390,6 +390,14 @@ def generate(
     default=None,
     help="Generate random txns each ledger. Format: N or MIN-MAX (e.g., 5-15).",
 )
+@click.option(
+    "--node-binary",
+    "node_binaries",
+    multiple=True,
+    help="Per-node binary override. Format: n0:binary-name or n0:/path/to/binary. "
+    "Without node prefix, applies to all nodes. Peer names resolved relative to "
+    "default binary dir. Can be repeated.",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -417,6 +425,7 @@ def run(
     rc_specs: tuple[str, ...],
     rc_clear: bool,
     generate_txns: str | None,
+    node_binaries: tuple[str, ...],
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -543,6 +552,41 @@ def run(
                 node_env[nid]["XAHAU_RUNTIME_CONFIG"] = json_val
                 logger.info(f"  n{nid}: XAHAU_RUNTIME_CONFIG={json_val}")
 
+    # Parse --node-binary specs
+    node_rippled_paths: dict[int, Path] = {}
+    for spec in node_binaries:
+        # Check for node-specific prefix (n0:, n1:, etc.)
+        has_node_prefix = (
+            spec.startswith("n") and ":" in spec and spec.split(":", 1)[0][1:].isdigit()
+        )
+        if has_node_prefix:
+            prefix, value = spec.split(":", 1)
+            node_ids = [int(prefix[1:])]
+        else:
+            value = spec
+            node_ids = list(range(node_count))
+
+        # Resolve: peer binary first, then path
+        peer_path = rippled_path.parent / value
+        if peer_path.exists():
+            binary_path = peer_path
+        else:
+            binary_path = Path(value).resolve()
+            if not binary_path.exists():
+                raise click.BadParameter(
+                    f"Binary not found: {value} "
+                    f"(checked peer: {peer_path}, path: {binary_path})",
+                    param_hint="--node-binary",
+                )
+
+        for nid in node_ids:
+            node_rippled_paths[nid] = binary_path
+
+    if node_rippled_paths:
+        logger.info("Per-node binaries:")
+        for nid, path in sorted(node_rippled_paths.items()):
+            logger.info(f"  n{nid}: {path}")
+
     launch_config = LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
@@ -560,6 +604,7 @@ def run(
         extra_args=list(extra_args),
         extra_env=extra_env,
         node_env=node_env,
+        node_rippled_paths=node_rippled_paths,
         desktop=desktop,
     )
 

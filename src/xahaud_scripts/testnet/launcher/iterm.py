@@ -107,7 +107,7 @@ class ITermLauncher:
         window_title = f"XahaudTest_Node{node.id}"
 
         # Build the command to run
-        cmd = f"{config.rippled_path} --conf {node.config_path} {startup_flags}"
+        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
 
         applescript = f'''
 tell application "iTerm"

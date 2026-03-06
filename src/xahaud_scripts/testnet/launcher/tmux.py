@@ -195,7 +195,7 @@ class TmuxLauncher:
         """Build the full command with env vars and startup flags."""
         env_vars = self._build_env_vars(node, config)
         startup_flags = self._build_startup_flags(node, config)
-        cmd = f"{config.rippled_path} --conf {node.config_path} {startup_flags}"
+        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
 
         # Combine env vars and command
         return f"{env_vars} && {cmd}"

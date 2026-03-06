@@ -188,7 +188,12 @@ class LaunchConfig:
     extra_args: list[str] = field(default_factory=list)
     extra_env: dict[str, str] = field(default_factory=dict)
     node_env: dict[int, dict[str, str]] = field(default_factory=dict)
+    node_rippled_paths: dict[int, Path] = field(default_factory=dict)
     desktop: int | None = None
+
+    def get_rippled_path(self, node_id: int) -> Path:
+        """Get the effective binary path for a node."""
+        return self.node_rippled_paths.get(node_id, self.rippled_path)
 
 
 @dataclass(frozen=True)

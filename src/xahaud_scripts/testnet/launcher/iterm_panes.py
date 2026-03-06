@@ -106,7 +106,7 @@ class ITermPanesLauncher:
         pane_title = f"N{node.id} {role}"
 
         # Build the command to run
-        cmd = f"{config.rippled_path} --conf {node.config_path} {startup_flags}"
+        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
         full_cmd = f"{env_vars} && {cmd}"
 
         try:
