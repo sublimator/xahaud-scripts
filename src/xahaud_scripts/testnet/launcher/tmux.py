@@ -363,6 +363,39 @@ class TmuxLauncher:
             return None
         return pane_id
 
+    def capture_pane(self, node_id: int, lines: int = 1000) -> str | None:
+        """Capture terminal output from a node's tmux pane.
+
+        Args:
+            node_id: The node ID to capture from
+            lines: Number of lines of scrollback to capture
+
+        Returns:
+            Captured text, or None if capture failed
+        """
+        pane_id = self._validate_pane(node_id)
+        if not pane_id:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "capture-pane",
+                    "-t",
+                    pane_id,
+                    "-p",  # output to stdout
+                    "-S",
+                    f"-{lines}",  # start N lines back
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to capture pane for node {node_id}: {e}")
+            return None
+
     def stop_node(self, node_id: int) -> bool:
         """Send Ctrl+C to node's tmux pane."""
         pane_id = self._validate_pane(node_id)

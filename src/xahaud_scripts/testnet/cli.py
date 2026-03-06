@@ -1622,6 +1622,48 @@ def restart(ctx: click.Context, nodes: str | None, delay: float) -> None:
         click.echo(f"n{nid}: {status}")
 
 
+@testnet.command("pane-output")
+@click.argument("node")
+@click.argument("lines", type=int, default=1000, required=False)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write output to file instead of stdout.",
+)
+@click.pass_context
+def pane_output(ctx: click.Context, node: str, lines: int, output: Path | None) -> None:
+    """Capture terminal output from a node's tmux pane.
+
+    NODE: n0, n1, etc.
+    LINES: Number of scrollback lines (default: 1000).
+
+    \b
+    Examples:
+        x-testnet pane-output n4
+        x-testnet pane-output n4 5000
+        x-testnet pane-output n0 -o crash.log
+    """
+    node_id = _parse_node_spec(node)
+    network = _create_network(ctx)
+
+    try:
+        text = network.capture_pane(node_id, lines)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    if text is None:
+        raise click.ClickException(f"Failed to capture pane for n{node_id}")
+
+    if output:
+        output.write_text(text)
+        line_count = text.count("\n")
+        click.echo(f"Wrote {line_count} lines to {output}", err=True)
+    else:
+        click.echo(text, nl=False)
+
+
 @testnet.command()
 @click.pass_context
 def teardown(ctx: click.Context) -> None:
