@@ -18,6 +18,7 @@ import subprocess
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -118,6 +119,7 @@ def display_network_status(
     table.add_column("Conv", justify="right", style="white")
     table.add_column("Amend", style="white")
     table.add_column("CPU%", justify="right", style="magenta")
+    table.add_column("Version", style="dim", no_wrap=True)
     table.add_column("Δt", justify="right", style="cyan")
 
     for node_id in range(node_count):
@@ -139,6 +141,7 @@ def display_network_status(
                 "-",
                 "-",
                 cpu_str,
+                "-",
                 f"{data.get('response_time', 0):.3f}s",
             )
             continue
@@ -157,6 +160,7 @@ def display_network_status(
                 "-",
                 "-",
                 cpu_str,
+                "-",
                 f"{data.get('response_time', 0):.3f}s",
             )
             continue
@@ -202,6 +206,15 @@ def display_network_status(
         else:
             converge_str = str(converge_time)
 
+        # Version: branch/short-commit
+        git_info = state.get("git", {})
+        if git_info:
+            branch = git_info.get("branch", "?")
+            commit = git_info.get("hash", "?")[:7]
+            version_str = f"{branch}/{commit}"
+        else:
+            version_str = "-"
+
         table.add_row(
             str(node_id),
             state.get("server_state", "unknown"),
@@ -214,6 +227,7 @@ def display_network_status(
             converge_str,
             amend_display,
             cpu_str,
+            version_str,
             f"{data.get('response_time', 0):.3f}s",
         )
 
@@ -528,6 +542,7 @@ class NetworkMonitor:
         rpc_client: RPCClient,
         network_config: NetworkConfig,
         tracked_amendment: str | None = None,
+        base_dir: Path | None = None,
     ) -> None:
         """Initialize the network monitor.
 
@@ -535,10 +550,12 @@ class NetworkMonitor:
             rpc_client: RPC client for queries
             network_config: Network configuration
             tracked_amendment: Optional amendment ID to track
+            base_dir: Testnet base dir (for reading vote timestamp)
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_amendment = tracked_amendment
+        self._base_dir = base_dir
         self._start_time: float | None = None
 
         # Convergence tracking
@@ -579,6 +596,23 @@ class NetworkMonitor:
         if self._start_time is None:
             return None
         return time.time() - self._start_time
+
+    def _get_vote_countdown(self) -> str | None:
+        """Read vote timestamp and return countdown string."""
+        if not self._base_dir:
+            return None
+        vote_file = self._base_dir / ".vote-timestamp"
+        try:
+            vote_time = float(vote_file.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            return None
+        elapsed = time.time() - vote_time
+        remaining = 60 - elapsed
+        if remaining > 0:
+            return f"Vote: {elapsed:.0f}s ago ({remaining:.0f}s to activation)"
+        elif elapsed < 120:
+            return f"Vote: {elapsed:.0f}s ago (should be active)"
+        return None
 
     def _record_ledger_close(self) -> None:
         """Record the time of a ledger close event."""
@@ -801,9 +835,11 @@ class NetworkMonitor:
                 ):
                     uptime = self._get_uptime()
                     uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
+                    vote_str = self._get_vote_countdown()
+                    vote_line = f"\n[yellow]{vote_str}[/yellow]" if vote_str else ""
                     console.print(
                         f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
-                        f"{uptime_str}[/bold]\n"
+                        f"{uptime_str}[/bold]{vote_line}\n"
                     )
 
                     # Fetch node data in parallel
@@ -940,9 +976,11 @@ class NetworkMonitor:
                     # Display status after receiving events
                     uptime = self._get_uptime()
                     uptime_str = f" (up {format_uptime(uptime)})" if uptime else ""
+                    vote_str = self._get_vote_countdown()
+                    vote_line = f"\n[yellow]{vote_str}[/yellow]" if vote_str else ""
                     console.print(
                         f"\n[bold]Network Status - {time.strftime('%H:%M:%S')}"
-                        f"{uptime_str}[/bold]\n"
+                        f"{uptime_str}[/bold]{vote_line}\n"
                     )
 
                     node_data = self._fetch_all_node_data()

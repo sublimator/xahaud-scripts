@@ -979,6 +979,7 @@ def feature(
     elif action == "reject":
         vetoed = True
 
+    any_voted = False
     for node_id in node_ids:
         result = network.rpc_client.feature(node_id, feature_name=name, vetoed=vetoed)
         if result is None:
@@ -990,6 +991,7 @@ def feature(
             continue
 
         if action:
+            any_voted = True
             # Vote response — show the specific feature status
             feature_data = result.get(name)
             if feature_data:
@@ -1020,6 +1022,13 @@ def feature(
                         break
                 else:
                     click.echo(f"n{node_id}: {json.dumps(result, indent=2)}")
+
+    # Write vote timestamp for monitor countdown
+    if action and any_voted:
+        import time
+
+        vote_file = network.base_dir / ".vote-timestamp"
+        vote_file.write_text(f"{time.time()}\n")
 
 
 @testnet.command()

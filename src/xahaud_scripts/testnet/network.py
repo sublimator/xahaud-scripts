@@ -295,6 +295,7 @@ class TestNetwork:
             rpc_client=self._rpc,
             network_config=self._config,
             tracked_amendment=tracked_amendment,
+            base_dir=self._base_dir,
         )
 
         if stop_after_first_ledger:

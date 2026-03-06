@@ -321,6 +321,9 @@ time.apple.com
 [validator_token]
 {validator_token}
 
+[amendment_majority_time]
+1 minutes
+
 [ssl_verify]
 0
 
