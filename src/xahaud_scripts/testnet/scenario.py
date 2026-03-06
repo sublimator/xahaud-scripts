@@ -22,11 +22,16 @@ Example usage in a scenario script:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from xahaud_scripts.testnet.protocols import RPCClient
 
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
     LogEntry,
@@ -97,6 +102,112 @@ def now_marker(name: str) -> Marker:
         name=name,
         utc=datetime.utcnow(),
         monotonic_ns=_time.monotonic_ns(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RPC helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_validated_ledger(rpc: RPCClient, node_id: int = 0) -> int | None:
+    """Get the validated ledger index from a node, or None if unreachable."""
+    info = rpc.server_info(node_id)
+    if not info or "info" not in info:
+        return None
+    validated = info["info"].get("validated_ledger", {})
+    seq = validated.get("seq")
+    return int(seq) if seq else None
+
+
+# ---------------------------------------------------------------------------
+# Wait primitives
+# ---------------------------------------------------------------------------
+
+
+async def wait_for_ledger(
+    rpc: RPCClient,
+    target: int,
+    *,
+    node_id: int = 0,
+    timeout: float = 120,
+    poll_interval: float = 1.0,
+    name: str | None = None,
+) -> Operation[int]:
+    """Wait until validated ledger reaches target index.
+
+    Args:
+        rpc: RPC client to poll.
+        target: Ledger index to wait for.
+        node_id: Node to poll (default: 0).
+        timeout: Maximum seconds to wait.
+        poll_interval: Seconds between polls.
+        name: Optional name for the operation markers.
+
+    Returns:
+        Operation with the reached ledger index as result.
+
+    Raises:
+        TimeoutError: If target not reached within timeout.
+    """
+    label = name or f"ledger-{target}"
+    started = now_marker(f"{label}-start")
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        current = _get_validated_ledger(rpc, node_id)
+        if current is not None and current >= target:
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for_ledger",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=current,
+            )
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Ledger {target} not reached within {timeout}s on node {node_id}"
+    )
+
+
+async def wait_for_ledgers(
+    rpc: RPCClient,
+    count: int,
+    *,
+    node_id: int = 0,
+    timeout: float = 120,
+    poll_interval: float = 1.0,
+    name: str | None = None,
+) -> Operation[int]:
+    """Wait for N more ledgers to close from the current position.
+
+    Args:
+        rpc: RPC client to poll.
+        count: Number of additional ledgers to wait for.
+        node_id: Node to poll (default: 0).
+        timeout: Maximum seconds to wait.
+        poll_interval: Seconds between polls.
+        name: Optional name for the operation markers.
+
+    Returns:
+        Operation with the reached ledger index as result.
+
+    Raises:
+        TimeoutError: If not reached within timeout.
+    """
+    current = _get_validated_ledger(rpc, node_id)
+    if current is None:
+        raise RuntimeError(f"Cannot get current ledger from node {node_id}")
+
+    target = current + count
+    return await wait_for_ledger(
+        rpc, target,
+        node_id=node_id,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        name=name or f"ledgers-+{count}",
     )
 
 
