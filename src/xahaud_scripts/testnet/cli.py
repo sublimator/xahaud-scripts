@@ -2157,11 +2157,11 @@ def logs_search(
         x-testnet logs-search Shuffle --time-start 10:30:00 --time-end 10:31:00
         x-testnet logs-search -s +0 -e +30s           # first 30 seconds from start
         x-testnet logs-search -n 0-2                  # only n0, n1, n2
-        x-testnet logs-search @consensus              # use preset from .logs-search.json
+        x-testnet logs-search @consensus              # use preset from .testnet/logs-search.json
         x-testnet logs-search --snapshot latest "pattern"
         x-testnet logs-search --snapshot before-restart "pattern"
 
-    Presets: create .logs-search.json in cwd with named configs:
+    Presets: create .testnet/logs-search.json with named configs:
 
         {"consensus": {"pattern": "LedgerConsensus", "tail": 1000}}
 
@@ -2184,9 +2184,10 @@ def logs_search(
     # Load preset if pattern starts with @
     if pattern.startswith("@"):
         preset_name = pattern[1:]
-        preset_file = Path.cwd() / ".logs-search.json"
+        dotdir = base_dir.parent / ".testnet"
+        preset_file = dotdir / "logs-search.json"
         if not preset_file.exists():
-            raise click.ClickException(f"No .logs-search.json found in {Path.cwd()}")
+            raise click.ClickException(f"No logs-search.json found in {dotdir}")
         presets = json.loads(preset_file.read_text())
         if preset_name not in presets:
             available = ", ".join(sorted(presets.keys()))
