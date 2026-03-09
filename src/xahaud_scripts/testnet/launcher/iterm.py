@@ -108,6 +108,8 @@ class ITermLauncher:
 
         # Build the command to run
         cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
+        # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
+        full_cmd = f" {env_vars} && {cmd}"
 
         applescript = f'''
 tell application "iTerm"
@@ -116,7 +118,7 @@ tell application "iTerm"
         set name to "{window_title} {role}"
         write text "cd {node.node_dir}"
         write text "# {window_title} - PID will be saved for teardown"
-        write text "{env_vars} && {cmd}"
+        write text "{full_cmd}"
     end tell
 end tell
 '''

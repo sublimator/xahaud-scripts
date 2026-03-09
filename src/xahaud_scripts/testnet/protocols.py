@@ -88,6 +88,14 @@ class ControllableLauncher(Launcher, Protocol):
         """Restore launcher state from persisted launch_state."""
         ...
 
+    def get_exit_status(self, node_id: int) -> int | None:
+        """Get the exit status of a stopped node's process.
+
+        Returns:
+            Exit code, or None if node is still alive or not found.
+        """
+        ...
+
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node.
 

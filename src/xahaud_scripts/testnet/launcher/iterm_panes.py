@@ -107,7 +107,8 @@ class ITermPanesLauncher:
 
         # Build the command to run
         cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
-        full_cmd = f"{env_vars} && {cmd}"
+        # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
+        full_cmd = f" {env_vars} && {cmd}"
 
         try:
             if not self._window_created:

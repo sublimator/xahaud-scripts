@@ -744,6 +744,18 @@ class TestNetwork:
             for nid in node_ids
         }
 
+    def get_exit_status(self, node_id: int) -> int | None:
+        """Get the exit status of a stopped node's process.
+
+        Returns:
+            Exit code, or None if node is still alive or not found.
+        """
+        from xahaud_scripts.testnet.protocols import ControllableLauncher
+
+        self._ensure_controllable()
+        assert isinstance(self._launcher, ControllableLauncher)
+        return self._launcher.get_exit_status(node_id)
+
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node.
 

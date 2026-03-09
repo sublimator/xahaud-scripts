@@ -28,12 +28,14 @@ import contextlib
 import importlib.util
 import re
 import time as _time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from xahaud_scripts.testnet.network import TestNetwork
     from xahaud_scripts.testnet.protocols import RPCClient
 
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
@@ -256,6 +258,89 @@ async def wait_for_ledgers(
     )
 
 
+async def wait_for_nodes(
+    fn: Callable[[int], bool],
+    node_ids: list[int],
+    *,
+    timeout: float = 120,
+    poll_interval: float = 2.0,
+    name: str | None = None,
+) -> Operation[bool]:
+    """Poll a per-node function until it returns True for all nodes.
+
+    Args:
+        fn: Callable that takes a node_id and returns True/False.
+        node_ids: List of node IDs to check.
+        timeout: Maximum seconds to wait.
+        poll_interval: Seconds between polls.
+        name: Optional name for the operation markers.
+
+    Returns:
+        Operation with True as result.
+
+    Raises:
+        TimeoutError: If not all nodes pass within timeout.
+    """
+    label = name or "wait-for-nodes"
+    started = now_marker(f"{label}-start")
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if all(fn(nid) for nid in node_ids):
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for_nodes",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=True,
+            )
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(f"wait_for_nodes({label}) timed out after {timeout}s")
+
+
+async def wait_for[T](
+    fn: Callable[[], T | None],
+    *,
+    timeout: float = 120,
+    poll_interval: float = 2.0,
+    name: str | None = None,
+) -> Operation[T]:
+    """Poll a function until it returns a truthy value.
+
+    Args:
+        fn: Callable that returns a truthy value on success, or None/falsy to keep waiting.
+        timeout: Maximum seconds to wait.
+        poll_interval: Seconds between polls.
+        name: Optional name for the operation markers.
+
+    Returns:
+        Operation with the truthy return value as result.
+
+    Raises:
+        TimeoutError: If fn never returns truthy within timeout.
+    """
+    label = name or "wait-for"
+    started = now_marker(f"{label}-start")
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        result = fn()
+        if result:
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=result,
+            )
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(f"wait_for({label}) timed out after {timeout}s")
+
+
 # ---------------------------------------------------------------------------
 # Log assertion results
 # ---------------------------------------------------------------------------
@@ -378,7 +463,7 @@ def search_logs(
 class AssertionError(Exception):
     """Raised when a scenario assertion fails."""
 
-    def __init__(self, message: str, result: LogSearchResult) -> None:
+    def __init__(self, message: str, result: LogSearchResult | None = None) -> None:
         super().__init__(message)
         self.result = result
 
@@ -535,19 +620,28 @@ def assert_log_order(
 class ScenarioContext:
     """Context passed to scenario scripts.
 
-    Wraps RPC client, base_dir, and all scenario primitives into a single
+    Wraps the TestNetwork and all scenario primitives into a single
     object that the framework passes to ``async def scenario(ctx)``.
     """
 
-    def __init__(
-        self,
-        rpc: RPCClient,
-        base_dir: Path,
-        node_count: int,
-    ) -> None:
-        self.rpc = rpc
-        self.base_dir = base_dir
-        self.node_count = node_count
+    def __init__(self, network: TestNetwork) -> None:
+        self._network = network
+
+    def log(self, message: str) -> None:
+        """Log a message from the scenario script."""
+        logger.info(message)
+
+    @property
+    def rpc(self) -> RPCClient:
+        return self._network.rpc_client
+
+    @property
+    def base_dir(self) -> Path:
+        return self._network.base_dir
+
+    @property
+    def node_count(self) -> int:
+        return self._network.config.node_count
 
     # -- Timing ------------------------------------------------------------
 
@@ -614,6 +708,180 @@ class ScenarioContext:
             timeout=timeout,
             poll_interval=poll_interval,
             name=name,
+        )
+
+    def _resolve_nodes(
+        self,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+    ) -> list[int]:
+        """Resolve node targeting to a concrete list of node IDs."""
+        target = nodes if nodes is not None else list(range(self.node_count))
+        if exclude_nodes:
+            target = [n for n in target if n not in exclude_nodes]
+        return target
+
+    async def wait_for_nodes(
+        self,
+        fn: Callable[[int], bool],
+        *,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+        timeout: float = 120,
+        poll_interval: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[bool]:
+        """Wait until a per-node predicate passes on all targeted nodes."""
+        return await wait_for_nodes(
+            fn,
+            self._resolve_nodes(nodes, exclude_nodes),
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name,
+        )
+
+    async def wait_for_nodes_down(
+        self,
+        *,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+        timeout: float = 300,
+        poll_interval: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[bool]:
+        """Wait until nodes stop responding to RPC.
+
+        Args:
+            nodes: Specific node IDs to wait for (default: all).
+            exclude_nodes: Node IDs to skip.
+        """
+        rpc = self.rpc
+        return await wait_for_nodes(
+            lambda nid: rpc.server_info(nid) is None,
+            self._resolve_nodes(nodes, exclude_nodes),
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name or "node-down",
+        )
+
+    # -- Network control ---------------------------------------------------
+
+    def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
+        """Capture terminal output from a node."""
+        return self._network.capture_output(node_id, lines)
+
+    def assert_exit_status(
+        self,
+        expected: int,
+        *,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+    ) -> None:
+        """Assert that nodes exited with the expected status.
+
+        Requires remain-on-exit to be on in tmux. If a node's exit status
+        can't be read (pane still alive or not found), the assertion fails.
+
+        Raises:
+            AssertionError: If any node's exit status doesn't match.
+        """
+        for nid in self._resolve_nodes(nodes, exclude_nodes):
+            status = self._network.get_exit_status(nid)
+            if status is None:
+                raise AssertionError(
+                    f"Node {nid}: could not read exit status "
+                    f"(still alive or remain-on-exit not set?)"
+                )
+            if status != expected:
+                raise AssertionError(
+                    f"Node {nid}: expected exit status {expected}, got {status}"
+                )
+
+    def feature(
+        self,
+        feature_name: str,
+        *,
+        vetoed: bool | None = None,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+    ) -> dict[int, dict[str, Any] | None]:
+        """Vote on or query an amendment across nodes.
+
+        Args:
+            feature_name: Amendment name or hash.
+            vetoed: True to reject, False to accept, None to query.
+            nodes: Specific node IDs to target (default: all).
+            exclude_nodes: Node IDs to skip.
+
+        Returns:
+            Dict mapping node_id -> RPC result (or None on failure).
+        """
+        results: dict[int, dict[str, Any] | None] = {}
+        for nid in self._resolve_nodes(nodes, exclude_nodes):
+            results[nid] = self.rpc.feature(nid, feature_name, vetoed=vetoed)
+        return results
+
+    def feature_check(
+        self, feature_name: str, node_id: int = 0
+    ) -> dict[str, Any] | None:
+        """Query amendment status on a single node.
+
+        Returns:
+            Dict with 'enabled', 'vetoed', 'supported' keys, or None.
+        """
+        result = self.rpc.feature(node_id, feature_name)
+        if not result:
+            return None
+        # Response is {hash: {name, enabled, supported, vetoed}}
+        for feat in result.values():
+            if isinstance(feat, dict):
+                return feat
+        return None
+
+    async def wait_for_feature(
+        self,
+        feature_name: str,
+        check: Callable[[dict[str, Any]], bool],
+        *,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+        timeout: float = 120,
+        poll_interval: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[bool]:
+        """Wait until a feature check passes on all targeted nodes.
+
+        Args:
+            feature_name: Amendment name or hash.
+            check: Predicate applied to each node's feature status dict.
+                   Must return True on all targeted nodes to succeed.
+            nodes: Specific node IDs to target (default: all).
+            exclude_nodes: Node IDs to skip.
+        """
+
+        def _check_node(nid: int) -> bool:
+            status = self.feature_check(feature_name, node_id=nid)
+            return bool(status and check(status))
+
+        return await wait_for_nodes(
+            _check_node,
+            self._resolve_nodes(nodes, exclude_nodes),
+            timeout=timeout,
+            poll_interval=poll_interval,
+            name=name or f"feature-{feature_name}",
+        )
+
+    async def wait_for[T](
+        self,
+        fn: Callable[[], T | None],
+        *,
+        timeout: float = 120,
+        poll_interval: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[T]:
+        """Poll a function until it returns a truthy value."""
+        return await wait_for(
+            fn, timeout=timeout, poll_interval=poll_interval, name=name
         )
 
     # -- Log operations ----------------------------------------------------
@@ -731,31 +999,28 @@ def load_scenario_script(script_path: Path) -> Any:
 
 async def run_scenario_with_monitor(
     script_path: Path,
-    rpc_client: RPCClient,
-    base_dir: Path,
-    node_count: int,
-    network_config: Any,
+    network: TestNetwork,
     tracked_features: list[str] | None = None,
-) -> None:
+) -> bool:
     """Run a scenario script with the network monitor in background.
 
     Args:
         script_path: Path to the scenario script.
-        rpc_client: RPC client for the scenario context.
-        base_dir: Testnet directory (contains n0/, n1/, ...).
-        node_count: Number of nodes in the network.
-        network_config: NetworkConfig for the monitor.
+        network: The TestNetwork instance.
         tracked_features: Optional list of feature names to track.
+
+    Returns:
+        True if scenario passed, False if it failed.
     """
     from xahaud_scripts.testnet.monitor import NetworkMonitor
 
     scenario_fn = load_scenario_script(script_path)
-    ctx = ScenarioContext(rpc=rpc_client, base_dir=base_dir, node_count=node_count)
+    ctx = ScenarioContext(network)
 
     stop_event = asyncio.Event()
     monitor = NetworkMonitor(
-        rpc_client=rpc_client,
-        network_config=network_config,
+        rpc_client=network.rpc_client,
+        network_config=network.config,
         tracked_features=tracked_features,
     )
 
@@ -767,8 +1032,12 @@ async def run_scenario_with_monitor(
 
     try:
         logger.info(f"Running scenario: {script_path.name}")
-        await scenario_fn(ctx)
+        await scenario_fn(ctx, ctx.log)
         logger.info("Scenario completed successfully")
+        return True
+    except Exception:
+        logger.exception("Scenario failed")
+        return False
     finally:
         stop_event.set()
         monitor_task.cancel()

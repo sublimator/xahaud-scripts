@@ -231,8 +231,8 @@ class TmuxLauncher:
         else:
             cmd = f"{binary} {args}"
 
-        # Combine env vars and command
-        return f"{env_vars} && {cmd}"
+        # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
+        return f" {env_vars} && {cmd}"
 
     def _build_env_vars(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build environment variable exports for the node."""
@@ -394,6 +394,39 @@ class TmuxLauncher:
             return result.stdout
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to capture pane for node {node_id}: {e}")
+            return None
+
+    def get_exit_status(self, node_id: int) -> int | None:
+        """Get the exit status of a dead pane's process.
+
+        Requires remain-on-exit to be on (tmux default or user config).
+
+        Returns:
+            Exit code, or None if pane is still alive or not found.
+        """
+        pane_id = self._validate_pane(node_id)
+        if not pane_id:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "display-message",
+                    "-t",
+                    pane_id,
+                    "-p",
+                    "#{pane_dead}:#{pane_dead_status}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            parts = result.stdout.strip().split(":")
+            if len(parts) == 2 and parts[0] == "1":
+                return int(parts[1]) if parts[1] else None
+            return None
+        except (subprocess.CalledProcessError, ValueError) as e:
+            logger.error(f"Failed to get exit status for node {node_id}: {e}")
             return None
 
     def stop_node(self, node_id: int) -> bool:

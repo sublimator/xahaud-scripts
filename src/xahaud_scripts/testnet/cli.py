@@ -806,34 +806,42 @@ def run(
             network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
     elif scenario_script:
         import asyncio
+        import logging
 
         from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
 
+        # Set up file logging for scenario
+        log_file = network.base_dir.parent / ".testnet" / "scenario-test.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, mode="w")
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+        )
+        scenario_logger = logging.getLogger("xahaud_scripts.testnet.scenario")
+        scenario_logger.addHandler(file_handler)
+        logger.info(f"Scenario log: {log_file}")
+
+        scenario_passed = False
         try:
-            asyncio.run(
+            scenario_passed = asyncio.run(
                 run_scenario_with_monitor(
                     script_path=scenario_script,
-                    rpc_client=network._rpc,
-                    base_dir=network._base_dir,
-                    node_count=network._config.node_count,
-                    network_config=network._config,
+                    network=network,
                     tracked_features=tracked,
                 )
             )
         except KeyboardInterrupt:
             logger.info("Scenario interrupted")
-        except Exception as e:
-            logger.error(f"Scenario failed: {e}")
-            import traceback
-
-            traceback.print_exc()
+        finally:
+            file_handler.close()
+            scenario_logger.removeHandler(file_handler)
 
         if test_script_teardown:
             count = network.teardown()
             logger.info(f"Teardown: killed {count} processes")
-        else:
-            logger.info("Continuing to monitor (Ctrl-C to stop)...")
-            network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
+
+        if not scenario_passed:
+            sys.exit(1)
     else:
         network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
 
