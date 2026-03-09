@@ -776,21 +776,30 @@ class ScenarioContext:
         *,
         nodes: list[int] | None = None,
         exclude_nodes: list[int] | None = None,
+        timeout: float = 10,
     ) -> None:
         """Assert that nodes exited with the expected status.
 
-        Requires remain-on-exit to be on in tmux. If a node's exit status
-        can't be read (pane still alive or not found), the assertion fails.
+        Polls for the exit status file (written by _xrun) since there
+        may be a brief delay between RPC going down and the process
+        fully exiting.
 
         Raises:
             AssertionError: If any node's exit status doesn't match.
         """
+        import time
+
         for nid in self._resolve_nodes(nodes, exclude_nodes):
-            status = self._network.get_exit_status(nid)
+            deadline = _time.monotonic() + timeout
+            status: int | None = None
+            while _time.monotonic() < deadline:
+                status = self._network.get_exit_status(nid)
+                if status is not None:
+                    break
+                time.sleep(0.5)
             if status is None:
                 raise AssertionError(
-                    f"Node {nid}: could not read exit status "
-                    f"(still alive or remain-on-exit not set?)"
+                    f"Node {nid}: could not read exit status after {timeout}s"
                 )
             if status != expected:
                 raise AssertionError(
