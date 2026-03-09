@@ -290,16 +290,9 @@ class LaunchConfig:
         xahaud_root: Path to the xahaud repository root
         rippled_path: Path to the rippled binary
         genesis_file: Path to the genesis ledger file
-        amendment_id: Optional amendment ID for injection
         quorum: Optional quorum value for consensus
-        inject_type: Injection type ('rcl' or 'txq')
-        flood: Inject every N ledgers (0 for once only)
-        n_txns: Number of transactions per injection
         no_delays: Skip startup delays between nodes
         slave_delay: Delay in seconds between launching nodes
-        slave_net: Add --net flag to slave nodes
-        no_check_local: Disable CHECK_LOCAL_PSEUDO env var
-        no_check_pseudo_valid: Disable CHECK_PSEUDO_VALIDITY env var
         extra_args: Additional arguments for rippled
         extra_env: Additional environment variables for rippled (all nodes)
         node_env: Node-specific environment variables (node_id -> {key: value})
@@ -309,16 +302,9 @@ class LaunchConfig:
     xahaud_root: Path
     rippled_path: Path
     genesis_file: Path
-    amendment_id: str | None = None
     quorum: int | None = None
-    inject_type: str = "rcl"
-    flood: int | None = None
-    n_txns: int | None = None
     no_delays: bool = True
     slave_delay: float = 1.0
-    slave_net: bool = False
-    no_check_local: bool = False
-    no_check_pseudo_valid: bool = False
     extra_args: list[str] = field(default_factory=list)
     extra_env: dict[str, str] = field(default_factory=dict)
     node_env: dict[int, dict[str, str]] = field(default_factory=dict)
@@ -343,7 +329,6 @@ class NodeInfo:
         port_peer: Peer port for this node
         port_rpc: RPC port for this node
         port_ws: WebSocket port for this node
-        is_injector: True if this node is the exploit injector (node 0)
     """
 
     id: int
@@ -353,17 +338,11 @@ class NodeInfo:
     port_peer: int
     port_rpc: int
     port_ws: int
-    is_injector: bool = False
 
     @property
     def node_dir(self) -> Path:
         """Get the node's directory."""
         return self.config_path.parent
-
-    @property
-    def role(self) -> str:
-        """Get the node's role string."""
-        return "EXPLOIT" if self.is_injector else "CLEAN"
 
 
 class ConfigBuilder:
@@ -375,7 +354,6 @@ class ConfigBuilder:
         ...     builder
         ...     .xahaud_root()  # Auto-detect via git
         ...     .node_count(3)
-        ...     .amendment_id("ABC123...")
         ...     .build()
         ... )
     """
@@ -390,16 +368,9 @@ class ConfigBuilder:
         self._base_port_peer: int = DEFAULT_BASE_PORT_PEER
         self._base_port_rpc: int = DEFAULT_BASE_PORT_RPC
         self._base_port_ws: int = DEFAULT_BASE_PORT_WS
-        self._amendment_id: str | None = None
         self._quorum: int | None = None
-        self._inject_type: str = "rcl"
-        self._flood: int | None = None
-        self._n_txns: int | None = None
         self._no_delays: bool = True
         self._slave_delay: float = 1.0
-        self._slave_net: bool = False
-        self._no_check_local: bool = False
-        self._no_check_pseudo_valid: bool = False
         self._extra_args: list[str] = []
 
     def xahaud_root(self, path: Path | None = None) -> ConfigBuilder:
@@ -450,29 +421,9 @@ class ConfigBuilder:
         self._base_port_ws = ws
         return self
 
-    def amendment_id(self, amendment_id: str | None) -> ConfigBuilder:
-        """Set amendment ID for injection."""
-        self._amendment_id = amendment_id
-        return self
-
     def quorum(self, quorum: int | None) -> ConfigBuilder:
         """Set quorum value."""
         self._quorum = quorum
-        return self
-
-    def inject_type(self, inject_type: str) -> ConfigBuilder:
-        """Set injection type ('rcl' or 'txq')."""
-        self._inject_type = inject_type
-        return self
-
-    def flood(self, flood: int | None) -> ConfigBuilder:
-        """Set flood frequency (inject every N ledgers)."""
-        self._flood = flood
-        return self
-
-    def n_txns(self, n_txns: int | None) -> ConfigBuilder:
-        """Set number of transactions per injection."""
-        self._n_txns = n_txns
         return self
 
     def no_delays(self, no_delays: bool = True) -> ConfigBuilder:
@@ -483,23 +434,6 @@ class ConfigBuilder:
     def slave_delay(self, delay: float) -> ConfigBuilder:
         """Set delay between launching nodes."""
         self._slave_delay = delay
-        return self
-
-    def slave_net(self, slave_net: bool = True) -> ConfigBuilder:
-        """Add --net flag to slave nodes."""
-        self._slave_net = slave_net
-        return self
-
-    def no_check_local(self, no_check_local: bool = True) -> ConfigBuilder:
-        """Disable CHECK_LOCAL_PSEUDO."""
-        self._no_check_local = no_check_local
-        return self
-
-    def no_check_pseudo_valid(
-        self, no_check_pseudo_valid: bool = True
-    ) -> ConfigBuilder:
-        """Disable CHECK_PSEUDO_VALIDITY."""
-        self._no_check_pseudo_valid = no_check_pseudo_valid
         return self
 
     def extra_args(self, args: list[str]) -> ConfigBuilder:
@@ -546,16 +480,9 @@ class ConfigBuilder:
             xahaud_root=self._xahaud_root,
             rippled_path=self._rippled_path,
             genesis_file=self._genesis_file,
-            amendment_id=self._amendment_id,
             quorum=self._quorum,
-            inject_type=self._inject_type,
-            flood=self._flood,
-            n_txns=self._n_txns,
             no_delays=self._no_delays,
             slave_delay=self._slave_delay,
-            slave_net=self._slave_net,
-            no_check_local=self._no_check_local,
-            no_check_pseudo_valid=self._no_check_pseudo_valid,
             extra_args=self._extra_args,
         )
 

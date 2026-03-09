@@ -102,8 +102,7 @@ class ITermPanesLauncher:
         env_vars = self._build_env_vars(node, config)
         startup_flags = self._build_startup_flags(node, config)
 
-        role = "[EXPLOIT]" if node.is_injector else "[CLEAN]"
-        pane_title = f"N{node.id} {role}"
+        pane_title = f"n{node.id}"
 
         # Build the command to run
         cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
@@ -317,32 +316,6 @@ end tell
         parts.append("export LOG_DATE_LOCAL=1")
         parts.append("export NO_COLOR=1")
 
-        # Amendment ID for injection
-        amendment_id = (
-            config.amendment_id
-            or "56B241D7A43D40354D02A9DC4C8DF5C7A1F930D92A9035C4E12291B3CA3E1C2B"
-        )
-        parts.append(f"export AMENDMENT_ID={amendment_id}")
-
-        # Injection type
-        parts.append(f"export INJECT_TYPE={config.inject_type}")
-
-        # Optional flood setting
-        if config.flood is not None:
-            parts.append(f"export FLOOD={config.flood}")
-
-        # Optional n_txns setting
-        if config.n_txns is not None:
-            parts.append(f"export N_TXNS={config.n_txns}")
-
-        # Disable local pseudo-transaction checking if requested
-        if config.no_check_local:
-            parts.append("export CHECK_LOCAL_PSEUDO=0")
-
-        # Disable pseudo-transaction validity checking if requested
-        if config.no_check_pseudo_valid:
-            parts.append("export CHECK_PSEUDO_VALIDITY=0")
-
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
             parts.append(f"export {key}={value}")
@@ -364,10 +337,6 @@ end tell
         # Quorum setting
         if config.quorum is not None:
             parts.append(f"--quorum {config.quorum}")
-
-        # Slave-net mode: add --net flag to non-master nodes
-        if config.slave_net and not node.is_injector:
-            parts.append("--net")
 
         # Extra arguments
         if config.extra_args:

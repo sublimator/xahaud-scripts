@@ -168,7 +168,9 @@ async def wait_for_ledger_close(
                 result=current,
             )
 
-    raise TimeoutError(f"No ledger close within {timeout}s on node {node_id}")
+    raise TimeoutError(
+        f"Timed out waiting for ledger close ({timeout}s) on node {node_id}"
+    )
 
 
 async def wait_for_ledger(
@@ -214,7 +216,7 @@ async def wait_for_ledger(
         await asyncio.sleep(poll_interval)
 
     raise TimeoutError(
-        f"Ledger {target} not reached within {timeout}s on node {node_id}"
+        f"Timed out waiting for ledger {target} ({timeout}s) on node {node_id}"
     )
 
 
@@ -653,6 +655,19 @@ class ScenarioContext:
         """Async sleep."""
         await asyncio.sleep(seconds)
 
+    async def pause(self, message: str = "Press Enter to continue...") -> str:
+        """Pause scenario and wait for user input.
+
+        Useful for debugging (inspect state mid-scenario) or manual steps.
+        Returns whatever the user typed before pressing Enter.
+        """
+        logger.info(f"PAUSED: {message}")
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, input, f"\n>> {message} "
+        )
+        logger.info(f"Resumed (input: {result!r})")
+        return result
+
     # -- Wait primitives ---------------------------------------------------
 
     async def wait_for_ledger_close(
@@ -766,6 +781,36 @@ class ScenarioContext:
 
     # -- Network control ---------------------------------------------------
 
+    def stop_node(self, node_id: int) -> bool:
+        """Stop a single node (sends Ctrl+C via launcher)."""
+        return self._network.stop_nodes([node_id]).get(node_id, False)
+
+    def start_node(self, node_id: int) -> bool:
+        """Start a single node (re-sends launch command via launcher)."""
+        return self._network.start_nodes([node_id]).get(node_id, False)
+
+    def stop_nodes(self, *, nodes: list[int]) -> dict[int, bool]:
+        """Stop multiple nodes (sends Ctrl+C via launcher).
+
+        Args:
+            nodes: Node IDs to stop (required, no default).
+
+        Returns:
+            Dict mapping node_id -> success.
+        """
+        return self._network.stop_nodes(nodes)
+
+    def start_nodes(self, *, nodes: list[int]) -> dict[int, bool]:
+        """Start multiple nodes (re-sends launch command via launcher).
+
+        Args:
+            nodes: Node IDs to start (required, no default).
+
+        Returns:
+            Dict mapping node_id -> success.
+        """
+        return self._network.start_nodes(nodes)
+
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node."""
         return self._network.capture_output(node_id, lines)
@@ -805,6 +850,25 @@ class ScenarioContext:
                 raise AssertionError(
                     f"Node {nid}: expected exit status {expected}, got {status}"
                 )
+
+    def log_level(
+        self,
+        partition: str,
+        severity: str,
+        *,
+        nodes: list[int] | None = None,
+        exclude_nodes: list[int] | None = None,
+    ) -> None:
+        """Set log level for a partition across nodes.
+
+        Args:
+            partition: Log partition name (e.g., "Validations", "Amendments").
+            severity: Log severity (e.g., "trace", "debug", "info", "warning").
+            nodes: Specific node IDs to target (default: all).
+            exclude_nodes: Node IDs to skip.
+        """
+        for nid in self._resolve_nodes(nodes, exclude_nodes):
+            self.rpc.log_level(nid, partition, severity)
 
     def feature(
         self,

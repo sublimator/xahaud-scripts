@@ -7,7 +7,9 @@ restarted manually since the shell stays alive.
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +29,11 @@ TMUX_SESSION_NAME = "xahaud-testnet"
 # Saves PID and exit status to the node's working directory.
 # Compatible with bash and zsh. Process runs in foreground (output
 # visible, Ctrl+C works). Leading space avoids zsh history.
-_XRUN_FUNC = ' _xrun() { "$@" & echo $! > .pid; wait $!; echo $? > .exit_status; }'
+_XRUN_FUNC = (
+    ' _xrun() { "$@" & local p=$!; echo $p > .pid;'
+    " trap 'kill $p 2>/dev/null' INT TERM;"
+    " wait $p; echo $? > .exit_status; }"
+)
 ITERM_WINDOW_FILE = ".tmux_iterm_window"
 
 # macOS key codes for numbers 1-9 (used for Ctrl+N desktop switching)
@@ -141,8 +147,7 @@ class TmuxLauncher:
             capture_output=True,
         )
 
-        role = "[EXPLOIT]" if node.is_injector else "[CLEAN]"
-        window_name = f"n{node.id}{role}"
+        window_name = f"n{node.id}"
 
         # Create new detached session and capture pane ID
         result = subprocess.run(
@@ -188,8 +193,6 @@ class TmuxLauncher:
         Returns:
             The tmux pane ID (e.g. "%3") for the created pane.
         """
-        role = "[EXPLOIT]" if node.is_injector else "[CLEAN]"
-
         # Split the window, create new pane, and capture pane ID
         result = subprocess.run(
             [
@@ -228,7 +231,7 @@ class TmuxLauncher:
             capture_output=True,
         )
 
-        logger.info(f"Created pane for node {node.id} {role}")
+        logger.info(f"Created pane for node {node.id}")
         return pane_id
 
     def _build_full_command(self, node: NodeInfo, config: LaunchConfig) -> str:
@@ -260,32 +263,6 @@ class TmuxLauncher:
         parts.append("export LOG_DATE_LOCAL=1")
         parts.append("export NO_COLOR=1")
 
-        # Amendment ID for injection
-        amendment_id = (
-            config.amendment_id
-            or "56B241D7A43D40354D02A9DC4C8DF5C7A1F930D92A9035C4E12291B3CA3E1C2B"
-        )
-        parts.append(f"export AMENDMENT_ID={amendment_id}")
-
-        # Injection type
-        parts.append(f"export INJECT_TYPE={config.inject_type}")
-
-        # Optional flood setting
-        if config.flood is not None:
-            parts.append(f"export FLOOD={config.flood}")
-
-        # Optional n_txns setting
-        if config.n_txns is not None:
-            parts.append(f"export N_TXNS={config.n_txns}")
-
-        # Disable local pseudo-transaction checking if requested
-        if config.no_check_local:
-            parts.append("export CHECK_LOCAL_PSEUDO=0")
-
-        # Disable pseudo-transaction validity checking if requested
-        if config.no_check_pseudo_valid:
-            parts.append("export CHECK_PSEUDO_VALIDITY=0")
-
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
             parts.append(f"export {key}={value}")
@@ -307,10 +284,6 @@ class TmuxLauncher:
         # Quorum setting
         if config.quorum is not None:
             parts.append(f"--quorum {config.quorum}")
-
-        # Slave-net mode: add --net flag to non-master nodes
-        if config.slave_net and not node.is_injector:
-            parts.append("--net")
 
         # Extra arguments
         if config.extra_args:
@@ -430,7 +403,21 @@ class TmuxLauncher:
             return None
 
     def stop_node(self, node_id: int) -> bool:
-        """Send Ctrl+C to node's tmux pane."""
+        """Stop a node by sending SIGTERM to its process (via .pid file).
+
+        Falls back to sending Ctrl+C to the tmux pane if no PID file found.
+        """
+        # Try killing via PID file first (reliable with _xrun)
+        if self._base_dir:
+            pid_file = self._base_dir / f"n{node_id}" / ".pid"
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                return True
+            except (FileNotFoundError, ValueError, ProcessLookupError):
+                pass
+
+        # Fallback: Ctrl+C to pane
         pane_id = self._validate_pane(node_id)
         if not pane_id:
             return False

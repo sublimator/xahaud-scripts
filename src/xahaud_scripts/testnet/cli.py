@@ -4,11 +4,10 @@ This module provides Click commands for managing local xahaud test networks.
 
 Usage:
     testnet generate [--node-count N]
-    testnet run [--amendment-id ID] [--quorum N] [--no-delays]
-    testnet check [--amendment-id ID]
+    testnet run [--quorum N] [--no-delays]
+    testnet check
     testnet server-info n0
     testnet ping n0
-    testnet inject n0,n1,n2 --amendment-id ID --ledger-seq N
     testnet logs PARTITION SEVERITY [NODE]
     testnet topology
     testnet ports
@@ -161,11 +160,8 @@ def testnet(
         # Launch the network and monitor
         testnet run
 
-        # Launch with custom amendment ID
-        testnet run --amendment-id ABC123...
-
         # Check amendment status
-        testnet check --amendment-id ABC123...
+        testnet check
 
         # Kill all running nodes
         testnet teardown
@@ -286,7 +282,7 @@ def generate(
         click.echo(f"  Runtime config: {len(rc_specs)} spec(s) persisted")
     click.echo("\nValidator public keys:")
     for node in network.nodes:
-        click.echo(f"  Node {node.id} [{node.role}]: {node.public_key}")
+        click.echo(f"  Node {node.id}: {node.public_key}")
 
 
 @testnet.command()
@@ -297,16 +293,7 @@ def generate(
     default=5,
     help=f"Number of nodes (1-{MAX_NODE_COUNT})",
 )
-@click.option("--amendment-id", help="Amendment ID for injection")
 @click.option("--quorum", type=int, help="Quorum value for consensus")
-@click.option("--flood", type=int, help="Inject every N ledgers (0 for once only)")
-@click.option("--n-txns", type=int, help="Number of transactions per injection")
-@click.option(
-    "--inject-type",
-    type=click.Choice(["rcl", "txq"]),
-    default="rcl",
-    help="Injection type",
-)
 @click.option(
     "--no-delays/--delays",
     default=True,
@@ -317,17 +304,6 @@ def generate(
     type=float,
     default=1.0,
     help="Delay between node launches (seconds)",
-)
-@click.option("--slave-net/--no-slave-net", default=False, help="Add --net to slaves")
-@click.option(
-    "--no-check-local/--check-local",
-    default=False,
-    help="Disable CHECK_LOCAL_PSEUDO",
-)
-@click.option(
-    "--no-check-pseudo-valid/--check-pseudo-valid",
-    default=False,
-    help="Disable CHECK_PSEUDO_VALIDITY",
 )
 @click.option(
     "--genesis-file",
@@ -457,16 +433,9 @@ def generate(
 def run(
     ctx: click.Context,
     node_count: int,
-    amendment_id: str | None,
     quorum: int | None,
-    flood: int | None,
-    n_txns: int | None,
-    inject_type: str,
     no_delays: bool,
     slave_delay: float,
-    slave_net: bool,
-    no_check_local: bool,
-    no_check_pseudo_valid: bool,
     genesis_file: Path | None,
     features: tuple[str, ...],
     env_vars: tuple[str, ...],
@@ -498,9 +467,6 @@ def run(
 
         # Basic launch
         testnet run
-
-        # Launch with custom amendment ID
-        testnet run --amendment-id 5B8E5D8F3D8687D3CE567FB5BDAED152...
 
         # Launch with custom quorum
         testnet run --quorum 4
@@ -686,16 +652,9 @@ def run(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
         genesis_file=effective_genesis,
-        amendment_id=amendment_id,
         quorum=quorum,
-        flood=flood,
-        n_txns=n_txns,
-        inject_type=inject_type,
         no_delays=no_delays,
         slave_delay=slave_delay,
-        slave_net=slave_net,
-        no_check_local=no_check_local,
-        no_check_pseudo_valid=no_check_pseudo_valid,
         extra_args=list(extra_args),
         extra_env=extra_env,
         node_env=node_env,
@@ -885,20 +844,20 @@ def monitor(
 
 
 @testnet.command()
-@click.option("--amendment-id", help="Amendment ID to check")
+@click.argument("amendment_id")
 @click.pass_context
-def check(ctx: click.Context, amendment_id: str | None) -> None:
+def check(ctx: click.Context, amendment_id: str) -> None:
     """Check amendment status on all nodes.
 
     Queries each node for its amendment status and displays
     the results in a table.
+
+    AMENDMENT_ID is the amendment hash to check.
+
+    Examples:
+        testnet check 56B241D7A43D40354D02A9DC4C8DF5C7A1F930D92A9035C4E12291B3CA3E1C2B
     """
     network = _create_network(ctx)
-
-    if not amendment_id:
-        amendment_id = (
-            "56B241D7A43D40354D02A9DC4C8DF5C7A1F930D92A9035C4E12291B3CA3E1C2B"
-        )
 
     try:
         network._load_network_info()
@@ -1045,9 +1004,7 @@ def ledger(
 @click.argument("node")
 @click.pass_context
 def ping(ctx: click.Context, node: str) -> None:
-    """Trigger injection on a specific node.
-
-    Sends a ping with inject=true to trigger manual injection.
+    """Ping a specific node.
 
     NODE should be specified as n0, n1, n2, etc.
 
@@ -1057,40 +1014,13 @@ def ping(ctx: click.Context, node: str) -> None:
     node_id = _parse_node_spec(node)
     network = _create_network(ctx)
 
-    click.echo(f"Triggering injection on node {node_id}...")
-    result = network.ping(node_id, inject=True)
+    click.echo(f"Pinging node {node_id}...")
+    result = network.ping(node_id)
     if result:
         click.echo(json.dumps(result, indent=2))
     else:
         click.echo(f"Failed to ping node {node_id}")
         sys.exit(1)
-
-
-@testnet.command()
-@click.argument("nodes")
-@click.option("--amendment-id", required=True, help="Amendment ID to inject")
-@click.option("--ledger-seq", required=True, type=int, help="Ledger sequence")
-@click.pass_context
-def inject(
-    ctx: click.Context,
-    nodes: str,
-    amendment_id: str,
-    ledger_seq: int,
-) -> None:
-    """Inject EnableAmendment pseudo-tx via RPC.
-
-    NODES should be a comma-separated list like n0,n1,n2
-
-    Example:
-        testnet inject n0,n1,n2 --amendment-id ABC123... --ledger-seq 100
-    """
-    node_ids = _parse_node_list(nodes)
-    network = _create_network(ctx)
-
-    for node_id in node_ids:
-        click.echo(f"\nInjecting on node {node_id}...")
-        result = network.inject_amendment(node_id, amendment_id, ledger_seq)
-        click.echo(json.dumps(result, indent=2))
 
 
 @testnet.command()
@@ -2550,6 +2480,14 @@ avoid api_version incompatibilities with xahaud.
 def test_script_guide() -> None:
     """Show guide for writing test scripts."""
     click.echo(TEST_SCRIPT_GUIDE)
+
+
+@testnet.command("scenario-test-guide")
+def scenario_test_guide() -> None:
+    """Show guide for writing scenario scripts."""
+    from xahaud_scripts.testnet.scenario_guide import generate_scenario_guide
+
+    click.echo(generate_scenario_guide())
 
 
 def main() -> None:

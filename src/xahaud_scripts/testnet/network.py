@@ -151,8 +151,6 @@ class TestNetwork:
             f"rpc={self._config.base_port_rpc}+, "
             f"ws={self._config.base_port_ws}+"
         )
-        logger.info("  Node 0: EXPLOIT INJECTOR")
-        logger.info(f"  Nodes 1-{self._config.node_count - 1}: Clean validators")
 
     def check_ports(self) -> dict[int, list[dict[str, str]]]:
         """Check if any required ports are in use.
@@ -251,8 +249,7 @@ class TestNetwork:
         logger.info("Launching test network...")
 
         for i, node in enumerate(self._nodes):
-            role = "EXPLOIT" if node.is_injector else "CLEAN"
-            logger.info(f"  Launching Node {node.id} [{role}]")
+            logger.info(f"  Launching Node {node.id}")
 
             success = self._launcher.launch(node, launch_config)
             if not success:
@@ -296,19 +293,7 @@ class TestNetwork:
 
     def _dump_launch_env(self, launch_config: LaunchConfig) -> None:
         """Log effective environment variables for visibility."""
-        # Hardcoded env vars from the launcher
         logger.info("  Environment:")
-        logger.info(f"    INJECT_TYPE={launch_config.inject_type}")
-        if launch_config.amendment_id:
-            logger.info(f"    AMENDMENT_ID={launch_config.amendment_id[:16]}...")
-        if launch_config.flood is not None:
-            logger.info(f"    FLOOD={launch_config.flood}")
-        if launch_config.n_txns is not None:
-            logger.info(f"    N_TXNS={launch_config.n_txns}")
-        if launch_config.no_check_local:
-            logger.info("    CHECK_LOCAL_PSEUDO=0")
-        if launch_config.no_check_pseudo_valid:
-            logger.info("    CHECK_PSEUDO_VALIDITY=0")
 
         # Global extra env vars (--env NAME=VALUE)
         for key, value in sorted(launch_config.extra_env.items()):
@@ -322,8 +307,6 @@ class TestNetwork:
         # Startup flags
         if launch_config.quorum is not None:
             logger.info(f"    --quorum {launch_config.quorum}")
-        if launch_config.slave_net:
-            logger.info("    --net (slave nodes)")
         if launch_config.extra_args:
             logger.info(f"    extra args: {' '.join(launch_config.extra_args)}")
 
@@ -444,60 +427,16 @@ class TestNetwork:
         """
         return self._rpc.server_info(node_id)
 
-    def ping(self, node_id: int, inject: bool = False) -> dict[str, Any] | None:
+    def ping(self, node_id: int) -> dict[str, Any] | None:
         """Send ping to a specific node.
 
         Args:
             node_id: The node ID (0, 1, 2, etc.)
-            inject: If True, include inject flag
 
         Returns:
             The ping result, or None if query failed
         """
-        return self._rpc.ping(node_id, inject=inject)
-
-    def inject_amendment(
-        self,
-        node_id: int,
-        amendment_id: str,
-        ledger_seq: int,
-    ) -> dict[str, Any]:
-        """Inject an EnableAmendment pseudo-transaction.
-
-        Args:
-            node_id: The node ID (0, 1, 2, etc.)
-            amendment_id: Amendment ID to enable
-            ledger_seq: Ledger sequence for the transaction
-
-        Returns:
-            The inject result dict
-        """
-        from xrpl.core import binarycodec
-
-        # Build EnableAmendment pseudo-transaction
-        pseudo_tx = {
-            "TransactionType": "EnableAmendment",
-            "Account": "rrrrrrrrrrrrrrrrrrrrrhoLvTp",  # All zeros account
-            "Sequence": 0,
-            "Fee": "0",
-            "SigningPubKey": "",
-            "LedgerSequence": ledger_seq,
-            "Amendment": amendment_id.upper(),
-        }
-
-        # Encode to binary
-        tx_blob = binarycodec.encode(pseudo_tx)
-        if isinstance(tx_blob, bytes):
-            tx_blob = tx_blob.hex().upper()
-        else:
-            tx_blob = tx_blob.upper()
-
-        logger.info(f"Injecting EnableAmendment on node {node_id}")
-        logger.debug(f"  Amendment: {amendment_id}")
-        logger.debug(f"  Ledger seq: {ledger_seq}")
-        logger.debug(f"  tx_blob: {tx_blob}")
-
-        return self._rpc.inject(node_id, tx_blob)
+        return self._rpc.ping(node_id)
 
     def set_log_level(
         self,
@@ -519,11 +458,10 @@ class TestNetwork:
         logger.info(f"Setting log level: partition={partition}, severity={severity}")
 
         for nid in node_ids:
-            role = "EXPLOIT" if nid == 0 else "CLEAN"
             if self._rpc.log_level(nid, partition, severity):
-                logger.info(f"  Node {nid} [{role}]: Log level set successfully")
+                logger.info(f"  Node {nid}: Log level set successfully")
             else:
-                logger.warning(f"  Node {nid} [{role}]: Failed to set log level")
+                logger.warning(f"  Node {nid}: Failed to set log level")
 
     def _save_network_info(self) -> None:
         """Save network.json with network metadata."""
@@ -542,7 +480,6 @@ class TestNetwork:
                     "port_peer": node.port_peer,
                     "port_rpc": node.port_rpc,
                     "port_ws": node.port_ws,
-                    "is_injector": node.is_injector,
                 }
                 for node in self._nodes
             ],
@@ -594,7 +531,6 @@ class TestNetwork:
                 port_peer=node["port_peer"],
                 port_rpc=node["port_rpc"],
                 port_ws=node["port_ws"],
-                is_injector=node.get("is_injector", node["id"] == 0),
             )
             for node in network_info["nodes"]
         ]

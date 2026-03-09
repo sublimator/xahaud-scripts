@@ -216,7 +216,6 @@ def generate_node_config(
     validator_token: str,
     validators_file: Path,
     network_config: NetworkConfig,
-    is_injector: bool = False,
     log_levels: dict[str, str] | None = None,
 ) -> Path:
     """Generate xahaud.cfg for a node.
@@ -227,7 +226,6 @@ def generate_node_config(
         validator_token: Validator token string
         validators_file: Path to validators.txt
         network_config: Network configuration
-        is_injector: True if this is the exploit injector node
         log_levels: Optional dict of partition -> severity to override defaults.
                     Use empty string value to remove a default partition.
 
@@ -248,7 +246,6 @@ def generate_node_config(
             ips_entries.append(f"127.0.0.1 {peer_port}")
 
     config = f"""# Node {node_id} Configuration
-# Role: {"EXPLOIT INJECTOR" if is_injector else "Clean Validator"}
 
 # peers_max must be > minOutCount (10) to have inbound slots available.
 # See: src/ripple/peerfinder/impl/Tuning.h:59 (minOutCount = 10)
@@ -484,7 +481,6 @@ def generate_all_configs(
     for node_id, validator_info in enumerate(validator_infos):
         logger.info(f"  Generating config for node {node_id}")
         node_dir = base_dir / f"n{node_id}"
-        is_injector = node_id == 0
 
         # Generate validators.txt
         validators_file = generate_validators_file(node_dir, all_validators)
@@ -496,7 +492,6 @@ def generate_all_configs(
             validator_token=validator_info["token"],
             validators_file=validators_file,
             network_config=network_config,
-            is_injector=is_injector,
             log_levels=log_levels,
         )
 
@@ -509,7 +504,6 @@ def generate_all_configs(
             port_peer=network_config.port_peer(node_id),
             port_rpc=network_config.port_rpc(node_id),
             port_ws=network_config.port_ws(node_id),
-            is_injector=is_injector,
         )
         nodes.append(node_info)
 

@@ -54,12 +54,13 @@ def parse_timestamp(line: str) -> datetime | None:
 def _normalize_ts(ts: datetime, reference: datetime) -> datetime:
     """Normalize ts to be comparable with reference.
 
-    If reference is time-only (year=1900), strip date from ts too.
-    This handles the mismatch between full-date log timestamps (year=2026)
-    and time-only filter values (year=1900).
+    Handles mismatch between time-only log timestamps (year=1900) and
+    full-date filter values (year=2026 from scenario markers), and vice versa.
     """
     if reference.year == 1900 and ts.year != 1900:
         return ts.replace(year=1900, month=1, day=1)
+    if ts.year == 1900 and reference.year != 1900:
+        return ts.replace(year=reference.year, month=reference.month, day=reference.day)
     return ts
 
 

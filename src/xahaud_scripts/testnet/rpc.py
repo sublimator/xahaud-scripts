@@ -189,31 +189,16 @@ class RequestsRPCClient:
         )
         return result is not None and result.get("status") == "success"
 
-    def inject(self, node_id: int, tx_blob: str) -> dict[str, Any]:
-        """Inject a transaction blob via RPC.
-
-        Args:
-            node_id: The node ID (0, 1, 2, etc.)
-            tx_blob: Hex-encoded transaction blob
-
-        Returns:
-            The inject result dict (may indicate error)
-        """
-        result = self._call(node_id, "inject", {"tx_blob": tx_blob})
-        return result or {"error": "RPC call failed"}
-
-    def ping(self, node_id: int, inject: bool = False) -> dict[str, Any] | None:
+    def ping(self, node_id: int) -> dict[str, Any] | None:
         """Send a ping command to a node.
 
         Args:
             node_id: The node ID (0, 1, 2, etc.)
-            inject: If True, include inject flag in ping
 
         Returns:
             The ping result dict, or None if query failed
         """
-        params = {"inject": True} if inject else {}
-        return self._call(node_id, "ping", params)
+        return self._call(node_id, "ping")
 
     def runtime_config(
         self,

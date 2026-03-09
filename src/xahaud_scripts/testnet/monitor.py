@@ -146,6 +146,7 @@ def display_network_status(
 
     table.add_column("Blkd", justify="center", style="red")
     table.add_column("CPU%", justify="right", style="magenta")
+    table.add_column("Uptime", justify="right", style="white")
     table.add_column("Version", style="dim", no_wrap=True)
     table.add_column("Δt", justify="right", style="cyan")
 
@@ -168,7 +169,7 @@ def display_network_status(
                 "-",
             ]
             row.extend("-" for _ in feature_names)
-            row.extend(["-", cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            row.extend(["-", cpu_str, "-", "-", f"{data.get('response_time', 0):.3f}s"])
             table.add_row(*row)
             continue
 
@@ -186,7 +187,7 @@ def display_network_status(
                 "-",
             ]
             row.extend("-" for _ in feature_names)
-            row.extend(["-", cpu_str, "-", f"{data.get('response_time', 0):.3f}s"])
+            row.extend(["-", cpu_str, "-", "-", f"{data.get('response_time', 0):.3f}s"])
             table.add_row(*row)
             continue
 
@@ -247,10 +248,15 @@ def display_network_status(
         blocked = state.get("amendment_blocked", False)
         blocked_str = "[bold red]YES[/bold red]" if blocked else ""
 
+        # Node uptime from server_info
+        uptime = state.get("uptime")
+        uptime_str = format_uptime(uptime) if uptime is not None else "-"
+
         row.extend(
             [
                 blocked_str,
                 cpu_str,
+                uptime_str,
                 version_str,
                 f"{data.get('response_time', 0):.3f}s",
             ]
@@ -364,7 +370,6 @@ def display_amendment_status(
 
     table = Table(title="Amendment Status")
     table.add_column("Node", style="cyan", no_wrap=True)
-    table.add_column("Role", style="white")
     table.add_column("Ledger", justify="right", style="yellow")
     table.add_column("Status", style="white")
     table.add_column("Name", style="green")
@@ -385,7 +390,6 @@ def display_amendment_status(
         if defs is None:
             table.add_row(
                 str(node.id),
-                node.role,
                 str(ledger_index),
                 "Query failed",
                 "-",
@@ -397,7 +401,6 @@ def display_amendment_status(
         if "error" in defs:
             table.add_row(
                 str(node.id),
-                node.role,
                 str(ledger_index),
                 "Not synced",
                 "-",
@@ -418,22 +421,15 @@ def display_amendment_status(
 
             table.add_row(
                 str(node.id),
-                node.role,
                 str(ledger_index),
                 status,
                 name,
                 "Y" if supported else "N",
                 "Y" if vetoed else "N",
             )
-
-            if enabled and node.is_injector:
-                console.print(
-                    f"[bold red]EXPLOIT SUCCESS on Node {node.id}![/bold red]"
-                )
         else:
             table.add_row(
                 str(node.id),
-                node.role,
                 str(ledger_index),
                 "Not found",
                 "-",
@@ -465,10 +461,10 @@ def display_topology(
         peers = rpc_client.peers(node.id)
 
         if peers is None:
-            console.print(f"n{node.id} [{node.role}]: [red]Query failed[/red]\n")
+            console.print(f"n{node.id}: [red]Query failed[/red]\n")
             continue
 
-        console.print(f"n{node.id} [{node.role}] - {len(peers)} peer(s):")
+        console.print(f"n{node.id} - {len(peers)} peer(s):")
         for peer in peers:
             address = peer.get("address", "unknown")
             peer_name = addr_to_node.get(address)
@@ -492,8 +488,6 @@ def display_port_status(
     console.print(f"\n[bold]Port Status ({len(nodes)} nodes)[/bold]\n")
 
     for node in nodes:
-        role = node.role
-
         # Check peer port
         peer_status = (
             "[green]UP[/green]"
@@ -516,7 +510,7 @@ def display_port_status(
                 pid_info = f" (PID: {info['pid']})"
 
         console.print(
-            f"Node {node.id} [{role}]: "
+            f"Node {node.id}: "
             f"Peer {node.port_peer} {peer_status}, "
             f"RPC {node.port_rpc} {rpc_status}{pid_info}"
         )
@@ -536,7 +530,7 @@ def dump_configs(nodes: list[NodeInfo]) -> None:
         validators_file = node.node_dir / "validators.txt"
 
         console.print(f"\n{'=' * 80}")
-        console.print(f"Node {node.id} [{node.role}]: {config_file}")
+        console.print(f"Node {node.id}: {config_file}")
         console.print("=" * 80)
 
         if config_file.exists():
@@ -544,7 +538,7 @@ def dump_configs(nodes: list[NodeInfo]) -> None:
 
         if validators_file.exists():
             console.print(f"\n{'=' * 80}")
-            console.print(f"Node {node.id} [{node.role}]: {validators_file}")
+            console.print(f"Node {node.id}: {validators_file}")
             console.print("=" * 80)
             console.print(validators_file.read_text(), markup=False)
 
