@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 logger = make_logger(__name__)
 
 TMUX_SESSION_NAME = "xahaud-testnet"
+
+# Shell function injected into each pane before launching a node.
+# Saves PID and exit status to the node's working directory.
+# Compatible with bash and zsh. Process runs in foreground (output
+# visible, Ctrl+C works). Leading space avoids zsh history.
+_XRUN_FUNC = ' _xrun() { "$@" & echo $! > .pid; wait $!; echo $? > .exit_status; }'
 ITERM_WINDOW_FILE = ".tmux_iterm_window"
 
 # macOS key codes for numbers 1-9 (used for Ctrl+N desktop switching)
@@ -160,7 +166,12 @@ class TmuxLauncher:
         )
         pane_id = result.stdout.strip()
 
-        # Send the startup command
+        # Inject _xrun helper, then send the startup command
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
             check=True,
@@ -205,7 +216,12 @@ class TmuxLauncher:
             capture_output=True,
         )
 
-        # Send the startup command to the new pane
+        # Inject _xrun helper, then send the startup command
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
             check=True,
@@ -232,7 +248,8 @@ class TmuxLauncher:
             cmd = f"{binary} {args}"
 
         # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
-        return f" {env_vars} && {cmd}"
+        # _xrun saves PID to .pid and exit status to .exit_status
+        return f" {env_vars} && _xrun {cmd}"
 
     def _build_env_vars(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build environment variable exports for the node."""
@@ -397,36 +414,19 @@ class TmuxLauncher:
             return None
 
     def get_exit_status(self, node_id: int) -> int | None:
-        """Get the exit status of a dead pane's process.
+        """Get the exit status of a node's process.
 
-        Requires remain-on-exit to be on (tmux default or user config).
+        Reads the .exit_status file written by the _xrun shell helper.
 
         Returns:
-            Exit code, or None if pane is still alive or not found.
+            Exit code, or None if process is still running or file not found.
         """
-        pane_id = self._validate_pane(node_id)
-        if not pane_id:
+        if not self._base_dir:
             return None
+        status_file = self._base_dir / f"n{node_id}" / ".exit_status"
         try:
-            result = subprocess.run(
-                [
-                    "tmux",
-                    "display-message",
-                    "-t",
-                    pane_id,
-                    "-p",
-                    "#{pane_dead}:#{pane_dead_status}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            parts = result.stdout.strip().split(":")
-            if len(parts) == 2 and parts[0] == "1":
-                return int(parts[1]) if parts[1] else None
-            return None
-        except (subprocess.CalledProcessError, ValueError) as e:
-            logger.error(f"Failed to get exit status for node {node_id}: {e}")
+            return int(status_file.read_text().strip())
+        except (FileNotFoundError, ValueError):
             return None
 
     def stop_node(self, node_id: int) -> bool:
@@ -465,7 +465,17 @@ class TmuxLauncher:
                 check=True,
                 capture_output=True,
             )
-            # Send command
+            # Clean up old status files
+            if self._base_dir:
+                for f in (".pid", ".exit_status"):
+                    p = self._base_dir / f"n{node_id}" / f
+                    p.unlink(missing_ok=True)
+            # Re-inject _xrun and send command
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
+                check=True,
+                capture_output=True,
+            )
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id, command, "Enter"],
                 check=True,
