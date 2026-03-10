@@ -128,18 +128,17 @@ def generate_scenario_guide() -> str:
 ## Overview
 
 Scenario scripts test network-level behavior — amendment activation, node
-crashes, consensus transitions, log assertion, and similar integration
-scenarios. They operate at a higher level than test scripts (which use
-xrpl-py for transaction-level testing).
+crashes, consensus transitions, log assertions, transaction submission,
+hook compilation, and similar integration scenarios.
 
 ## Running
 
     x-testnet run --scenario-script my_scenario.py
-    x-testnet run --scenario-script my_scenario.py --test-script-teardown
+    x-testnet run --scenario-script my_scenario.py --teardown
 
 Flags:
 - `--scenario-script PATH` — Run a scenario script after network launch
-- `--test-script-teardown` — Kill nodes after the scenario finishes
+- `--teardown` — Kill nodes after the scenario finishes
 - `--feature HASH` — Enable/disable amendments (prefix `-` to disable)
 - `--launcher tmux` — Use tmux (required for node lifecycle control)
 

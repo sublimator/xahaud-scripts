@@ -85,7 +85,6 @@ x-testnet generate --find-ports                  # auto-find free ports
 x-testnet run                                    # launch nodes + monitor
 x-testnet run --launcher tmux                    # use tmux instead of iTerm
 x-testnet run --reconnect                        # reconnect to existing network
-x-testnet run --test-script my_test.py           # run test script against network
 x-testnet teardown                               # kill all node processes
 x-testnet clean                                  # remove generated files
 
@@ -116,7 +115,7 @@ x-testnet hooks-server --error 500:0.25          # with random error responses
 x-testnet logs-search "LedgerConsensus.*accepted" # search all node logs
 x-testnet logs-search -s -5m                     # last 5 minutes of logs
 x-testnet logs-search Shuffle --tail 1000 -n 0-2 # tail + filter nodes
-x-testnet test-script-guide                      # show test script docs
+x-testnet scenario-test-guide                    # show scenario script docs
 ```
 
 `run` key options:
@@ -128,8 +127,8 @@ x-testnet test-script-guide                      # show test script docs
 - `--env NAME=VALUE` - Env vars for nodes (or `n0:NAME=VALUE` for specific node)
 - `--launcher tmux|iterm|iterm-panes`
 - `--desktop N` - macOS desktop number for window placement
-- `--test-script PATH` - Run test script instead of monitoring
-- `--test-script-teardown` - Kill nodes after test script finishes
+- `--scenario-script PATH` - Run scenario script instead of monitoring
+- `--teardown` - Kill nodes after scenario/txn-gen finishes
 
 ### x-get-job
 
@@ -221,7 +220,7 @@ src/xahaud_scripts/
     ├── process.py ............. UnixProcessManager (pgrep, lsof, kill)
     ├── protocols.py ........... Protocol interfaces (Launcher, RPCClient, ProcessManager, KeyGenerator)
     ├── monitor.py ............. NetworkMonitor, Rich table displays
-    ├── testing.py ............. Test script framework (TestContext, XahauClient, account derivation)
+    ├── testing.py ............. Shared test utilities (XahauClient, account derivation, txn gen runner)
     ├── xrpl_patch.py .......... Runtime monkey-patch xrpl-py definitions for Xahau types
     ├── data/genesis.json ...... Base genesis ledger
     ├── cli_handlers/

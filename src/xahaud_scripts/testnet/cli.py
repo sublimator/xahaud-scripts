@@ -342,18 +342,6 @@ def generate(
     help="Reconnect to existing network (skip launching, just monitor)",
 )
 @click.option(
-    "--test-script",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to test script to run instead of monitoring",
-)
-@click.option(
-    "--test-script-log-file",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Log test script output to this file",
-)
-@click.option(
     "--scenario-script",
     type=click.Path(exists=True, path_type=Path),
     default=None,
@@ -366,10 +354,10 @@ def generate(
     help="JSON object of params to pass to scenario function as kwargs.",
 )
 @click.option(
-    "--test-script-teardown",
+    "--teardown",
     is_flag=True,
     default=False,
-    help="Kill all nodes after test script finishes (keeps configs/logs)",
+    help="Kill all nodes after scenario/txn-gen finishes (keeps configs/logs)",
 )
 @click.option(
     "--rc",
@@ -449,11 +437,9 @@ def run(
     launcher: str | None,
     desktop: int | None,
     reconnect: bool,
-    test_script: Path | None,
-    test_script_log_file: Path | None,
     scenario_script: Path | None,
     params_json: str | None,
-    test_script_teardown: bool,
+    teardown: bool,
     rc_specs: tuple[str, ...],
     rc_clear: bool,
     generate_txns: str | None,
@@ -671,16 +657,11 @@ def run(
         lldb_nodes=lldb_nodes,
     )
 
-    # Mutual exclusion: only one of --test-script, --scenario-script, --generate-txns
-    script_opts = [
-        ("--test-script", test_script),
-        ("--scenario-script", scenario_script),
-        ("--generate-txns", generate_txns),
-    ]
-    active = [(name, val) for name, val in script_opts if val]
-    if len(active) > 1:
-        names = " and ".join(name for name, _ in active)
-        raise click.UsageError(f"{names} are mutually exclusive.")
+    # Mutual exclusion: --scenario-script and --generate-txns
+    if scenario_script and generate_txns:
+        raise click.UsageError(
+            "--scenario-script and --generate-txns are mutually exclusive."
+        )
 
     # Parse --generate-txns
     min_txns = max_txns = 0
@@ -721,56 +702,6 @@ def run(
             )
         except KeyboardInterrupt:
             logger.info("Txn generator stopped")
-    elif test_script:
-        # Run test script with monitor in background
-        import asyncio
-        import logging
-
-        from xahaud_scripts.testnet.testing import run_test_with_monitor
-
-        # Set up file logging for test script if requested
-        file_handler = None
-        if test_script_log_file:
-            test_script_log_file.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(test_script_log_file, mode="w")
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
-            )
-            # Add to the testing module logger
-            testing_logger = logging.getLogger("xahaud_scripts.testnet.testing")
-            testing_logger.addHandler(file_handler)
-            logger.info(f"Test script log: {test_script_log_file}")
-
-        ws_url = f"ws://localhost:{network._config.base_port_ws}"
-        try:
-            asyncio.run(
-                run_test_with_monitor(
-                    script_path=test_script,
-                    ws_url=ws_url,
-                    network_config=network._config,
-                    rpc_client=network._rpc,
-                    tracked_features=tracked,
-                )
-            )
-            logger.info("Test script finished.")
-        except KeyboardInterrupt:
-            logger.info("Test script interrupted")
-        except Exception as e:
-            logger.error(f"Test script failed: {e}")
-        finally:
-            if file_handler:
-                file_handler.close()
-                logging.getLogger("xahaud_scripts.testnet.testing").removeHandler(
-                    file_handler
-                )
-
-        if test_script_teardown:
-            count = network.teardown()
-            logger.info(f"Teardown: killed {count} processes")
-        else:
-            # After test script (success, interrupted, or failed), continue monitoring
-            logger.info("Continuing to monitor (Ctrl-C to stop)...")
-            network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
     elif scenario_script:
         import asyncio
         import logging
@@ -811,7 +742,7 @@ def run(
             file_handler.close()
             scenario_logger.removeHandler(file_handler)
 
-        if test_script_teardown:
+        if teardown:
             count = network.teardown()
             logger.info(f"Teardown: killed {count} processes")
 
@@ -2246,256 +2177,6 @@ def logs_search(
         nodes=nodes,
         exclude_patterns=list(excludes) if excludes else None,
     )
-
-
-TEST_SCRIPT_GUIDE = '''
-# x-testnet Test Script Guide
-
-## Overview
-
-Test scripts let you run automated tests against a local xahaud testnet.
-The framework handles network setup, account funding, and provides an
-xrpl-py client for interacting with the network.
-
-## Running a Test Script
-
-    x-testnet run --test-script my_test.py
-
-This will:
-1. Launch a local testnet (5 nodes by default)
-2. Wait for the first ledger to close
-3. Create wallets for declared accounts (deterministic from name)
-4. Fund each account from genesis
-5. Call your `async def run(ctx)` function
-6. Tear down the network when done
-
-## Test Script Format
-
-A test script is a Python file with:
-- `accounts` dict (optional): Maps account names to initial XAH balances
-- `async def run(ctx)`: The test function that receives a TestContext
-
-### Minimal Example
-
-```python
-async def run(ctx):
-    print("Hello from test script!")
-```
-
-### With Accounts
-
-```python
-accounts = {
-    "alice": 1000,  # 1000 XAH
-    "bob": 500,     # 500 XAH
-}
-
-async def run(ctx):
-    alice = ctx.get_account("alice")
-    bob = ctx.get_account("bob")
-    print(f"Alice: {alice.address}")
-    print(f"Bob: {bob.address}")
-```
-
-## TestContext
-
-The `ctx` object passed to your `run()` function provides:
-
-### ctx.client
-
-A wrapped xrpl-py client connected to node 0. The wrapper automatically
-sets api_version=1 on all requests (required by xahaud).
-
-```python
-from xrpl.models import ServerInfo, AccountInfo
-
-# Query server info
-response = await ctx.client.request(ServerInfo())
-
-# Check account balance
-response = await ctx.client.request(AccountInfo(account=alice.address))
-balance = response.result["account_data"]["Balance"]
-```
-
-### ctx.get_account(name) -> AccountInfo
-
-Get account info by name. The account must be declared in the `accounts` dict.
-
-Returns an `AccountInfo` dataclass with:
-- `name`: The account name (e.g., "alice")
-- `address`: The classic address (e.g., "rXXX...")
-- `public_key`: The public key (e.g., "ED..." or "02/03...")
-- `seed`: The seed/secret (e.g., "sXXX...")
-- `wallet`: An xrpl-py `Wallet` object for signing transactions
-
-### ctx.compile_hook(source, label="hook") -> bytes
-
-Compile C or WAT source code to WASM bytecode. Uses caching - same source
-returns cached result instantly. Raises on compilation failure.
-
-```python
-# Compile a simple C hook
-wasm = ctx.compile_hook("""
-    #include <stdint.h>
-    int64_t hook(uint32_t r) {
-        return 0;  // accept
-    }
-    int64_t cbak(uint32_t r) {
-        return 0;
-    }
-""", label="my-hook")
-
-print(f"Compiled to {len(wasm)} bytes")
-
-# Use with SetHook transaction...
-```
-
-The compiler auto-detects C vs WAT format (WAT contains "(module").
-
-Requires: wasmcc, hook-cleaner, wat2wasm installed.
-
-### await ctx.submit_tx(tx_dict, wallet) -> dict
-
-Sign and submit a raw transaction dict. This is async - use `await`.
-Use this for Xahau-specific transactions like SetHook that aren't in xrpl-py.
-
-Autofills Fee, Sequence, LastLedgerSequence, NetworkID, and Account if not provided.
-Raises `ValueError` if the server request fails (e.g. connection error).
-
-```python
-# SetHook example
-wasm = ctx.compile_hook(hook_source, label="my-hook")
-
-result = await ctx.submit_tx({
-    "TransactionType": "SetHook",
-    "Hooks": [{
-        "Hook": {
-            "CreateCode": wasm.hex().upper(),
-            "HookOn": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF",
-            "HookNamespace": "0" * 64,
-            "HookApiVersion": 0,
-        }
-    }]
-}, alice.wallet)
-
-print(f"SetHook result: {result.get('engine_result')}")
-```
-
-Other Xahau-specific transactions: Invoke, UNLModify, Import, etc.
-
-### await ctx.submit_and_wait(tx_dict, wallet) -> dict
-
-Like `submit_tx` but waits for the transaction to be validated in a
-closed ledger. Returns the full validated result including `meta`
-(which contains `HookExecutions`, `AffectedNodes`, etc.).
-
-```python
-result = await ctx.submit_and_wait({
-    "TransactionType": "SetHook",
-    "Hooks": [{
-        "Hook": {
-            "CreateCode": wasm.hex().upper(),
-            "HookOn": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF",
-            "HookNamespace": "0" * 64,
-            "HookApiVersion": 0,
-        }
-    }]
-}, alice.wallet)
-
-# Now has full metadata
-print(f"Result: {result.get('meta', {}).get('TransactionResult')}")
-hook_executions = result.get("meta", {}).get("HookExecutions", [])
-```
-
-Raises `ValueError` if the transaction is not validated within the
-timeout (default 60s).
-
-## Account Derivation
-
-Accounts are derived deterministically from their name using SHA-512:
-- Same name always produces the same address
-- Useful for reproducible tests
-
-```
-"alice" -> sha512("alice")[:16] -> seed -> wallet
-```
-
-## Genesis Account
-
-The genesis account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh) is used to
-fund your test accounts. It starts with 100 billion XAH.
-
-## Full Example: Payment Test
-
-```python
-"""Test that payments work correctly."""
-import asyncio
-from xrpl.models import AccountInfo
-
-accounts = {
-    "alice": 1000,
-    "bob": 100,
-}
-
-async def run(ctx):
-    alice = ctx.get_account("alice")
-    bob = ctx.get_account("bob")
-
-    # Check initial balances
-    resp = await ctx.client.request(AccountInfo(account=bob.address))
-    initial_balance = int(resp.result["account_data"]["Balance"])
-    print(f"Bob initial balance: {initial_balance} drops")
-
-    # Send 50 XAH from alice to bob using ctx.submit_tx
-    result = await ctx.submit_tx({
-        "TransactionType": "Payment",
-        "Destination": bob.address,
-        "Amount": "50000000",  # 50 XAH in drops
-    }, alice.wallet)
-
-    print(f"Payment result: {result.get('engine_result')}")
-
-    # Wait for ledger close
-    await asyncio.sleep(4)
-
-    # Verify new balance
-    resp = await ctx.client.request(AccountInfo(account=bob.address))
-    new_balance = int(resp.result["account_data"]["Balance"])
-    print(f"Bob new balance: {new_balance} drops")
-
-    expected = initial_balance + 50_000_000
-    assert new_balance == expected, f"Expected {expected}, got {new_balance}"
-
-    print("Payment test PASSED!")
-```
-
-## Tips
-
-- Use `drops` for amounts (1 XAH = 1,000,000 drops)
-- The `accounts` dict values are in XAH, not drops
-- Use `ctx.submit_tx()` for all transactions (handles Xahau api_version)
-- The network has 5 validators, so consensus is fast (~4 second ledgers)
-- No need to specify api_version=1 - the client wrapper handles it
-
-## xrpl-py Documentation
-
-For more on xrpl-py: https://xrpl-py.readthedocs.io/
-
-Common imports:
-```python
-from xrpl.models import AccountInfo, ServerInfo, Tx, Ledger
-from xrpl.utils import xrp_to_drops, drops_to_xrp
-```
-
-Note: Use `ctx.submit_tx()` instead of xrpl-py's `submit_and_wait()` to
-avoid api_version incompatibilities with xahaud.
-'''
-
-
-@testnet.command("test-script-guide")
-def test_script_guide() -> None:
-    """Show guide for writing test scripts."""
-    click.echo(TEST_SCRIPT_GUIDE)
 
 
 @testnet.command("scenario-test-guide")

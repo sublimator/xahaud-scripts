@@ -36,8 +36,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from xrpl.wallet import Wallet
+
     from xahaud_scripts.testnet.network import TestNetwork
     from xahaud_scripts.testnet.protocols import RPCClient
+    from xahaud_scripts.testnet.testing import AccountInfo
     from xahaud_scripts.testnet.txn_generator import TxnGenerator
 
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
@@ -630,6 +633,10 @@ class ScenarioContext:
 
     def __init__(self, network: TestNetwork) -> None:
         self._network = network
+        self._accounts: dict[str, AccountInfo] = {}
+        self._compiler: Any = None  # Lazy-init WasmCompiler
+        self._definitions_patched: bool = False
+        self._network_id: int | None = None
 
     def log(self, message: str) -> None:
         """Log a message from the scenario script."""
@@ -678,6 +685,255 @@ class ScenarioContext:
             transactions=transactions,
             expand=expand,
         )
+
+    # -- Accounts and hooks ------------------------------------------------
+
+    def account(self, name: str) -> AccountInfo:
+        """Get a deterministic account from a name.
+
+        The same name always produces the same wallet (SHA-512 of name → seed).
+        Results are cached — repeated calls return the same instance.
+
+        Args:
+            name: Account name (e.g., "alice", "bob").
+
+        Returns:
+            AccountInfo with address, seed, wallet, etc.
+        """
+        if name not in self._accounts:
+            from xahaud_scripts.testnet.testing import create_account_info
+
+            self._accounts[name] = create_account_info(name)
+        return self._accounts[name]
+
+    def compile_hook(self, source: str, label: str = "hook") -> bytes:
+        """Compile C or WAT source to WASM bytecode.
+
+        Uses cached compilation — same source returns cached result.
+
+        Args:
+            source: C or WAT hook source code.
+            label: Label for logging (e.g., "my-hook").
+
+        Returns:
+            Compiled WASM bytecode.
+        """
+        if self._compiler is None:
+            from xahaud_scripts.hooks import WasmCompiler
+
+            self._compiler = WasmCompiler()
+        return self._compiler.compile(source, label)
+
+    # -- Transaction submission --------------------------------------------
+
+    def _ensure_definitions_patched(self, node_id: int = 0) -> None:
+        """Patch xrpl-py binary codec with Xahau-specific definitions.
+
+        Called lazily on first transaction operation. Fetches
+        server_definitions via HTTP RPC and patches the codec.
+        """
+        if self._definitions_patched:
+            return
+
+        from xahaud_scripts.testnet.xrpl_patch import patch_definitions
+
+        result = self.rpc.server_definitions(node_id)
+        if result is None:
+            raise RuntimeError(
+                f"Failed to fetch server_definitions from node {node_id}"
+            )
+        patch_definitions(result)
+        self._definitions_patched = True
+
+    def _get_network_id(self, node_id: int = 0) -> int | None:
+        """Get and cache the network ID."""
+        if self._network_id is None:
+            info = self.rpc.server_info(node_id)
+            if info and "info" in info:
+                self._network_id = info["info"].get("network_id")
+        return self._network_id
+
+    def submit_tx(
+        self,
+        tx_dict: dict[str, Any],
+        wallet: Wallet,
+        *,
+        node_id: int = 0,
+    ) -> dict[str, Any]:
+        """Sign, auto-fill, and submit a raw transaction dict via HTTP RPC.
+
+        Auto-fills Fee, Sequence, LastLedgerSequence, NetworkID, and Account
+        if not already present. Signs with the provided wallet.
+
+        Use this for Xahau-specific transactions like SetHook that aren't
+        in xrpl-py's model layer.
+
+        Args:
+            tx_dict: Transaction as a dict (e.g., {"TransactionType": "SetHook", ...}).
+            wallet: Wallet to sign with.
+            node_id: Node to submit to (default: 0).
+
+        Returns:
+            Submit response result dict.
+
+        Raises:
+            RuntimeError: If required RPC calls fail.
+        """
+        from xrpl.core.binarycodec import encode, encode_for_signing
+        from xrpl.core.keypairs import sign as sign_blob
+
+        self._ensure_definitions_patched(node_id)
+        tx_dict = dict(tx_dict)  # Don't mutate caller's dict
+
+        # Auto-fill Fee
+        if "Fee" not in tx_dict:
+            result = self.rpc.request(node_id, "fee")
+            if not result or "drops" not in result:
+                raise RuntimeError(f"Fee request failed on node {node_id}")
+            tx_dict["Fee"] = result["drops"].get("open_ledger_cost", "1000000")
+
+        # Auto-fill Sequence
+        if "Sequence" not in tx_dict:
+            result = self.rpc.request(
+                node_id, "account_info", {"account": wallet.classic_address}
+            )
+            if not result or "account_data" not in result:
+                raise RuntimeError(
+                    f"account_info failed for {wallet.classic_address} on node {node_id}"
+                )
+            tx_dict["Sequence"] = result["account_data"]["Sequence"]
+
+        # Auto-fill LastLedgerSequence
+        if "LastLedgerSequence" not in tx_dict:
+            result = self.rpc.request(node_id, "ledger", {"ledger_index": "validated"})
+            if not result:
+                raise RuntimeError(f"Ledger request failed on node {node_id}")
+            ledger_idx = result.get("ledger_index")
+            if not ledger_idx:
+                ledger_idx = result.get("ledger", {}).get("ledger_index") or result.get(
+                    "validated", {}
+                ).get("ledger", {}).get("ledger_index")
+            tx_dict["LastLedgerSequence"] = (
+                (int(ledger_idx) + 20) if ledger_idx else 100
+            )
+
+        # Auto-fill NetworkID
+        if "NetworkID" not in tx_dict:
+            network_id = self._get_network_id(node_id)
+            if network_id:
+                tx_dict["NetworkID"] = network_id
+
+        # Auto-fill Account
+        if "Account" not in tx_dict:
+            tx_dict["Account"] = wallet.classic_address
+
+        # Sign
+        tx_dict["SigningPubKey"] = wallet.public_key
+        signing_blob = encode_for_signing(tx_dict)
+        tx_dict["TxnSignature"] = sign_blob(signing_blob, wallet.private_key)
+
+        # Encode and submit
+        tx_blob = encode(tx_dict)
+        result = self.rpc.request(node_id, "submit", {"tx_blob": tx_blob})
+        if result is None:
+            raise RuntimeError(f"Submit failed on node {node_id}")
+
+        engine_result = result.get("engine_result", "")
+        if engine_result and not engine_result.startswith("tes"):
+            logger.warning(f"Transaction result: {engine_result}")
+
+        return result
+
+    async def submit_and_wait(
+        self,
+        tx_dict: dict[str, Any],
+        wallet: Wallet,
+        *,
+        node_id: int = 0,
+        timeout: float = 60.0,
+        poll_interval: float = 4.0,
+    ) -> dict[str, Any]:
+        """Sign, submit, and wait for validation.
+
+        Like submit_tx but polls until the transaction is validated.
+
+        Args:
+            tx_dict: Transaction as a dict.
+            wallet: Wallet to sign with.
+            node_id: Node to submit to (default: 0).
+            timeout: Max seconds to wait for validation.
+            poll_interval: Seconds between polls.
+
+        Returns:
+            Validated transaction result (includes meta, HookExecutions, etc.).
+
+        Raises:
+            RuntimeError: If submit fails.
+            TimeoutError: If transaction not validated in time.
+        """
+        result = self.submit_tx(tx_dict, wallet, node_id=node_id)
+
+        engine_result = result.get("engine_result", "")
+        if not engine_result.startswith("tes"):
+            return result
+
+        tx_hash = result.get("tx_json", {}).get("hash")
+        if not tx_hash:
+            logger.warning(f"No tx hash in submit response: {result}")
+            return result
+
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            tx_result = self.rpc.request(node_id, "tx", {"transaction": tx_hash})
+            if tx_result and tx_result.get("validated"):
+                return tx_result
+
+        raise TimeoutError(f"Transaction {tx_hash} not validated after {timeout}s")
+
+    async def fund_accounts(
+        self,
+        accounts: dict[str, int],
+        *,
+        node_id: int = 0,
+    ) -> None:
+        """Fund named accounts from genesis.
+
+        Creates deterministic accounts and funds them with Payment
+        transactions from the genesis account.
+
+        Args:
+            accounts: Mapping of account name → XAH amount.
+            node_id: Node to submit funding transactions to (default: 0).
+        """
+        from xrpl.constants import CryptoAlgorithm
+        from xrpl.wallet import Wallet as XrplWallet
+
+        from xahaud_scripts.testnet.testing import GENESIS_SEED
+
+        genesis = XrplWallet.from_seed(
+            GENESIS_SEED, algorithm=CryptoAlgorithm.SECP256K1
+        )
+
+        for name, amount_xah in accounts.items():
+            acct = self.account(name)
+            amount_drops = str(amount_xah * 1_000_000)
+            logger.info(f"Funding {name} ({acct.address[:8]}...) with {amount_xah} XAH")
+
+            result = await self.submit_and_wait(
+                {
+                    "TransactionType": "Payment",
+                    "Destination": acct.address,
+                    "Amount": amount_drops,
+                },
+                genesis,
+                node_id=node_id,
+            )
+            engine_result = result.get("engine_result", "")
+            if engine_result.startswith("tes") or result.get("validated"):
+                logger.info(f"  Funded {name} (validated)")
+            else:
+                logger.warning(f"  Funding {name} result: {engine_result}")
 
     # -- Transaction generator ---------------------------------------------
 

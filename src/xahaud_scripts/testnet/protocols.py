@@ -130,6 +130,24 @@ class RPCClient(Protocol):
 
     base_port_rpc: int
 
+    def request(
+        self,
+        node_id: int,
+        method: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Make a raw RPC call to a node.
+
+        Args:
+            node_id: The node ID (0, 1, 2, etc.)
+            method: RPC method name
+            params: Optional parameters dict
+
+        Returns:
+            The result dict, or None if the call failed
+        """
+        ...
+
     def server_info(self, node_id: int) -> dict[str, Any] | None:
         """Get server_info from a node.
 
