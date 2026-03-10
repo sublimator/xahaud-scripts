@@ -22,6 +22,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -359,6 +360,12 @@ def generate(
     help="Path to scenario script to run (gets ScenarioContext with RPC + log assertions)",
 )
 @click.option(
+    "--params-json",
+    "params_json",
+    default=None,
+    help="JSON object of params to pass to scenario function as kwargs.",
+)
+@click.option(
     "--test-script-teardown",
     is_flag=True,
     default=False,
@@ -445,6 +452,7 @@ def run(
     test_script: Path | None,
     test_script_log_file: Path | None,
     scenario_script: Path | None,
+    params_json: str | None,
     test_script_teardown: bool,
     rc_specs: tuple[str, ...],
     rc_clear: bool,
@@ -769,6 +777,13 @@ def run(
 
         from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
 
+        # Parse --params-json if provided
+        scenario_params: dict[str, Any] | None = None
+        if params_json:
+            import json as _json
+
+            scenario_params = _json.loads(params_json)
+
         # Set up file logging for scenario
         log_file = network.base_dir.parent / ".testnet" / "scenario-test.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -787,6 +802,7 @@ def run(
                     script_path=scenario_script,
                     network=network,
                     tracked_features=tracked,
+                    params=scenario_params,
                 )
             )
         except KeyboardInterrupt:
@@ -1637,7 +1653,7 @@ def snapshot(ctx: click.Context, name: str | None, keep_db: bool) -> None:
     """Snapshot current network state for later inspection.
 
     Copies the testnet directory (configs, logs, network.json) into
-    runs/YYYYMMDD-HHMMSS[-NAME]/. Creates a 'latest' symlink.
+    snapshots/YYYYMMDD-HHMMSS[-NAME]/.
 
     Database files (db/) are excluded by default to save space.
 
@@ -1661,20 +1677,20 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
     """Resolve a snapshot name to a directory path.
 
     Supports:
-        'latest'  → runs/latest (symlink)
-        exact     → runs/<name> (exact match)
-        suffix    → runs/*-<name> (suffix match)
+        'latest'  → snapshots/latest (most recent by name)
+        exact     → snapshots/<name> (exact match)
+        suffix    → snapshots/*-<name> (suffix match)
     """
-    runs_dir = base_dir.parent / ".testnet" / "snapshots"
-    if not runs_dir.is_dir():
+    snap_dir = base_dir.parent / ".testnet" / "snapshots"
+    if not snap_dir.is_dir():
         raise click.ClickException(
-            f"No snapshots found. Run 'x-testnet snapshot' first.\nExpected: {runs_dir}"
+            f"No snapshots found. Run 'x-testnet snapshot' first.\nExpected: {snap_dir}"
         )
 
     if snapshot_name == "latest":
         # Most recent by name (timestamp-prefixed, so alphabetical = chronological)
         dirs = sorted(
-            (p for p in runs_dir.iterdir() if p.is_dir()),
+            (p for p in snap_dir.iterdir() if p.is_dir()),
             key=lambda p: p.name,
         )
         if not dirs:
@@ -1684,12 +1700,12 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
         return dirs[-1]
 
     # Exact match
-    exact = runs_dir / snapshot_name
+    exact = snap_dir / snapshot_name
     if exact.is_dir():
         return exact
 
     # Suffix match (name without timestamp prefix)
-    matches = sorted(p for p in runs_dir.glob(f"*-{snapshot_name}") if p.is_dir())
+    matches = sorted(p for p in snap_dir.glob(f"*-{snapshot_name}") if p.is_dir())
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -2509,6 +2525,13 @@ def scenario_test_guide() -> None:
     help="Run only named test(s). Can be repeated.",
 )
 @click.option("--dry-run", is_flag=True, help="Print suite plan without executing.")
+@click.option("--list-tests", is_flag=True, help="List test names and exit.")
+@click.option(
+    "--params-json",
+    "params_json",
+    default=None,
+    help="JSON object of params to pass to scenario functions as kwargs (overrides matrix).",
+)
 @click.pass_context
 def suite(
     ctx: click.Context,
@@ -2517,22 +2540,57 @@ def suite(
     snapshot_on_fail: bool,
     test_filter: tuple[str, ...],
     dry_run: bool,
+    list_tests: bool,
+    params_json: str | None,
 ) -> None:
     """Run a scenario test suite from a YAML file.
 
     Each test gets a fresh network (teardown -> generate -> run -> scenario).
     Build your binary first, then run the suite.
 
+    Scripts can export a ``matrix`` list for parameterized testing::
+
+        matrix = [
+            {"label": "light", "min_txns": 5, "max_txns": 10},
+            {"label": "heavy", "min_txns": 50, "max_txns": 60},
+        ]
+
+    These expand into ``name@light``, ``name@heavy`` test entries.
+
     \b
     Examples:
         testnet suite .testnet/suite.yml
-        testnet suite .testnet/suite.yml --no-stop-on-fail
-        testnet suite .testnet/suite.yml --test quorum_recovery_smoke
-        testnet suite .testnet/suite.yml --dry-run
+        testnet suite .testnet/suite.yml --test entropy_with_transactions
+        testnet suite .testnet/suite.yml --test entropy_with_transactions@heavy
+        testnet suite .testnet/suite.yml --params-json '{"min_txns": 100}'
+        testnet suite .testnet/suite.yml --list-tests
     """
-    from xahaud_scripts.testnet.suite import print_summary, run_suite
+    from xahaud_scripts.testnet.suite import (
+        SuiteConfig,
+        _expand_tests,
+        print_summary,
+        run_suite,
+    )
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
+
+    if list_tests:
+        suite_config = SuiteConfig.from_yaml(suite_file)
+        tests = _expand_tests(suite_config.tests, xahaud_root)
+        for test in tests:
+            script = Path(test["script"])
+            if not script.is_absolute():
+                script = xahaud_root / script
+            descr = suite_config.get_test_description(script)
+            if descr:
+                click.echo(f"{test['name']}  {descr}")
+            else:
+                click.echo(test["name"])
+        return
+
+    params_override: dict[str, Any] | None = None
+    if params_json:
+        params_override = json.loads(params_json)
 
     results = run_suite(
         suite_path=suite_file,
@@ -2540,6 +2598,7 @@ def suite(
         stop_on_fail=stop_on_fail,
         snapshot_on_fail=snapshot_on_fail,
         test_filter=list(test_filter) if test_filter else None,
+        params_override=params_override,
         dry_run=dry_run,
     )
 

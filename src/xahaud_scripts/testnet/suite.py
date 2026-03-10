@@ -11,9 +11,11 @@ Usage:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import logging
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -34,7 +36,10 @@ from xahaud_scripts.testnet.launcher import get_launcher
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
-from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
+from xahaud_scripts.testnet.scenario import (
+    load_scenario_matrix,
+    run_scenario_with_monitor,
+)
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -86,11 +91,38 @@ class SuiteConfig:
             tests=tests,
         )
 
+    @staticmethod
+    def get_test_description(script_path: Path) -> str | None:
+        """Extract description from a test script's module docstring.
+
+        Looks for a :descr: tag first, falls back to the first line.
+        """
+        try:
+            source = script_path.read_text()
+        except OSError:
+            return None
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return None
+        docstring = ast.get_docstring(tree)
+        if not docstring:
+            return None
+        # Look for :descr: tag
+        match = re.search(r":descr:\s*(.+)", docstring)
+        if match:
+            return match.group(1).strip()
+        # Fall back to first line
+        first_line = docstring.strip().split("\n")[0].strip()
+        return first_line or None
+
     def effective_config(self, test: dict[str, Any]) -> dict[str, Any]:
         """Merge defaults with per-test overrides."""
+        # Internal keys injected by matrix expansion — skip them.
+        skip = {"name", "script", "_params", "_base_name"}
         merged = dict(self.defaults)
         for key, value in test.items():
-            if key in ("name", "script"):
+            if key in skip:
                 continue
             if key in _DICT_MERGE_KEYS and isinstance(value, dict):
                 base = merged.get(key, {})
@@ -114,6 +146,67 @@ def _rotate_log(log_path: Path, *, max_keep: int = 10) -> None:
     old_logs = sorted(log_path.parent.glob(pattern))
     for stale in old_logs[:-max_keep]:
         stale.unlink()
+
+
+def _test_matches(name: str, filter_str: str) -> bool:
+    """Check if a test name matches a filter string.
+
+    Exact match always works.  A filter without ``@`` also matches
+    expanded matrix names: ``foo`` matches ``foo@light``.
+    """
+    return filter_str == name or (
+        "@" not in filter_str and name.startswith(filter_str + "@")
+    )
+
+
+def _expand_tests(
+    tests: list[dict[str, Any]],
+    xahaud_root: Path,
+    *,
+    params_override: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Expand matrix entries into individual test entries.
+
+    * ``params_override`` (from ``--params-json``) wins over everything.
+    * ``params:`` in the suite YAML entry produces a single run.
+    * ``matrix`` exported by the script is expanded into ``name[label]`` entries.
+    """
+    expanded: list[dict[str, Any]] = []
+    for test in tests:
+        if params_override is not None:
+            expanded.append({**test, "_params": params_override})
+            continue
+
+        if "params" in test:
+            expanded.append({**test, "_params": test["params"]})
+            continue
+
+        script_path = Path(test["script"])
+        if not script_path.is_absolute():
+            script_path = xahaud_root / script_path
+
+        matrix: list[dict[str, Any]] | None = None
+        if script_path.exists():
+            with contextlib.suppress(Exception):
+                matrix = load_scenario_matrix(script_path)
+
+        if matrix:
+            base_name = test["name"]
+            for entry in matrix:
+                label = entry["label"]
+                params = {k: v for k, v in entry.items() if k != "label"}
+                expanded.append(
+                    {
+                        **test,
+                        "name": f"{base_name}@{label}",
+                        "_params": params,
+                        "_base_name": base_name,
+                    }
+                )
+        else:
+            expanded.append(test)
+
+    return expanded
 
 
 def _snapshot_test(network: TestNetwork, dest: Path) -> None:
@@ -264,12 +357,14 @@ def _run_one_test(
 
         # 5. Execute scenario
         tracked = config.get("track_features")
+        params = test.get("_params")
         try:
             passed = asyncio.run(
                 run_scenario_with_monitor(
                     script_path=script_path,
                     network=network,
                     tracked_features=tracked,
+                    params=params,
                 )
             )
         finally:
@@ -327,6 +422,7 @@ def run_suite(
     stop_on_fail: bool = True,
     snapshot_on_fail: bool = True,
     test_filter: list[str] | None = None,
+    params_override: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> list[TestResult]:
     """Run a scenario test suite.
@@ -336,7 +432,11 @@ def run_suite(
         xahaud_root: Path to the xahaud repository root.
         stop_on_fail: Stop suite on first failure.
         snapshot_on_fail: Snapshot logs on failure.
-        test_filter: If set, only run tests with these names.
+        test_filter: If set, only run tests matching these names.
+            Supports ``name[label]`` for exact match, or ``name``
+            to match all matrix variants.
+        params_override: If set, override all matrix/params with these
+            values (from ``--params-json``).
         dry_run: Print plan without executing.
 
     Returns:
@@ -344,12 +444,15 @@ def run_suite(
     """
     suite = SuiteConfig.from_yaml(suite_path)
 
-    # Filter tests if requested
-    tests = suite.tests
+    # Expand matrix entries before filtering
+    tests = _expand_tests(suite.tests, xahaud_root, params_override=params_override)
+
     if test_filter:
-        tests = [t for t in tests if t["name"] in test_filter]
+        tests = [
+            t for t in tests if any(_test_matches(t["name"], f) for f in test_filter)
+        ]
         if not tests:
-            available = [t["name"] for t in suite.tests]
+            available = [t["name"] for t in _expand_tests(suite.tests, xahaud_root)]
             raise ValueError(
                 f"No tests match filter {test_filter}. Available: {available}"
             )
@@ -362,6 +465,9 @@ def run_suite(
             config = suite.effective_config(test)
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
             console.print(f"     script: {test['script']}")
+            params = test.get("_params")
+            if params:
+                console.print(f"     params: {params}")
             console.print(f"     node_count: {config.get('node_count', 5)}")
             features = config.get("features", [])
             if features:

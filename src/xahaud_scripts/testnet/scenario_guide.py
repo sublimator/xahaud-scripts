@@ -241,4 +241,117 @@ async def scenario(ctx, log):
 ```
 """)
 
+    # -- Transaction generator guide --
+    parts.append("""\
+## Transaction Generator
+
+`ctx.txn_generator()` creates a background transaction generator that submits
+random payments from the genesis account on every ledger close. It creates
+funded test accounts at startup, then fires a configurable number of payments
+per ledger. Use it when your scenario needs transaction load — for example, to
+test behaviour under contention, verify TxQ ordering, or ensure amendments
+activate correctly while transactions are flowing.
+
+The generator handles bootstrap automatically: `start()` waits for the network
+to produce its first validated ledger before funding accounts, and submissions
+only happen in response to `ledgerClosed` WebSocket events — so there's no
+risk of submitting into a network that isn't ready yet.
+
+It uses tight `LastLedgerSequence` (+3 by default) so transactions either
+validate quickly or expire within 1-2 ledgers. On each ledger close it
+reconciles pending transactions: confirmed txns update the ground-truth
+sequence, expired txns are discarded, and the next submission batch starts from
+the correct sequence number. This avoids the "sequence cockblock" where a stale
+transaction holds up all subsequent submissions.
+
+```python
+async def scenario(ctx, log):
+    # Start generating 5-10 txns per ledger
+    gen = ctx.txn_generator(min_txns=5, max_txns=10)
+    await gen.start()
+    await gen.wait_until_ready()    # blocks until accounts funded
+
+    # Do your actual scenario work while traffic flows in the background
+    await ctx.wait_for_ledgers(20)
+
+    # Check how things went
+    stats = gen.stats
+    log(f"submitted={stats.total_submitted}, "
+        f"validated={stats.total_validated}, "
+        f"expired={stats.total_expired}")
+
+    # Always stop the generator when done
+    await gen.stop()
+```
+
+### TxnGeneratorConfig fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `min_txns` | 3 | Minimum payments per ledger |
+| `max_txns` | 10 | Maximum payments per ledger |
+| `start_ledger` | 0 | Don't submit until this ledger (0 = immediate) |
+| `account_count` | None | Number of destination accounts (defaults to max_txns) |
+| `amount_drops` | "1000000" | Payment amount in drops (1 XAH) |
+| `fund_amount_xah` | 1000 | Initial funding per account |
+| `lls_offset` | 3 | LastLedgerSequence = current_ledger + offset |
+
+Pass any of these as kwargs: `ctx.txn_generator(min_txns=1, lls_offset=5)`
+""")
+
+    # -- Parameterized tests --
+    parts.append("""\
+## Parameterized Tests (Matrix)
+
+A scenario script can export a ``matrix`` list to run the same scenario with
+different configurations. Each entry must have a unique ``label`` key; the
+remaining keys are passed as keyword arguments to the scenario function.
+
+```python
+matrix = [
+    {"label": "light", "min_txns": 5, "max_txns": 10},
+    {"label": "heavy", "min_txns": 50, "max_txns": 60},
+]
+
+async def scenario(ctx, log, *, min_txns=5, max_txns=10, **_):
+    gen = ctx.txn_generator(min_txns=min_txns, max_txns=max_txns)
+    await gen.start()
+    # ...
+```
+
+The suite runner expands matrix entries into separate tests:
+``entropy_with_transactions@light``, ``entropy_with_transactions@heavy``.
+
+Labels must be alphanumeric/underscore only (``[a-zA-Z0-9_]+``).
+
+### CLI filtering
+
+```bash
+# Run all variants
+x-testnet suite suite.yml --test entropy_with_transactions
+
+# Run one variant
+x-testnet suite suite.yml --test entropy_with_transactions@heavy
+
+# Override params from CLI (skips matrix)
+x-testnet suite suite.yml --test entropy_with_transactions \\
+    --params-json '{"min_txns": 100, "max_txns": 200}'
+
+# Single script with params
+x-testnet run --scenario-script my_test.py \\
+    --params-json '{"min_txns": 100}'
+```
+
+### suite.yml params
+
+Individual test entries can also specify params directly (skips script matrix):
+
+```yaml
+tests:
+  - name: entropy_custom
+    script: entropy_with_transactions.py
+    params: { min_txns: 100, max_txns: 200 }
+```
+""")
+
     return "\n".join(parts)

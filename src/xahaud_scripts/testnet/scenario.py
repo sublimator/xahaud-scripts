@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import importlib.util
 import re
+import sys
 import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.network import TestNetwork
     from xahaud_scripts.testnet.protocols import RPCClient
+    from xahaud_scripts.testnet.txn_generator import TxnGenerator
 
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
     LogEntry,
@@ -677,6 +679,43 @@ class ScenarioContext:
             expand=expand,
         )
 
+    # -- Transaction generator ---------------------------------------------
+
+    def txn_generator(
+        self,
+        min_txns: int = 3,
+        max_txns: int = 10,
+        start_ledger: int = 0,
+        **kwargs: Any,
+    ) -> TxnGenerator:
+        """Create a TxnGenerator for this network.
+
+        The generator must be started with ``await gen.start()`` and
+        stopped with ``await gen.stop()``.
+
+        Args:
+            min_txns: Minimum txns per ledger.
+            max_txns: Maximum txns per ledger.
+            start_ledger: Don't submit until this ledger index.
+            **kwargs: Additional TxnGeneratorConfig fields.
+
+        Returns:
+            Configured (but not started) TxnGenerator instance.
+        """
+        from xahaud_scripts.testnet.txn_generator import (
+            TxnGenerator,
+            TxnGeneratorConfig,
+        )
+
+        ws_url = f"ws://127.0.0.1:{self._network.config.base_port_ws}"
+        config = TxnGeneratorConfig(
+            min_txns=min_txns,
+            max_txns=max_txns,
+            start_ledger=start_ledger,
+            **kwargs,
+        )
+        return TxnGenerator(ws_url, config=config)
+
     # -- Timing ------------------------------------------------------------
 
     def mark(self, name: str) -> Marker:
@@ -1098,20 +1137,29 @@ class ScenarioContext:
 # ---------------------------------------------------------------------------
 
 
-def load_scenario_script(script_path: Path) -> Any:
-    """Load a scenario script and return the ``scenario`` coroutine function.
-
-    The script must define ``async def scenario(ctx):``.
-
-    Raises:
-        ValueError: If script is missing the required function.
-    """
+def _load_scenario_module(script_path: Path) -> Any:
+    """Load a scenario script module, adding its directory to sys.path."""
     spec = importlib.util.spec_from_file_location("scenario_script", script_path)
     if spec is None or spec.loader is None:
         raise ValueError(f"Could not load script: {script_path}")
 
     module = importlib.util.module_from_spec(spec)
+    script_dir = str(script_path.parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_scenario_script(script_path: Path) -> Any:
+    """Load a scenario script and return the ``scenario`` coroutine function.
+
+    The script must define ``async def scenario(ctx, log, **kwargs):``.
+
+    Raises:
+        ValueError: If script is missing the required function.
+    """
+    module = _load_scenario_module(script_path)
 
     if not hasattr(module, "scenario"):
         raise ValueError(f"Script must define 'async def scenario(ctx)': {script_path}")
@@ -1123,10 +1171,49 @@ def load_scenario_script(script_path: Path) -> Any:
     return fn
 
 
+def load_scenario_matrix(script_path: Path) -> list[dict[str, Any]] | None:
+    """Extract and validate a ``matrix`` list from a scenario script.
+
+    Each matrix entry must be a dict with a unique ``label`` key.
+    Returns None if the script has no ``matrix`` attribute.
+
+    Raises:
+        ValueError: If matrix is malformed or has duplicate/missing labels.
+    """
+    module = _load_scenario_module(script_path)
+    matrix = getattr(module, "matrix", None)
+    if matrix is None:
+        return None
+
+    if not isinstance(matrix, list) or not matrix:
+        raise ValueError(f"'matrix' must be a non-empty list: {script_path}")
+
+    labels: set[str] = set()
+    for i, entry in enumerate(matrix):
+        if not isinstance(entry, dict):
+            raise ValueError(f"matrix[{i}] must be a dict: {script_path}")
+        label = entry.get("label")
+        if not label or not isinstance(label, str):
+            raise ValueError(
+                f"matrix[{i}] missing required 'label' string: {script_path}"
+            )
+        if not re.fullmatch(r"[a-zA-Z0-9_]+", label):
+            raise ValueError(
+                f"matrix[{i}] label '{label}' must be alphanumeric/underscore only: "
+                f"{script_path}"
+            )
+        if label in labels:
+            raise ValueError(f"Duplicate matrix label '{label}': {script_path}")
+        labels.add(label)
+
+    return matrix
+
+
 async def run_scenario_with_monitor(
     script_path: Path,
     network: TestNetwork,
     tracked_features: list[str] | None = None,
+    params: dict[str, Any] | None = None,
 ) -> bool:
     """Run a scenario script with the network monitor in background.
 
@@ -1134,6 +1221,7 @@ async def run_scenario_with_monitor(
         script_path: Path to the scenario script.
         network: The TestNetwork instance.
         tracked_features: Optional list of feature names to track.
+        params: Optional keyword arguments passed to the scenario function.
 
     Returns:
         True if scenario passed, False if it failed.
@@ -1157,8 +1245,14 @@ async def run_scenario_with_monitor(
     monitor_task = asyncio.create_task(run_monitor())
 
     try:
-        logger.info(f"Running scenario: {script_path.name}")
-        await scenario_fn(ctx, ctx.log)
+        label = script_path.name
+        if params:
+            label += f" [{', '.join(f'{k}={v}' for k, v in params.items())}]"
+        logger.info(f"Running scenario: {label}")
+        if params:
+            await scenario_fn(ctx, ctx.log, **params)
+        else:
+            await scenario_fn(ctx, ctx.log)
         logger.info("Scenario completed successfully")
         return True
     except Exception:
