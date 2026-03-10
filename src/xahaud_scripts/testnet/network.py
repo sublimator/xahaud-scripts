@@ -727,7 +727,7 @@ class TestNetwork:
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         dir_name = f"{timestamp}-{name}" if name else timestamp
-        runs_dir = self._base_dir.parent / ".testnet" / "runs"
+        runs_dir = self._base_dir.parent / ".testnet" / "snapshots"
         snapshot_dir = runs_dir / dir_name
 
         exclude: list[str] = []

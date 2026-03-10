@@ -1665,7 +1665,7 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
         exact     → runs/<name> (exact match)
         suffix    → runs/*-<name> (suffix match)
     """
-    runs_dir = base_dir.parent / ".testnet" / "runs"
+    runs_dir = base_dir.parent / ".testnet" / "snapshots"
     if not runs_dir.is_dir():
         raise click.ClickException(
             f"No snapshots found. Run 'x-testnet snapshot' first.\nExpected: {runs_dir}"
@@ -2488,6 +2488,65 @@ def scenario_test_guide() -> None:
     from xahaud_scripts.testnet.scenario_guide import generate_scenario_guide
 
     click.echo(generate_scenario_guide())
+
+
+@testnet.command()
+@click.argument("suite_file", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--stop-on-fail/--no-stop-on-fail",
+    default=True,
+    help="Stop suite on first failure (default: stop)",
+)
+@click.option(
+    "--snapshot-on-fail/--no-snapshot-on-fail",
+    default=True,
+    help="Auto-snapshot logs on failure (default: snapshot)",
+)
+@click.option(
+    "--test",
+    "test_filter",
+    multiple=True,
+    help="Run only named test(s). Can be repeated.",
+)
+@click.option("--dry-run", is_flag=True, help="Print suite plan without executing.")
+@click.pass_context
+def suite(
+    ctx: click.Context,
+    suite_file: Path,
+    stop_on_fail: bool,
+    snapshot_on_fail: bool,
+    test_filter: tuple[str, ...],
+    dry_run: bool,
+) -> None:
+    """Run a scenario test suite from a YAML file.
+
+    Each test gets a fresh network (teardown -> generate -> run -> scenario).
+    Build your binary first, then run the suite.
+
+    \b
+    Examples:
+        testnet suite .testnet/suite.yml
+        testnet suite .testnet/suite.yml --no-stop-on-fail
+        testnet suite .testnet/suite.yml --test quorum_recovery_smoke
+        testnet suite .testnet/suite.yml --dry-run
+    """
+    from xahaud_scripts.testnet.suite import print_summary, run_suite
+
+    xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
+
+    results = run_suite(
+        suite_path=suite_file,
+        xahaud_root=xahaud_root,
+        stop_on_fail=stop_on_fail,
+        snapshot_on_fail=snapshot_on_fail,
+        test_filter=list(test_filter) if test_filter else None,
+        dry_run=dry_run,
+    )
+
+    print_summary(results)
+
+    if any(not r.passed for r in results):
+        sys.exit(1)
 
 
 def main() -> None:

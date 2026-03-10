@@ -22,6 +22,7 @@ dependencies = [
     "xrpl-py>=4.0.0",
     "gcovr>=7.0",
     "graphviz>=0.21",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -42,6 +43,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.0.0",
     "types-requests>=2.31.0",
+    "types-PyYAML>=6.0",
     "pre-commit>=2.17.0",
     "typing-extensions>=4.12.2",
 ]

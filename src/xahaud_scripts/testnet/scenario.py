@@ -645,15 +645,68 @@ class ScenarioContext:
     def node_count(self) -> int:
         return self._network.config.node_count
 
+    # -- RPC helpers -------------------------------------------------------
+
+    def validated_ledger_index(self, node_id: int = 0) -> int | None:
+        """Get the validated ledger index from a node, or None if unreachable."""
+        return _get_validated_ledger(self.rpc, node_id)
+
+    def ledger(
+        self,
+        ledger_index: str | int = "validated",
+        *,
+        node_id: int = 0,
+        transactions: bool = False,
+        expand: bool = True,
+    ) -> dict[str, Any] | None:
+        """Fetch a ledger from a node.
+
+        Args:
+            ledger_index: Ledger seq or "validated"/"current"/"closed".
+            node_id: Node to query (default: 0).
+            transactions: Include transactions (default: False).
+            expand: Expand transaction details (default: True).
+
+        Returns:
+            The ledger result dict, or None if query failed.
+        """
+        return self.rpc.ledger(
+            node_id,
+            ledger_index=ledger_index,
+            transactions=transactions,
+            expand=expand,
+        )
+
     # -- Timing ------------------------------------------------------------
 
     def mark(self, name: str) -> Marker:
         """Create a Marker anchored to the current time."""
         return now_marker(name)
 
-    async def sleep(self, seconds: float) -> None:
-        """Async sleep."""
+    async def sleep(
+        self, seconds: float, *, name: str | None = None
+    ) -> Operation[float]:
+        """Async sleep, returning an Operation whose window spans the delay.
+
+        Args:
+            seconds: Duration to sleep.
+            name: Optional name for the markers (default: "sleep-{seconds}s").
+
+        Returns:
+            Operation with the sleep duration as result and a .window
+            spanning the start/end of the sleep.
+        """
+        label = name or f"sleep-{seconds}s"
+        started = now_marker(f"{label}-start")
         await asyncio.sleep(seconds)
+        ended = now_marker(f"{label}-end")
+        return Operation(
+            kind="sleep",
+            started=started,
+            ended=ended,
+            status="ok",
+            result=seconds,
+        )
 
     async def pause(self, message: str = "Press Enter to continue...") -> str:
         """Pause scenario and wait for user input.
