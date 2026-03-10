@@ -358,8 +358,11 @@ class TestNetwork:
                 logger.info("Monitor detached (network still running)")
             return 0
 
-    def teardown(self) -> int:
-        """Kill all running test network processes and clean up.
+    def teardown(self, *, keep_dirs: bool = False) -> int:
+        """Kill all running test network processes and optionally clean up.
+
+        Args:
+            keep_dirs: If True, kill processes but keep node directories/logs.
 
         Returns:
             Number of processes killed
@@ -373,6 +376,9 @@ class TestNetwork:
             logger.info(f"Killed {killed} rippled processes")
         else:
             logger.info("No rippled processes found for this test network")
+
+        if keep_dirs:
+            return killed
 
         # Clean up generated files
         logger.info("Cleaning up generated files...")

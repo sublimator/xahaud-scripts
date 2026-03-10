@@ -291,6 +291,7 @@ def _run_one_test(
     *,
     combined_log: Path,
     snapshot_on_fail: bool = True,
+    env_override: dict[str, str] | None = None,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
     name = test["name"]
@@ -307,6 +308,12 @@ def _run_one_test(
         )
 
     config = suite.effective_config(test)
+    if env_override:
+        base_env = config.get("env", {})
+        config["env"] = {
+            **(base_env if isinstance(base_env, dict) else {}),
+            **env_override,
+        }
     start = time.monotonic()
 
     network = _create_network(xahaud_root, config)
@@ -396,7 +403,8 @@ def _run_one_test(
 
     except KeyboardInterrupt:
         duration = time.monotonic() - start
-        logger.info(f"Test {name} interrupted — leaving network in place")
+        network.teardown(keep_dirs=True)
+        logger.info(f"Test {name} interrupted — killed processes, kept dirs")
         raise
     except Exception as e:
         duration = time.monotonic() - start
@@ -427,6 +435,7 @@ def run_suite(
     snapshot_on_fail: bool = True,
     test_filter: list[str] | None = None,
     params_override: dict[str, Any] | None = None,
+    env_override: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> list[TestResult]:
     """Run a scenario test suite.
@@ -441,6 +450,8 @@ def run_suite(
             to match all matrix variants.
         params_override: If set, override all matrix/params with these
             values (from ``--params-json``).
+        env_override: If set, merge these env vars into every test config
+            (overrides both defaults and per-test env).
         dry_run: Print plan without executing.
 
     Returns:
@@ -508,6 +519,7 @@ def run_suite(
                 test,
                 combined_log=combined_log,
                 snapshot_on_fail=snapshot_on_fail,
+                env_override=env_override,
             )
         except KeyboardInterrupt:
             logger.info("Suite interrupted — network left in place for inspection")

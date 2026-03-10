@@ -2532,6 +2532,12 @@ def scenario_test_guide() -> None:
     default=None,
     help="JSON object of params to pass to scenario functions as kwargs (overrides matrix).",
 )
+@click.option(
+    "--env",
+    "env_vars",
+    multiple=True,
+    help="Extra env var (NAME=VALUE) merged into every test config. Repeatable.",
+)
 @click.pass_context
 def suite(
     ctx: click.Context,
@@ -2542,6 +2548,7 @@ def suite(
     dry_run: bool,
     list_tests: bool,
     params_json: str | None,
+    env_vars: tuple[str, ...],
 ) -> None:
     """Run a scenario test suite from a YAML file.
 
@@ -2592,6 +2599,15 @@ def suite(
     if params_json:
         params_override = json.loads(params_json)
 
+    env_override: dict[str, str] | None = None
+    if env_vars:
+        env_override = {}
+        for entry in env_vars:
+            if "=" not in entry:
+                raise click.BadParameter(f"Expected NAME=VALUE, got: {entry}")
+            k, v = entry.split("=", 1)
+            env_override[k] = v
+
     results = run_suite(
         suite_path=suite_file,
         xahaud_root=xahaud_root,
@@ -2599,6 +2615,7 @@ def suite(
         snapshot_on_fail=snapshot_on_fail,
         test_filter=list(test_filter) if test_filter else None,
         params_override=params_override,
+        env_override=env_override,
         dry_run=dry_run,
     )
 
