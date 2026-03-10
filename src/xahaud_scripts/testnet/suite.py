@@ -394,6 +394,10 @@ def _run_one_test(
 
         return TestResult(name=name, passed=passed, duration=duration)
 
+    except KeyboardInterrupt:
+        duration = time.monotonic() - start
+        logger.info(f"Test {name} interrupted — leaving network in place")
+        raise
     except Exception as e:
         duration = time.monotonic() - start
         snapshot_dir = None
@@ -411,7 +415,7 @@ def _run_one_test(
             error=str(e),
             snapshot_dir=snapshot_dir,
         )
-    finally:
+    else:
         network.teardown()
 
 
@@ -497,13 +501,18 @@ def run_suite(
         logger.info(f"Test {i}/{len(tests)}: {name}")
         logger.info(f"{'=' * 60}")
 
-        result = _run_one_test(
-            xahaud_root,
-            suite,
-            test,
-            combined_log=combined_log,
-            snapshot_on_fail=snapshot_on_fail,
-        )
+        try:
+            result = _run_one_test(
+                xahaud_root,
+                suite,
+                test,
+                combined_log=combined_log,
+                snapshot_on_fail=snapshot_on_fail,
+            )
+        except KeyboardInterrupt:
+            logger.info("Suite interrupted — network left in place for inspection")
+            break
+
         results.append(result)
 
         status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
