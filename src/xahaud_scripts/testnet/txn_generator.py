@@ -1,7 +1,9 @@
 """Reusable transaction generator for xahaud test networks.
 
-Submits random payments from genesis on each ledger close, with tight
-LastLedgerSequence and per-ledger reconciliation for robust sequence tracking.
+Funds N accounts at startup, then round-robins across them as senders.
+Each account has its own SubmissionTracker for sequence management, avoiding
+per-account TxQ contention. Uses tight LastLedgerSequence and per-ledger
+reconciliation for robust tracking.
 
 Usage from scenario scripts:
     gen = ctx.txn_generator(min_txns=5, max_txns=10, start_ledger=10)
@@ -37,6 +39,7 @@ from xrpl.wallet import Wallet
 
 from xahaud_scripts.testnet.testing import (
     GENESIS_SEED,
+    AccountInfo,
     XahauClient,
     create_account_info,
     get_ledger_index,
@@ -54,7 +57,8 @@ class TxnGeneratorConfig:
 
     min_txns: int = 3
     max_txns: int = 10
-    account_count: int | None = None
+    funded_accounts: int | None = None  # defaults to ceil(max_txns/txns_per_account)
+    txns_per_account: int = 1  # max txns per sender per batch
     start_ledger: int = 0
     amount_drops: str = "1000000"
     fund_amount_xah: int = 100_000
@@ -70,7 +74,7 @@ class TxnGeneratorStats:
     total_submitted: int
     total_validated: int
     total_expired: int
-    confirmed_sequence: int
+    sender_count: int
     pending_count: int
     ledgers_active: int
     results_by_engine: dict[str, int] = field(default_factory=dict)
@@ -232,6 +236,10 @@ class SubmissionTracker:
         return self._next_seq
 
     @property
+    def confirmed_sequence(self) -> int:
+        return self._confirmed_seq
+
+    @property
     def pending_count(self) -> int:
         return len(self._pending)
 
@@ -243,19 +251,25 @@ class SubmissionTracker:
             total_submitted=self._total_submitted,
             total_validated=self._total_validated,
             total_expired=self._total_expired,
-            confirmed_sequence=self._confirmed_seq,
+            sender_count=1,
             pending_count=len(self._pending),
             ledgers_active=self._ledgers_active,
             results_by_engine=dict(self._results_by_engine),
         )
 
-    @property
-    def pending_summary(self) -> str:
-        """Breakdown of pending txns by LLS for logging."""
+    def pending_by_lls(self) -> dict[int, int]:
+        """Pending txn counts grouped by LastLedgerSequence."""
         by_lls: dict[int, int] = {}
         for ptx in self._pending.values():
             by_lls[ptx.last_ledger_seq] = by_lls.get(ptx.last_ledger_seq, 0) + 1
-        return " ".join(f"lls{lls}:{n}" for lls, n in sorted(by_lls.items()))
+        return by_lls
+
+    @property
+    def pending_summary(self) -> str:
+        """Breakdown of pending txns by LLS for logging."""
+        return " ".join(
+            f"lls{lls}:{n}" for lls, n in sorted(self.pending_by_lls().items())
+        )
 
     @property
     def batch_results_summary(self) -> str:
@@ -266,14 +280,24 @@ class SubmissionTracker:
 # -- TxnGenerator: async I/O driver -------------------------------------------
 
 
+@dataclass
+class _Sender:
+    """A funded account used as a transaction sender."""
+
+    info: AccountInfo
+    tracker: SubmissionTracker
+
+
 class TxnGenerator:
-    """Background transaction generator with per-ledger reconciliation.
+    """Background transaction generator using round-robin senders.
+
+    Funds N accounts at startup, then round-robins across them as senders.
+    Each account has its own SubmissionTracker for sequence management,
+    avoiding per-account TxQ contention.
 
     Owns two WebSocket connections:
     1. XahauClient for RPC requests (Fee, AccountInfo, SubmitOnly)
     2. Raw websockets for ledger+transactions subscription stream
-
-    All sequence tracking logic is delegated to SubmissionTracker.
     """
 
     def __init__(
@@ -283,25 +307,54 @@ class TxnGenerator:
     ) -> None:
         self._ws_url = ws_url
         self._config = config or TxnGeneratorConfig()
-        self._tracker = SubmissionTracker(self._config)
 
         # Task management
         self._task: asyncio.Task[None] | None = None
         self._ready_event = asyncio.Event()
         self._stop_event = asyncio.Event()
 
-        # Accounts
-        self._accounts: list[Any] = []
+        # Senders (funded accounts with per-account trackers)
+        self._senders: list[_Sender] = []
+        self._rr_idx: int = 0
         self._genesis_wallet: Wallet | None = None
 
         # Network params (fetched once at startup)
         self._network_id: int | None = None
         self._base_fee: str = "10"
 
+        # Batch-level stats (not per-account)
+        self._current_ledger: int = 0
+        self._ledgers_active: int = 0
+
     @property
     def stats(self) -> TxnGeneratorStats:
-        """Snapshot of current generator state."""
-        return self._tracker.stats(running=self.running)
+        """Aggregate stats across all sender trackers."""
+        total_submitted = 0
+        total_validated = 0
+        total_expired = 0
+        pending_count = 0
+        results_by_engine: dict[str, int] = {}
+
+        for s in self._senders:
+            st = s.tracker.stats()
+            total_submitted += st.total_submitted
+            total_validated += st.total_validated
+            total_expired += st.total_expired
+            pending_count += st.pending_count
+            for r, n in st.results_by_engine.items():
+                results_by_engine[r] = results_by_engine.get(r, 0) + n
+
+        return TxnGeneratorStats(
+            running=self.running,
+            current_ledger=self._current_ledger,
+            total_submitted=total_submitted,
+            total_validated=total_validated,
+            total_expired=total_expired,
+            sender_count=len(self._senders),
+            pending_count=pending_count,
+            ledgers_active=self._ledgers_active,
+            results_by_engine=results_by_engine,
+        )
 
     @property
     def running(self) -> bool:
@@ -355,20 +408,15 @@ class TxnGenerator:
             server_response = await client.request(ServerInfo())
             self._network_id = server_response.result.get("info", {}).get("network_id")
 
-            # Create and fund accounts
+            # Create, fund, and initialize senders
             await self._fund_accounts(client)
 
-            # Record initial sequence (post-funding)
-            acct_response = await client.request(
-                AccountInfoRequest(account=self._genesis_wallet.classic_address)
-            )
-            initial_seq = acct_response.result["account_data"]["Sequence"]
-            self._tracker.reset(initial_seq)
-
             self._ready_event.set()
+            n = len(self._senders)
+            tpa = self._config.txns_per_account
             logger.info(
                 f"TxnGenerator ready: {self._config.min_txns}-{self._config.max_txns} "
-                f"txns/ledger, genesis seq={initial_seq}"
+                f"txns/ledger, {n} senders ({tpa} txn/account)"
             )
 
             # Open raw WS for subscription stream
@@ -388,7 +436,6 @@ class TxnGenerator:
                 buffered: dict[str, Any] | None = None
 
                 while not self._stop_event.is_set():
-                    # Use buffered message from drain, or read from WS.
                     if buffered is not None:
                         data = buffered
                         buffered = None
@@ -402,15 +449,13 @@ class TxnGenerator:
                     if data.get("type") == "transaction" and data.get("validated"):
                         tx_hash = data.get("transaction", {}).get("hash")
                         if tx_hash:
-                            self._tracker.on_validated_txn(tx_hash)
+                            for s in self._senders:
+                                s.tracker.on_validated_txn(tx_hash)
                     elif data.get("type") == "ledgerClosed":
                         ledger_index = data.get("ledger_index", 0)
                         txn_count = data.get("txn_count", 0)
 
                         # Drain validated-txn messages for this ledger.
-                        # The server sends ledgerClosed BEFORE the per-txn
-                        # messages, so we read up to txn_count messages to
-                        # let reconciliation see them first.
                         for _ in range(txn_count):
                             try:
                                 msg = await asyncio.wait_for(ws_raw.recv(), timeout=2.0)
@@ -422,14 +467,15 @@ class TxnGenerator:
                             ):
                                 tx_hash = txn_data.get("transaction", {}).get("hash")
                                 if tx_hash:
-                                    self._tracker.on_validated_txn(tx_hash)
+                                    for s in self._senders:
+                                        s.tracker.on_validated_txn(tx_hash)
                             else:
-                                # Non-txn message (e.g. next ledgerClosed) —
-                                # buffer it for the next iteration.
                                 buffered = txn_data
                                 break
 
-                        self._tracker.on_ledger_closed(ledger_index)
+                        self._current_ledger = ledger_index
+                        for s in self._senders:
+                            s.tracker.on_ledger_closed(ledger_index)
                         await self._submit_batch(client, ledger_index)
             finally:
                 await ws_raw.close()
@@ -437,10 +483,13 @@ class TxnGenerator:
     # -- Internal: funding -------------------------------------------------
 
     async def _fund_accounts(self, client: XahauClient) -> None:
-        """Create deterministic accounts and fund from genesis."""
+        """Create deterministic accounts, fund from genesis, init trackers."""
         assert self._genesis_wallet is not None
-        count = self._config.account_count or self._config.max_txns
-        self._accounts = [create_account_info(f"txgen-{i}") for i in range(count)]
+        cfg = self._config
+        count = cfg.funded_accounts or (
+            (cfg.max_txns + cfg.txns_per_account - 1) // cfg.txns_per_account
+        )
+        accounts = [create_account_info(f"txgen-{i}") for i in range(count)]
 
         # Get current state
         acct_response = await client.request(
@@ -453,9 +502,9 @@ class TxnGenerator:
         # Burst-submit funding txns
         logger.info(f"Funding {count} accounts from genesis...")
         pending_hashes: set[str] = set()
-        fund_amount = str(self._config.fund_amount_xah * 1_000_000)
+        fund_amount = str(cfg.fund_amount_xah * 1_000_000)
 
-        for acct in self._accounts:
+        for acct in accounts:
             payment = Payment(
                 account=self._genesis_wallet.classic_address,
                 destination=acct.address,
@@ -477,7 +526,7 @@ class TxnGenerator:
                 logger.warning(f"  Fund {acct.name}: {engine_result}")
             genesis_seq += 1
 
-        # Wait for funding to validate via a temporary subscription
+        # Wait for funding to validate
         if pending_hashes:
             logger.info(
                 f"Waiting for {len(pending_hashes)} funding txns to validate..."
@@ -511,61 +560,120 @@ class TxnGenerator:
 
         logger.info("All accounts funded")
 
+        # Query starting sequence (all accounts created at the same time).
+        acct_response = await client.request(
+            AccountInfoRequest(account=accounts[0].address)
+        )
+        initial_seq = acct_response.result["account_data"]["Sequence"]
+        logger.info(f"Sender starting sequence: {initial_seq}")
+
+        self._senders = []
+        for acct in accounts:
+            tracker = SubmissionTracker(cfg)
+            tracker.reset(initial_seq)
+            self._senders.append(_Sender(info=acct, tracker=tracker))
+
     # -- Internal: submission ----------------------------------------------
 
-    async def _submit_batch(self, client: XahauClient, ledger_index: int) -> None:
-        """Submit a batch of random payments for this ledger."""
-        assert self._genesis_wallet is not None
+    def _should_submit(self, ledger_index: int) -> bool:
+        """Whether to submit transactions for this ledger."""
+        sl = self._config.start_ledger
+        return not (sl > 0 and ledger_index < sl)
 
-        if not self._tracker.should_submit(ledger_index):
+    def _pending_summary(self) -> str:
+        """Aggregate pending breakdown across all senders."""
+        by_lls: dict[int, int] = {}
+        for s in self._senders:
+            for lls, n in s.tracker.pending_by_lls().items():
+                by_lls[lls] = by_lls.get(lls, 0) + n
+        return " ".join(f"lls{lls}:{n}" for lls, n in sorted(by_lls.items()))
+
+    def _total_pending(self) -> int:
+        return sum(s.tracker.pending_count for s in self._senders)
+
+    async def _submit_batch(self, client: XahauClient, ledger_index: int) -> None:
+        """Submit a batch of round-robin payments for this ledger."""
+        if not self._should_submit(ledger_index):
             return
 
-        k, lls = self._tracker.prepare_batch(ledger_index)
-        destinations = random.choices(self._accounts, k=k)
+        cfg = self._config
+        k = random.randint(cfg.min_txns, cfg.max_txns)
+        lls = ledger_index + cfg.lls_offset
 
         batch_results: dict[str, int] = {}
-        for dest in destinations:
+        submitted = 0
+        skip_senders: set[int] = set()
+        batch_sends: dict[int, int] = {}
+        exhausted = 0
+
+        while submitted < k:
+            idx = self._rr_idx % len(self._senders)
+            self._rr_idx += 1
+
+            if idx in skip_senders:
+                exhausted += 1
+                if exhausted >= len(self._senders):
+                    break
+                continue
+
+            if batch_sends.get(idx, 0) >= cfg.txns_per_account:
+                skip_senders.add(idx)
+                exhausted += 1
+                if exhausted >= len(self._senders):
+                    break
+                continue
+
+            exhausted = 0
+            sender = self._senders[idx]
+
+            # Pick destination != sender
+            dest = sender
+            while dest is sender:
+                dest = random.choice(self._senders)
+
             payment = Payment(
-                account=self._genesis_wallet.classic_address,
-                destination=dest.address,
-                amount=self._config.amount_drops,
+                account=sender.info.address,
+                destination=dest.info.address,
+                amount=cfg.amount_drops,
                 fee=self._base_fee,
-                sequence=self._tracker.next_sequence,
+                sequence=sender.tracker.next_sequence,
                 last_ledger_sequence=lls,
                 network_id=self._network_id,
             )
-            signed_tx = sign(payment, self._genesis_wallet)
+            signed_tx = sign(payment, sender.info.wallet)
             tx_blob = encode(signed_tx.to_xrpl())
 
-            response = await client.request(SubmitOnly(tx_blob=tx_blob, fail_hard=True))
+            response = await client.request(SubmitOnly(tx_blob=tx_blob))
             result = response.result
             engine_result = result.get("engine_result", "unknown")
             batch_results[engine_result] = batch_results.get(engine_result, 0) + 1
 
             tx_hash = result.get("tx_json", {}).get("hash")
-            action = self._tracker.on_submit_result(engine_result, tx_hash, lls)
+            action = sender.tracker.on_submit_result(engine_result, tx_hash, lls)
 
-            if action == BatchAction.RECOVER:
-                await self._recover_sequence(client)
-                break
+            if action == BatchAction.CONTINUE:
+                batch_sends[idx] = batch_sends.get(idx, 0) + 1
+                submitted += 1
+            elif action == BatchAction.RECOVER:
+                await self._recover_account(client, sender)
+                skip_senders.add(idx)
             elif action == BatchAction.BREAK:
-                break
+                skip_senders.add(idx)
+            # SKIP: don't count, don't skip sender, try next
 
-        self._tracker.end_batch()
+        self._ledgers_active += 1
         stats_str = ", ".join(f"{r}:{n}" for r, n in batch_results.items())
-        pending_detail = self._tracker.pending_summary
 
         logger.info(
-            f"Ledger {ledger_index}: submitted {k} txns ({stats_str}) "
-            f"pending={self._tracker.pending_count} [{pending_detail}]"
+            f"Ledger {ledger_index}: submitted {submitted} txns ({stats_str}) "
+            f"pending={self._total_pending()} [{self._pending_summary()}]"
         )
 
-    async def _recover_sequence(self, client: XahauClient) -> None:
-        """Re-fetch sequence from server on tefPAST_SEQ/tefMAX_LEDGER."""
-        assert self._genesis_wallet is not None
+    async def _recover_account(self, client: XahauClient, sender: _Sender) -> None:
+        """Re-fetch sequence from server for a specific account."""
         acct_response = await client.request(
-            AccountInfoRequest(account=self._genesis_wallet.classic_address)
+            AccountInfoRequest(account=sender.info.address)
         )
         server_seq = acct_response.result["account_data"]["Sequence"]
-        self._tracker.on_recovery(server_seq)
-        logger.warning(f"Sequence recovered from server: {server_seq}")
+        sender.tracker.on_recovery(server_seq)
+        logger.warning(f"Sequence recovered for {sender.info.name}: {server_seq}")

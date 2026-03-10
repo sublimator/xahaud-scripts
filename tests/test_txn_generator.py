@@ -26,7 +26,7 @@ def test_reset_sets_sequences():
     t = SubmissionTracker(TxnGeneratorConfig())
     t.reset(42)
     assert t.next_sequence == 42
-    assert t.stats().confirmed_sequence == 42
+    assert t.confirmed_sequence == 42
     assert t.stats().pending_count == 0
 
 
@@ -132,7 +132,7 @@ def test_ledger_closed_no_expiry(tracker: SubmissionTracker):
     assert tracker.pending_count == 2
     # confirmed = initial(100) + validated(0) = 100
     # next = confirmed(100) + pending(2) = 102
-    assert tracker.stats().confirmed_sequence == 100
+    assert tracker.confirmed_sequence == 100
     assert tracker.next_sequence == 102
 
 
@@ -145,7 +145,7 @@ def test_ledger_closed_with_expiry(tracker: SubmissionTracker):
     assert tracker.pending_count == 1
     # confirmed = 100 + 0 validated = 100
     # next = 100 + 1 pending = 101
-    assert tracker.stats().confirmed_sequence == 100
+    assert tracker.confirmed_sequence == 100
     assert tracker.next_sequence == 101
 
 
@@ -157,7 +157,7 @@ def test_ledger_closed_with_validation(tracker: SubmissionTracker):
     tracker.on_ledger_closed(108)
     # confirmed = 100 + 1 validated = 101
     # next = 101 + 1 pending = 102
-    assert tracker.stats().confirmed_sequence == 101
+    assert tracker.confirmed_sequence == 101
     assert tracker.next_sequence == 102
     assert tracker.stats().total_validated == 1
     assert tracker.pending_count == 1
@@ -188,7 +188,7 @@ def test_recovery_syncs_state(tracker: SubmissionTracker):
     tracker.on_recovery(105)
     assert tracker.pending_count == 0
     assert tracker.next_sequence == 105
-    assert tracker.stats().confirmed_sequence == 105
+    assert tracker.confirmed_sequence == 105
     # total_validated synced: 105 - 100 = 5
     assert tracker.stats().total_validated == 5
 
@@ -205,7 +205,7 @@ def test_ledger_closed_after_recovery_preserves_sequence(tracker: SubmissionTrac
     # Next reconcile should NOT revert to 101
     tracker.on_ledger_closed(112)
     assert tracker.next_sequence == 105
-    assert tracker.stats().confirmed_sequence == 105
+    assert tracker.confirmed_sequence == 105
 
 
 # -- should_submit ---------------------------------------------------------
@@ -300,7 +300,7 @@ def test_full_ledger_cycle(tracker: SubmissionTracker):
     # Ledger 11: reconcile
     tracker.on_ledger_closed(11)
     # confirmed = 100 + 3 = 103, next = 103 + 0 = 103
-    assert tracker.stats().confirmed_sequence == 103
+    assert tracker.confirmed_sequence == 103
     assert tracker.next_sequence == 103
 
     # Ledger 11: submit 2 more
@@ -355,7 +355,7 @@ def test_alternating_ledger_regression():
 
     t.on_ledger_closed(9)
     # confirmed = 61 + 43 = 104, next = 104 + 0 = 104
-    assert t.stats().confirmed_sequence == 104
+    assert t.confirmed_sequence == 104
     assert t.next_sequence == 104
 
     # Submit at seq 104 → server says tefPAST_SEQ (server seq is 105 because
@@ -374,7 +374,7 @@ def test_alternating_ledger_regression():
     # -- Ledger 10: reconcile must NOT revert to 104 --
     t.on_ledger_closed(10)
     assert t.next_sequence == 105  # the critical assertion
-    assert t.stats().confirmed_sequence == 105
+    assert t.confirmed_sequence == 105
 
     # Now submit should work from seq 105
     action = t.on_submit_result("tesSUCCESS", "L10_ok", lls=13)

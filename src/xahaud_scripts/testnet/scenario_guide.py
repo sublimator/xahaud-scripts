@@ -245,10 +245,10 @@ async def scenario(ctx, log):
     parts.append("""\
 ## Transaction Generator
 
-`ctx.txn_generator()` creates a background transaction generator that submits
-random payments from the genesis account on every ledger close. It creates
-funded test accounts at startup, then fires a configurable number of payments
-per ledger. Use it when your scenario needs transaction load — for example, to
+`ctx.txn_generator()` creates a background transaction generator that funds N
+accounts at startup, then round-robins across them as senders on every ledger
+close. Each account has its own sequence tracker, avoiding per-account TxQ
+contention. Use it when your scenario needs transaction load — for example, to
 test behaviour under contention, verify TxQ ordering, or ensure amendments
 activate correctly while transactions are flowing.
 
@@ -258,11 +258,10 @@ only happen in response to `ledgerClosed` WebSocket events — so there's no
 risk of submitting into a network that isn't ready yet.
 
 It uses tight `LastLedgerSequence` (+3 by default) so transactions either
-validate quickly or expire within 1-2 ledgers. On each ledger close it
-reconciles pending transactions: confirmed txns update the ground-truth
-sequence, expired txns are discarded, and the next submission batch starts from
-the correct sequence number. This avoids the "sequence cockblock" where a stale
-transaction holds up all subsequent submissions.
+validate quickly or expire within 1-2 ledgers. Each sender has its own
+SubmissionTracker that reconciles on every ledger close: confirmed txns update
+the sequence, expired txns are discarded, and the next batch picks up from the
+correct sequence.
 
 ```python
 async def scenario(ctx, log):
@@ -291,7 +290,8 @@ async def scenario(ctx, log):
 | `min_txns` | 3 | Minimum payments per ledger |
 | `max_txns` | 10 | Maximum payments per ledger |
 | `start_ledger` | 0 | Don't submit until this ledger (0 = immediate) |
-| `account_count` | None | Number of destination accounts (defaults to max_txns) |
+| `funded_accounts` | None | Number of sender accounts (defaults to ceil(max_txns/txns_per_account)) |
+| `txns_per_account` | 1 | Max transactions per sender per batch |
 | `amount_drops` | "1000000" | Payment amount in drops (1 XAH) |
 | `fund_amount_xah` | 1000 | Initial funding per account |
 | `lls_offset` | 3 | LastLedgerSequence = current_ledger + offset |
