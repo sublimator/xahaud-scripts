@@ -499,52 +499,97 @@ class TxnGenerator:
         ledger_response = await client.request(Ledger())
         current_ledger = get_ledger_index(ledger_response.result)
 
-        # Burst-submit funding txns
+        # Submit funding txns in batches (TxQ can only hold ~90 per ledger)
         logger.info(f"Funding {count} accounts from genesis...")
         pending_hashes: set[str] = set()
         fund_amount = str(cfg.fund_amount_xah * 1_000_000)
+        lls = current_ledger + 20
+        remaining = list(accounts)
 
-        for acct in accounts:
-            payment = Payment(
-                account=self._genesis_wallet.classic_address,
-                destination=acct.address,
-                amount=fund_amount,
-                fee=self._base_fee,
-                sequence=genesis_seq,
-                last_ledger_sequence=current_ledger + 20,
-                network_id=self._network_id,
-            )
-            signed_tx = sign(payment, self._genesis_wallet)
-            tx_blob = encode(signed_tx.to_xrpl())
-            response = await client.request(SubmitOnly(tx_blob=tx_blob, fail_hard=True))
-            result = response.result
-            engine_result = result.get("engine_result", "???")
-            tx_hash = result.get("tx_json", {}).get("hash")
-            if tx_hash:
-                pending_hashes.add(tx_hash)
-            if engine_result != "tesSUCCESS":
-                logger.warning(f"  Fund {acct.name}: {engine_result}")
-            genesis_seq += 1
-
-        # Wait for funding to validate
-        if pending_hashes:
-            logger.info(
-                f"Waiting for {len(pending_hashes)} funding txns to validate..."
-            )
-            ws_fund = await websockets.connect(self._ws_url, open_timeout=10)
-            try:
-                await ws_fund.send(
-                    json.dumps(
-                        {
-                            "id": 2,
-                            "command": "subscribe",
-                            "streams": ["transactions"],
-                        }
-                    )
+        ws_fund = await websockets.connect(self._ws_url, open_timeout=10)
+        try:
+            await ws_fund.send(
+                json.dumps(
+                    {
+                        "id": 2,
+                        "command": "subscribe",
+                        "streams": ["transactions", "ledger"],
+                    }
                 )
-                await ws_fund.recv()  # subscription response
+            )
+            await ws_fund.recv()  # subscription response
 
-                total = len(pending_hashes)
+            while remaining:
+                # Submit as many as the TxQ will accept
+                batch_submitted = 0
+                retry_from: list[Any] = []
+                for acct in remaining:
+                    payment = Payment(
+                        account=self._genesis_wallet.classic_address,
+                        destination=acct.address,
+                        amount=fund_amount,
+                        fee=self._base_fee,
+                        sequence=genesis_seq,
+                        last_ledger_sequence=lls,
+                        network_id=self._network_id,
+                    )
+                    signed_tx = sign(payment, self._genesis_wallet)
+                    tx_blob = encode(signed_tx.to_xrpl())
+                    response = await client.request(
+                        SubmitOnly(tx_blob=tx_blob, fail_hard=True)
+                    )
+                    result = response.result
+                    engine_result = result.get("engine_result", "???")
+                    tx_hash = result.get("tx_json", {}).get("hash")
+
+                    if engine_result in ("tesSUCCESS", "terQUEUED"):
+                        if tx_hash:
+                            pending_hashes.add(tx_hash)
+                        genesis_seq += 1
+                        batch_submitted += 1
+                    elif (
+                        engine_result.startswith("tel") or engine_result == "terPRE_SEQ"
+                    ):
+                        # TxQ full — queue the rest for the next ledger
+                        retry_from.append(acct)
+                    else:
+                        logger.warning(f"  Fund {acct.name}: {engine_result}")
+                        genesis_seq += 1
+                        batch_submitted += 1
+
+                remaining = retry_from
+                if remaining:
+                    logger.info(
+                        f"  Funded batch of {batch_submitted}, "
+                        f"waiting for ledger close ({len(remaining)} remaining)..."
+                    )
+                    # Wait for a ledgerClosed, draining validated txns along the way
+                    while True:
+                        message = await ws_fund.recv()
+                        data = json.loads(message)
+                        if data.get("type") == "transaction" and data.get("validated"):
+                            tx_hash = data.get("transaction", {}).get("hash")
+                            if tx_hash:
+                                pending_hashes.discard(tx_hash)
+                        elif data.get("type") == "ledgerClosed":
+                            break
+
+                    # Re-fetch genesis sequence and bump LLS
+                    acct_response = await client.request(
+                        AccountInfoRequest(account=self._genesis_wallet.classic_address)
+                    )
+                    genesis_seq = acct_response.result["account_data"]["Sequence"]
+                    ledger_response = await client.request(Ledger())
+                    current_ledger = get_ledger_index(ledger_response.result)
+                    lls = current_ledger + 20
+
+            # Wait for all remaining funding txns to validate
+            total = count
+            funded = total - len(pending_hashes)
+            if pending_hashes:
+                logger.info(
+                    f"Waiting for {len(pending_hashes)} funding txns to validate..."
+                )
                 while pending_hashes:
                     message = await ws_fund.recv()
                     data = json.loads(message)
@@ -552,25 +597,36 @@ class TxnGenerator:
                         tx_hash = data.get("transaction", {}).get("hash")
                         if tx_hash and tx_hash in pending_hashes:
                             pending_hashes.discard(tx_hash)
-                            logger.info(
-                                f"  Funded ({total - len(pending_hashes)}/{total})"
-                            )
-            finally:
-                await ws_fund.close()
+                            funded += 1
+                            logger.info(f"  Funded ({funded}/{total})")
+        finally:
+            await ws_fund.close()
 
         logger.info("All accounts funded")
 
-        # Query starting sequence (all accounts created at the same time).
-        acct_response = await client.request(
-            AccountInfoRequest(account=accounts[0].address)
-        )
-        initial_seq = acct_response.result["account_data"]["Sequence"]
-        logger.info(f"Sender starting sequence: {initial_seq}")
+        # Query starting sequences in parallel batches (accounts funded in
+        # different ledgers have different initial sequences because Xahau
+        # sets initial seq = parent ledger close time in Ripple epoch).
+        batch_size = 20
+        sequences: dict[str, int] = {}
+        for i in range(0, len(accounts), batch_size):
+            batch = accounts[i : i + batch_size]
+            responses = await asyncio.gather(
+                *(client.request(AccountInfoRequest(account=a.address)) for a in batch)
+            )
+            for acct, resp in zip(batch, responses, strict=True):
+                sequences[acct.address] = resp.result["account_data"]["Sequence"]
+
+        unique_seqs = sorted(set(sequences.values()))
+        if len(unique_seqs) == 1:
+            logger.info(f"Sender starting sequence: {unique_seqs[0]}")
+        else:
+            logger.info(f"Sender starting sequences: {unique_seqs}")
 
         self._senders = []
         for acct in accounts:
             tracker = SubmissionTracker(cfg)
-            tracker.reset(initial_seq)
+            tracker.reset(sequences[acct.address])
             self._senders.append(_Sender(info=acct, tracker=tracker))
 
     # -- Internal: submission ----------------------------------------------
