@@ -791,7 +791,7 @@ def run(
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
         )
-        scenario_logger = logging.getLogger("xahaud_scripts.testnet.scenario")
+        scenario_logger = logging.getLogger("xahaud_scripts.testnet")
         scenario_logger.addHandler(file_handler)
         logger.info(f"Scenario log: {log_file}")
 

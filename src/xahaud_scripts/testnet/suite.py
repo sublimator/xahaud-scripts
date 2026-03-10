@@ -336,8 +336,8 @@ def _run_one_test(
         launch_config = _build_launch_config(xahaud_root, config)
         network.run(launch_config)
 
-        # 4. Set up dual file logging for scenario
-        scenario_logger = logging.getLogger("xahaud_scripts.testnet.scenario")
+        # 4. Set up dual file logging for scenario + txn_generator etc.
+        scenario_logger = logging.getLogger("xahaud_scripts.testnet")
         formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 
         # Combined log (append) - the stable tail -F target
