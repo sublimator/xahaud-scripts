@@ -4,3 +4,4 @@ generated/
 __pycache__
 .claude
 .coverage
+.ai-docs/
