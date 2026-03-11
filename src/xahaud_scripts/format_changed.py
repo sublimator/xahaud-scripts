@@ -329,7 +329,7 @@ def main() -> None:
     success: bool = True
     files_formatted = 0
     files_changed = 0
-    changed_paths: list[Path] = []  # Track paths that actually changed
+    formatted_paths: list[Path] = []  # All successfully formatted files
 
     # Format all requested file types
     for file_type, formatter in formatters.items():
@@ -350,10 +350,10 @@ def main() -> None:
                 success = False
             else:
                 files_formatted += 1
+                formatted_paths.append(file_path)
                 changed = file_path.read_bytes() != before
                 if changed:
                     files_changed += 1
-                    changed_paths.append(file_path)
                     logger.info(f"  {rel} (changed)")
                 else:
                     logger.debug(f"  {rel} (unchanged)")
@@ -366,15 +366,15 @@ def main() -> None:
     else:
         logger.info("No files were formatted")
 
-    # Stage changed files if requested
-    if args.stage and changed_paths:
+    # Stage all formatted files if requested (they were dirty to begin with)
+    if args.stage and formatted_paths:
         try:
             subprocess.run(
-                ["git", "add", "--"] + [str(p) for p in changed_paths],
+                ["git", "add", "--"] + [str(p) for p in formatted_paths],
                 cwd=root_dir,
                 check=True,
             )
-            logger.info(f"Staged {len(changed_paths)} changed files")
+            logger.info(f"Staged {len(formatted_paths)} files")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to stage files: {e}")
             success = False
