@@ -1642,7 +1642,11 @@ class ScenarioContext:
 
 
 def _load_scenario_module(script_path: Path) -> Any:
-    """Load a scenario script module, adding its directory to sys.path."""
+    """Load a scenario script module, adding its directory to sys.path.
+
+    Also adds the scenarios/ root (parent of category subdirs) so that
+    cross-folder imports work (e.g. entropy/foo.py importing helpers.py).
+    """
     spec = importlib.util.spec_from_file_location("scenario_script", script_path)
     if spec is None or spec.loader is None:
         raise ValueError(f"Could not load script: {script_path}")
@@ -1651,6 +1655,12 @@ def _load_scenario_module(script_path: Path) -> Any:
     script_dir = str(script_path.parent)
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
+
+    # Add scenarios/ root for cross-folder imports (e.g. from helpers import ...)
+    scenarios_root = str(script_path.parent.parent)
+    if scenarios_root not in sys.path:
+        sys.path.insert(1, scenarios_root)
+
     spec.loader.exec_module(module)
     return module
 

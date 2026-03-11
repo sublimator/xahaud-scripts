@@ -4,9 +4,9 @@ Loads a YAML suite definition, runs each test with a fresh network
 lifecycle (teardown -> generate -> run -> scenario), and reports results.
 
 Usage:
-    x-testnet suite .testnet/suite.yml
-    x-testnet suite .testnet/suite.yml --no-stop-on-fail
-    x-testnet suite .testnet/suite.yml --test quorum_recovery_smoke
+    x-testnet suite .testnet/scenarios/suite.yml
+    x-testnet suite .testnet/scenarios/suite.yml --no-stop-on-fail
+    x-testnet suite .testnet/scenarios/suite.yml --test quorum_recovery_smoke
 """
 
 from __future__ import annotations
@@ -292,6 +292,7 @@ def _run_one_test(
     snapshot_on_fail: bool = True,
     env_override: dict[str, str] | None = None,
     py_log_specs: list[str] | None = None,
+    fast_bootstrap: bool = True,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
     name = test["name"]
@@ -314,12 +315,19 @@ def _run_one_test(
             **(base_env if isinstance(base_env, dict) else {}),
             **env_override,
         }
+
+    # --fast-bootstrap: inject XAHAUD_BOOTSTRAP_FAST_START=1 unless already set
+    if fast_bootstrap:
+        env = config.setdefault("env", {})
+        if isinstance(env, dict) and "XAHAUD_BOOTSTRAP_FAST_START" not in env:
+            env["XAHAUD_BOOTSTRAP_FAST_START"] = "1"
+
     start = time.monotonic()
 
     network = _create_network(xahaud_root, config)
 
     # Prepare output dirs
-    runs_dir = xahaud_root / ".testnet" / "scenario-tests" / "runs"
+    runs_dir = xahaud_root / ".testnet" / "output" / "runs"
     latest_dir = runs_dir / "latest" / name
     latest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -427,6 +435,7 @@ def run_suite(
     env_override: dict[str, str] | None = None,
     dry_run: bool = False,
     py_log_specs: list[str] | None = None,
+    fast_bootstrap: bool = True,
 ) -> list[TestResult]:
     """Run a scenario test suite.
 
@@ -445,6 +454,8 @@ def run_suite(
         dry_run: Print plan without executing.
         py_log_specs: If set, enable extra Python loggers to file at
             requested levels (format: ``logger.name=LEVEL``).
+        fast_bootstrap: If True (default), inject XAHAUD_BOOTSTRAP_FAST_START=1
+            unless explicitly set in suite config or --env.
 
     Returns:
         List of TestResult for all executed tests.
@@ -489,7 +500,7 @@ def run_suite(
         return []
 
     # Rotate combined log before starting suite
-    combined_log = xahaud_root / ".testnet" / "scenario-test.log"
+    combined_log = xahaud_root / ".testnet" / "output" / "logs" / "scenario-test.log"
     combined_log.parent.mkdir(parents=True, exist_ok=True)
     _rotate_log(combined_log)
 
@@ -513,6 +524,7 @@ def run_suite(
                 snapshot_on_fail=snapshot_on_fail,
                 env_override=env_override,
                 py_log_specs=py_log_specs,
+                fast_bootstrap=fast_bootstrap,
             )
         except KeyboardInterrupt:
             logger.info("Suite interrupted — network left in place for inspection")

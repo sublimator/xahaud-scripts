@@ -146,7 +146,7 @@ The scenario runner:
 1. Launches the network and waits for the first ledger
 2. Calls your `async def scenario(ctx, log)` function
 3. Reports pass/fail and exits (non-zero on failure)
-4. Logs to `.testnet/scenario-test.log`
+4. Logs to `.testnet/output/logs/scenario-test.log`
 
 ## Script Format
 

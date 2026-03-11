@@ -715,9 +715,9 @@ class TestNetwork:
         return self._launcher.capture_output(node_id, lines)
 
     def snapshot(self, name: str | None = None, keep_db: bool = False) -> Path:
-        """Copy the network directory into snapshots/YYYYMMDD-HHMMSS[-name]/.
+        """Copy the network directory into output/snapshots/YYYYMMDD-HHMMSS[-name]/.
 
-        Copies the entire testnet dir verbatim (excluding snapshots/) so that
+        Copies the entire testnet dir verbatim (excluding output/) so that
         all existing tooling (logs-search, etc.) works against the snapshot
         with the same directory structure.
 
@@ -733,7 +733,7 @@ class TestNetwork:
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         dir_name = f"{timestamp}-{name}" if name else timestamp
-        snap_base = self._base_dir.parent / ".testnet" / "snapshots"
+        snap_base = self._base_dir.parent / ".testnet" / "output" / "snapshots"
         snapshot_dir = snap_base / dir_name
 
         exclude: list[str] = []

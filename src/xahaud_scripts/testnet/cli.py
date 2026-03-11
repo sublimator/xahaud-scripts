@@ -430,6 +430,13 @@ def generate(
     help="Enable extra Python logging to scenario-test.log. "
     "Format: logger.name=LEVEL (e.g. xahaud_scripts.testnet=DEBUG). Repeatable.",
 )
+@click.option(
+    "--fast-bootstrap/--no-fast-bootstrap",
+    "fast_bootstrap",
+    default=True,
+    help="Set XAHAUD_BOOTSTRAP_FAST_START=1 unless explicitly overridden "
+    "via --env (default: enabled).",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -458,6 +465,7 @@ def run(
     start_ledger: int | None,
     majority_features: tuple[str, ...],
     py_log_specs: tuple[str, ...],
+    fast_bootstrap: bool,
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -559,6 +567,9 @@ def run(
         for node_id, env_dict in sorted(node_env.items()):
             for key, value in env_dict.items():
                 logger.info(f"  n{node_id}: {key}={value}")
+
+    if fast_bootstrap and "XAHAUD_BOOTSTRAP_FAST_START" not in extra_env:
+        extra_env["XAHAUD_BOOTSTRAP_FAST_START"] = "1"
 
     # If --slave-delay was explicitly provided, enable delays
     from click.core import ParameterSource
@@ -723,7 +734,13 @@ def run(
 
             scenario_params = _json.loads(params_json)
 
-        log_file = network.base_dir.parent / ".testnet" / "scenario-test.log"
+        log_file = (
+            network.base_dir.parent
+            / ".testnet"
+            / "output"
+            / "logs"
+            / "scenario-test.log"
+        )
         log_file.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Scenario log: {log_file}")
 
@@ -1586,7 +1603,7 @@ def snapshot(ctx: click.Context, name: str | None, keep_db: bool) -> None:
     """Snapshot current network state for later inspection.
 
     Copies the testnet directory (configs, logs, network.json) into
-    snapshots/YYYYMMDD-HHMMSS[-NAME]/.
+    .testnet/output/snapshots/YYYYMMDD-HHMMSS[-NAME]/.
 
     Database files (db/) are excluded by default to save space.
 
@@ -1610,11 +1627,11 @@ def _resolve_snapshot(base_dir: Path, snapshot_name: str) -> Path:
     """Resolve a snapshot name to a directory path.
 
     Supports:
-        'latest'  → snapshots/latest (most recent by name)
-        exact     → snapshots/<name> (exact match)
-        suffix    → snapshots/*-<name> (suffix match)
+        'latest'  → output/snapshots/latest (most recent by name)
+        exact     → output/snapshots/<name> (exact match)
+        suffix    → output/snapshots/*-<name> (suffix match)
     """
-    snap_dir = base_dir.parent / ".testnet" / "snapshots"
+    snap_dir = base_dir.parent / ".testnet" / "output" / "snapshots"
     if not snap_dir.is_dir():
         raise click.ClickException(
             f"No snapshots found. Run 'x-testnet snapshot' first.\nExpected: {snap_dir}"
@@ -2228,6 +2245,13 @@ def scenario_test_guide() -> None:
     help="Enable extra Python logging to scenario-test.log. "
     "Format: logger.name=LEVEL (e.g. xahaud_scripts.testnet=DEBUG). Repeatable.",
 )
+@click.option(
+    "--fast-bootstrap/--no-fast-bootstrap",
+    "fast_bootstrap",
+    default=True,
+    help="Set XAHAUD_BOOTSTRAP_FAST_START=1 unless explicitly overridden "
+    "in suite config or --env (default: enabled).",
+)
 @click.pass_context
 def suite(
     ctx: click.Context,
@@ -2240,6 +2264,7 @@ def suite(
     params_json: str | None,
     env_vars: tuple[str, ...],
     py_log_specs: tuple[str, ...],
+    fast_bootstrap: bool,
 ) -> None:
     """Run a scenario test suite from a YAML file.
 
@@ -2257,11 +2282,11 @@ def suite(
 
     \b
     Examples:
-        testnet suite .testnet/suite.yml
-        testnet suite .testnet/suite.yml --test entropy_with_transactions
-        testnet suite .testnet/suite.yml --test entropy_with_transactions@heavy
-        testnet suite .testnet/suite.yml --params-json '{"min_txns": 100}'
-        testnet suite .testnet/suite.yml --list-tests
+        testnet suite .testnet/scenarios/suite.yml
+        testnet suite .testnet/scenarios/suite.yml --test entropy_with_transactions
+        testnet suite .testnet/scenarios/suite.yml --test entropy_with_transactions@heavy
+        testnet suite .testnet/scenarios/suite.yml --params-json '{"min_txns": 100}'
+        testnet suite .testnet/scenarios/suite.yml --list-tests
     """
     from xahaud_scripts.testnet.suite import (
         SuiteConfig,
@@ -2309,6 +2334,7 @@ def suite(
         env_override=env_override,
         dry_run=dry_run,
         py_log_specs=list(py_log_specs) if py_log_specs else None,
+        fast_bootstrap=fast_bootstrap,
     )
 
     print_summary(results)
