@@ -187,6 +187,19 @@ Raise `AssertionError` (or let `ctx.assert_*` raise it) to indicate failure.\
 
     # -- Log types --
     parts.append("## Log Search Types\n")
+    parts.append("""\
+### LogEntry
+
+```python
+@dataclass(order=True)
+class LogEntry:
+    \"\"\"A single log entry with timestamp for heap ordering.\"\"\"
+
+    timestamp: datetime
+    node_id: int
+    line: str
+```
+""")
     for name in ("LogSearchResult", "AssertionError"):
         if name in data_classes:
             parts.append(f"### {name}\n")
