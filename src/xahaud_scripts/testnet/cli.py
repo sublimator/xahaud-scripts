@@ -423,6 +423,13 @@ def generate(
     "vote yes (feature accept) before the voting ledger, or the seeded majority "
     "will be cleared. Use with --start-ledger 255. Supports @Name or hex hash.",
 )
+@click.option(
+    "--with-py-logs",
+    "py_log_specs",
+    multiple=True,
+    help="Enable extra Python logging to scenario-test.log. "
+    "Format: logger.name=LEVEL (e.g. xahaud_scripts.testnet=DEBUG). Repeatable.",
+)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -450,6 +457,7 @@ def run(
     lldb_spec: str | None,
     start_ledger: int | None,
     majority_features: tuple[str, ...],
+    py_log_specs: tuple[str, ...],
     extra_args: tuple[str, ...],
 ) -> None:
     """Launch nodes in terminal windows and start monitoring.
@@ -704,9 +712,9 @@ def run(
             logger.info("Txn generator stopped")
     elif scenario_script:
         import asyncio
-        import logging
 
         from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
+        from xahaud_scripts.utils.logging import scenario_file_logging
 
         # Parse --params-json if provided
         scenario_params: dict[str, Any] | None = None
@@ -715,32 +723,26 @@ def run(
 
             scenario_params = _json.loads(params_json)
 
-        # Set up file logging for scenario
         log_file = network.base_dir.parent / ".testnet" / "scenario-test.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, mode="w")
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
-        )
-        scenario_logger = logging.getLogger("xahaud_scripts.testnet")
-        scenario_logger.addHandler(file_handler)
         logger.info(f"Scenario log: {log_file}")
 
         scenario_passed = False
-        try:
-            scenario_passed = asyncio.run(
-                run_scenario_with_monitor(
-                    script_path=scenario_script,
-                    network=network,
-                    tracked_features=tracked,
-                    params=scenario_params,
+        with scenario_file_logging(
+            (log_file, "w"),
+            py_log_specs=list(py_log_specs) if py_log_specs else None,
+        ):
+            try:
+                scenario_passed = asyncio.run(
+                    run_scenario_with_monitor(
+                        script_path=scenario_script,
+                        network=network,
+                        tracked_features=tracked,
+                        params=scenario_params,
+                    )
                 )
-            )
-        except KeyboardInterrupt:
-            logger.info("Scenario interrupted")
-        finally:
-            file_handler.close()
-            scenario_logger.removeHandler(file_handler)
+            except KeyboardInterrupt:
+                logger.info("Scenario interrupted")
 
         if teardown:
             count = network.teardown()
@@ -2219,6 +2221,13 @@ def scenario_test_guide() -> None:
     multiple=True,
     help="Extra env var (NAME=VALUE) merged into every test config. Repeatable.",
 )
+@click.option(
+    "--with-py-logs",
+    "py_log_specs",
+    multiple=True,
+    help="Enable extra Python logging to scenario-test.log. "
+    "Format: logger.name=LEVEL (e.g. xahaud_scripts.testnet=DEBUG). Repeatable.",
+)
 @click.pass_context
 def suite(
     ctx: click.Context,
@@ -2230,6 +2239,7 @@ def suite(
     list_tests: bool,
     params_json: str | None,
     env_vars: tuple[str, ...],
+    py_log_specs: tuple[str, ...],
 ) -> None:
     """Run a scenario test suite from a YAML file.
 
@@ -2298,6 +2308,7 @@ def suite(
         params_override=params_override,
         env_override=env_override,
         dry_run=dry_run,
+        py_log_specs=list(py_log_specs) if py_log_specs else None,
     )
 
     print_summary(results)

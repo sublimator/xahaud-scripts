@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib.util
+import json as _json
 import re
 import sys
 import time as _time
@@ -34,6 +35,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import websockets
+from websockets.exceptions import WebSocketException
 
 if TYPE_CHECKING:
     from xrpl.wallet import Wallet
@@ -638,9 +642,16 @@ class ScenarioContext:
         self._definitions_patched: bool = False
         self._network_id: int | None = None
 
+        # Persistent WebSocket state (node 0)
+        self._ws_task: asyncio.Task[None] | None = None
+        self._ws_ready = asyncio.Event()
+        self._ws_ledger_index: int = 0
+        self._ws_ledger_condition = asyncio.Condition()
+        self._ws_pending_txns: dict[str, asyncio.Future[dict[str, Any]]] = {}
+
     def log(self, message: str) -> None:
         """Log a message from the scenario script."""
-        logger.info(message)
+        logger.info(f"[script] {message}")
 
     @property
     def rpc(self) -> RPCClient:
@@ -654,11 +665,167 @@ class ScenarioContext:
     def node_count(self) -> int:
         return self._network.config.node_count
 
+    # -- Persistent WebSocket (node 0) ------------------------------------
+
+    async def _start_ws(self) -> None:
+        """Start background WS task lazily on first use."""
+        if self._ws_task is None:
+            self._ws_task = asyncio.create_task(self._ws_loop())
+
+    async def _stop_ws(self) -> None:
+        """Cancel WS task. Called in finally block."""
+        if self._ws_task:
+            self._ws_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_task
+
+    async def _ws_loop(self) -> None:
+        """Background: subscribe to ledger+transactions on node 0."""
+        port = self._network.config.base_port_ws
+        url = f"ws://127.0.0.1:{port}"
+
+        while True:
+            try:
+                async with websockets.connect(url, open_timeout=10) as ws:
+                    await ws.send(
+                        _json.dumps(
+                            {
+                                "id": 1,
+                                "command": "subscribe",
+                                "streams": ["ledger", "transactions"],
+                            }
+                        )
+                    )
+                    resp = _json.loads(await ws.recv())
+
+                    # Initialize ledger index from subscription response
+                    if "result" in resp:
+                        li = resp["result"].get("ledger_index")
+                        if li:
+                            self._ws_ledger_index = int(li)
+
+                    self._ws_ready.set()
+                    logger.debug(
+                        f"WS connected to node 0 (ledger {self._ws_ledger_index})"
+                    )
+
+                    buffered: dict[str, Any] | None = None
+
+                    while True:
+                        if buffered is not None:
+                            data = buffered
+                            buffered = None
+                        else:
+                            data = _json.loads(await ws.recv())
+
+                        if data.get("type") == "transaction" and data.get("validated"):
+                            self._on_ws_transaction(data)
+                        elif data.get("type") == "ledgerClosed":
+                            ledger_index = data.get("ledger_index", 0)
+                            txn_count = data.get("txn_count", 0)
+
+                            # Drain transaction messages for this ledger
+                            drained = 0
+                            for _ in range(txn_count):
+                                try:
+                                    msg = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                                except TimeoutError:
+                                    break
+                                txn_data = _json.loads(msg)
+                                if txn_data.get(
+                                    "type"
+                                ) == "transaction" and txn_data.get("validated"):
+                                    self._on_ws_transaction(txn_data)
+                                    drained += 1
+                                else:
+                                    buffered = txn_data
+                                    break
+
+                            self._ws_ledger_index = ledger_index
+                            self._expire_ws_pending(ledger_index)
+                            pending = len(self._ws_pending_txns)
+                            logger.debug(
+                                f"ledger {ledger_index} closed"
+                                f" (txns={txn_count}, drained={drained}"
+                                f"{f', watching={pending}' if pending else ''})"
+                            )
+
+                            async with self._ws_ledger_condition:
+                                self._ws_ledger_condition.notify_all()
+
+            except asyncio.CancelledError:
+                raise
+            except (WebSocketException, ConnectionRefusedError, OSError) as e:
+                logger.debug(f"WS node 0: {e}")
+                self._ws_ready.clear()
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.warning(f"WS node 0 unexpected: {e}")
+                self._ws_ready.clear()
+                await asyncio.sleep(1)
+
+    def _on_ws_transaction(self, event: dict[str, Any]) -> None:
+        """Handle a validated transaction from the WS stream."""
+        tx_hash = event.get("transaction", {}).get("hash")
+        if not tx_hash:
+            return
+        fut = self._ws_pending_txns.pop(tx_hash, None)
+        if fut is not None and not fut.done():
+            engine = event.get("engine_result", "")
+            ledger_idx = event.get("ledger_index", 0)
+            logger.debug(
+                f"tx validated: {tx_hash[:12]}... ({engine}) in ledger {ledger_idx}"
+            )
+            # Normalize to match tx RPC response shape
+            tx_data = dict(event.get("transaction", {}))
+            tx_data["meta"] = event.get("meta")
+            tx_data["validated"] = event.get("validated", True)
+            tx_data["engine_result"] = engine
+            tx_data["ledger_index"] = ledger_idx
+            fut.set_result(tx_data)
+
+    def _expire_ws_pending(self, ledger_index: int) -> None:
+        """Fail futures for transactions past their LastLedgerSequence."""
+        expired = [
+            (h, f)
+            for h, f in self._ws_pending_txns.items()
+            if not f.done() and getattr(f, "lls", 0) < ledger_index
+        ]
+        for tx_hash, fut in expired:
+            del self._ws_pending_txns[tx_hash]
+            logger.debug(f"tx expired: {tx_hash[:12]}... (LLS < {ledger_index})")
+            fut.set_exception(
+                TimeoutError(f"Transaction {tx_hash} expired (LLS < {ledger_index})")
+            )
+
+    def _ws_watch_tx(self, tx_hash: str, lls: int) -> asyncio.Future[dict[str, Any]]:
+        """Register a tx hash to watch. Returns future resolved on validation."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        fut.lls = lls  # type: ignore[attr-defined]
+        self._ws_pending_txns[tx_hash] = fut
+        return fut
+
     # -- RPC helpers -------------------------------------------------------
 
     def validated_ledger_index(self, node_id: int = 0) -> int | None:
-        """Get the validated ledger index from a node, or None if unreachable."""
+        """Get the validated ledger index from a node, or None if unreachable.
+
+        For node 0, returns the latest index from the WebSocket stream
+        (no RPC call). Falls back to RPC for other nodes.
+        """
+        if node_id == 0 and self._ws_ledger_index > 0:
+            return self._ws_ledger_index
         return _get_validated_ledger(self.rpc, node_id)
+
+    def open_ledger_index(self, node_id: int = 0) -> int | None:
+        """Get the open (current) ledger index from a node, or None if unreachable.
+
+        The open ledger is the one currently being built (validated + 1).
+        For node 0, derived from the WebSocket stream (no RPC call).
+        """
+        validated = self.validated_ledger_index(node_id)
+        return validated + 1 if validated else None
 
     def ledger(
         self,
@@ -834,11 +1001,17 @@ class ScenarioContext:
 
         # Encode and submit
         tx_blob = encode(tx_dict)
+        tx_type = tx_dict.get("TransactionType", "?")
+        seq = tx_dict.get("Sequence", "?")
+        logger.debug(f"submit {tx_type} seq={seq} to node {node_id}")
+
         result = self.rpc.request(node_id, "submit", {"tx_blob": tx_blob})
         if result is None:
             raise RuntimeError(f"Submit failed on node {node_id}")
 
         engine_result = result.get("engine_result", "")
+        tx_hash = result.get("tx_json", {}).get("hash", "?")
+        logger.debug(f"  → {engine_result} hash={tx_hash[:12]}...")
         if engine_result and not engine_result.startswith("tes"):
             logger.warning(f"Transaction result: {engine_result}")
 
@@ -851,26 +1024,27 @@ class ScenarioContext:
         *,
         node_id: int = 0,
         timeout: float = 60.0,
-        poll_interval: float = 4.0,
     ) -> dict[str, Any]:
-        """Sign, submit, and wait for validation.
+        """Sign, submit, and wait for validation via WebSocket events.
 
-        Like submit_tx but polls until the transaction is validated.
+        Submits via HTTP RPC, then waits for the transaction to appear on the
+        persistent WebSocket stream (ledger + transactions on node 0). Much
+        faster than polling — resolves within the same ledger the tx validates.
 
         Args:
             tx_dict: Transaction as a dict.
             wallet: Wallet to sign with.
             node_id: Node to submit to (default: 0).
             timeout: Max seconds to wait for validation.
-            poll_interval: Seconds between polls.
 
         Returns:
             Validated transaction result (includes meta, HookExecutions, etc.).
 
         Raises:
             RuntimeError: If submit fails.
-            TimeoutError: If transaction not validated in time.
+            TimeoutError: If transaction not validated in time or LLS expires.
         """
+        await self._start_ws()
         result = self.submit_tx(tx_dict, wallet, node_id=node_id)
 
         engine_result = result.get("engine_result", "")
@@ -882,14 +1056,15 @@ class ScenarioContext:
             logger.warning(f"No tx hash in submit response: {result}")
             return result
 
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
-            await asyncio.sleep(poll_interval)
-            tx_result = self.rpc.request(node_id, "tx", {"transaction": tx_hash})
-            if tx_result and tx_result.get("validated"):
-                return tx_result
-
-        raise TimeoutError(f"Transaction {tx_hash} not validated after {timeout}s")
+        lls = result.get("tx_json", {}).get("LastLedgerSequence", 0)
+        fut = self._ws_watch_tx(tx_hash, lls)
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError:
+            self._ws_pending_txns.pop(tx_hash, None)
+            raise TimeoutError(
+                f"Transaction {tx_hash} not validated after {timeout}s"
+            ) from None
 
     async def fund_accounts(
         self,
@@ -930,8 +1105,9 @@ class ScenarioContext:
                 node_id=node_id,
             )
             engine_result = result.get("engine_result", "")
+            ledger_idx = result.get("ledger_index", "?")
             if engine_result.startswith("tes") or result.get("validated"):
-                logger.info(f"  Funded {name} (validated)")
+                logger.info(f"  Funded {name} (validated ledger={ledger_idx})")
             else:
                 logger.warning(f"  Funding {name} result: {engine_result}")
 
@@ -1026,7 +1202,31 @@ class ScenarioContext:
         poll_interval: float = 1.0,
         name: str | None = None,
     ) -> Operation[int]:
-        """Wait for the next ledger close event."""
+        """Wait for the next ledger close event.
+
+        Uses WebSocket events for node 0, RPC polling for other nodes.
+        """
+        if node_id == 0:
+            await self._start_ws()
+            label = name or "ledger-close"
+            started = now_marker(f"{label}-start")
+            await self._ws_ready.wait()
+            baseline = self._ws_ledger_index
+
+            async with asyncio.timeout(timeout):
+                async with self._ws_ledger_condition:
+                    while self._ws_ledger_index <= baseline:
+                        await self._ws_ledger_condition.wait()
+
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for_ledger_close",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=self._ws_ledger_index,
+            )
+
         return await wait_for_ledger_close(
             self.rpc,
             node_id=node_id,
@@ -1044,7 +1244,41 @@ class ScenarioContext:
         poll_interval: float = 1.0,
         name: str | None = None,
     ) -> Operation[int]:
-        """Wait until validated ledger reaches target index."""
+        """Wait until validated ledger reaches target index.
+
+        Uses WebSocket events for node 0, RPC polling for other nodes.
+        """
+        if node_id == 0:
+            await self._start_ws()
+            label = name or f"ledger-{target}"
+            started = now_marker(f"{label}-start")
+            await self._ws_ready.wait()
+
+            # Already past target?
+            if self._ws_ledger_index >= target:
+                ended = now_marker(f"{label}-end")
+                return Operation(
+                    kind="wait_for_ledger",
+                    started=started,
+                    ended=ended,
+                    status="ok",
+                    result=self._ws_ledger_index,
+                )
+
+            async with asyncio.timeout(timeout):
+                async with self._ws_ledger_condition:
+                    while self._ws_ledger_index < target:
+                        await self._ws_ledger_condition.wait()
+
+            ended = now_marker(f"{label}-end")
+            return Operation(
+                kind="wait_for_ledger",
+                started=started,
+                ended=ended,
+                status="ok",
+                result=self._ws_ledger_index,
+            )
+
         return await wait_for_ledger(
             self.rpc,
             target,
@@ -1063,7 +1297,21 @@ class ScenarioContext:
         poll_interval: float = 1.0,
         name: str | None = None,
     ) -> Operation[int]:
-        """Wait for N more ledgers to close from the current position."""
+        """Wait for N more ledgers to close from the current position.
+
+        Uses WebSocket events for node 0, RPC polling for other nodes.
+        """
+        if node_id == 0:
+            await self._start_ws()
+            await self._ws_ready.wait()
+            target = self._ws_ledger_index + count
+            return await self.wait_for_ledger(
+                target,
+                node_id=0,
+                timeout=timeout,
+                name=name or f"ledgers-+{count}",
+            )
+
         return await wait_for_ledgers(
             self.rpc,
             count,
@@ -1515,6 +1763,7 @@ async def run_scenario_with_monitor(
         logger.exception("Scenario failed")
         return False
     finally:
+        await ctx._stop_ws()
         stop_event.set()
         monitor_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

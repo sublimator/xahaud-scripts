@@ -14,7 +14,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
-import logging
 import re
 import shutil
 import time
@@ -292,6 +291,7 @@ def _run_one_test(
     combined_log: Path,
     snapshot_on_fail: bool = True,
     env_override: dict[str, str] | None = None,
+    py_log_specs: list[str] | None = None,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
     name = test["name"]
@@ -344,28 +344,22 @@ def _run_one_test(
         network.run(launch_config)
 
         # 4. Set up dual file logging for scenario + txn_generator etc.
-        scenario_logger = logging.getLogger("xahaud_scripts.testnet")
-        formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+        from xahaud_scripts.utils.logging import scenario_file_logging
 
-        # Combined log (append) - the stable tail -F target
-        combined_handler = logging.FileHandler(combined_log, mode="a")
-        combined_handler.setFormatter(formatter)
-        scenario_logger.addHandler(combined_handler)
+        with scenario_file_logging(
+            (combined_log, "a"),
+            (per_test_log, "w"),
+            py_log_specs=py_log_specs,
+        ) as handlers:
+            # Write separator to combined log
+            combined_handler = handlers[0]
+            sep = f"\n{'=' * 60}\n  Test: {name}\n{'=' * 60}\n"
+            combined_handler.stream.write(sep)
+            combined_handler.stream.flush()
 
-        # Write separator to combined log
-        sep = f"\n{'=' * 60}\n  Test: {name}\n{'=' * 60}\n"
-        combined_handler.stream.write(sep)
-        combined_handler.stream.flush()
-
-        # Per-test log (fresh each run)
-        test_handler = logging.FileHandler(per_test_log, mode="w")
-        test_handler.setFormatter(formatter)
-        scenario_logger.addHandler(test_handler)
-
-        # 5. Execute scenario
-        tracked = config.get("track_features")
-        params = test.get("_params")
-        try:
+            # 5. Execute scenario
+            tracked = config.get("track_features")
+            params = test.get("_params")
             passed = asyncio.run(
                 run_scenario_with_monitor(
                     script_path=script_path,
@@ -374,11 +368,6 @@ def _run_one_test(
                     params=params,
                 )
             )
-        finally:
-            combined_handler.close()
-            test_handler.close()
-            scenario_logger.removeHandler(combined_handler)
-            scenario_logger.removeHandler(test_handler)
 
         duration = time.monotonic() - start
 
@@ -437,6 +426,7 @@ def run_suite(
     params_override: dict[str, Any] | None = None,
     env_override: dict[str, str] | None = None,
     dry_run: bool = False,
+    py_log_specs: list[str] | None = None,
 ) -> list[TestResult]:
     """Run a scenario test suite.
 
@@ -453,6 +443,8 @@ def run_suite(
         env_override: If set, merge these env vars into every test config
             (overrides both defaults and per-test env).
         dry_run: Print plan without executing.
+        py_log_specs: If set, enable extra Python loggers to file at
+            requested levels (format: ``logger.name=LEVEL``).
 
     Returns:
         List of TestResult for all executed tests.
@@ -520,6 +512,7 @@ def run_suite(
                 combined_log=combined_log,
                 snapshot_on_fail=snapshot_on_fail,
                 env_override=env_override,
+                py_log_specs=py_log_specs,
             )
         except KeyboardInterrupt:
             logger.info("Suite interrupted — network left in place for inspection")
