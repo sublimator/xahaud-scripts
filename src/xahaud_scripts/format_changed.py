@@ -147,7 +147,6 @@ def get_git_dirty_files(
 
 def format_cpp_file(file_path: Path, root_dir: Path) -> bool:
     """Format a C++ file using clang-format (via mise)."""
-    logger.info(f"Formatting C++ file: {file_path.relative_to(root_dir)}")
     try:
         cf_cmd = get_mise_tool_cmd("clang-format")
         subprocess.run([*cf_cmd, "-i", str(file_path)], check=True)
@@ -162,7 +161,6 @@ def format_cpp_file(file_path: Path, root_dir: Path) -> bool:
 
 def format_shell_file(file_path: Path, root_dir: Path) -> bool:
     """Format a shell file using shfmt."""
-    logger.info(f"Formatting shell file: {file_path.relative_to(root_dir)}")
     try:
         # Use shfmt with sensible defaults
         # -i 2: indent with 2 spaces
@@ -182,8 +180,6 @@ def format_shell_file(file_path: Path, root_dir: Path) -> bool:
 
 def format_python_file(file_path: Path, root_dir: Path) -> bool:
     """Format a Python file using ruff."""
-    logger.info(f"Formatting Python file: {file_path.relative_to(root_dir)}")
-
     ruff_path = Path(sys.executable).parent / "ruff"
 
     if not ruff_path.exists():
@@ -201,8 +197,6 @@ def format_python_file(file_path: Path, root_dir: Path) -> bool:
 
 def format_cmake_file(file_path: Path, root_dir: Path) -> bool:
     """Format a CMake file using cmake-format from the virtual environment."""
-    logger.info(f"Formatting CMake file: {file_path.relative_to(root_dir)}")
-
     # Use cmake-format from the same environment as the current Python executable
     cmake_format_path = Path(sys.executable).parent / "cmake-format"
 
@@ -334,7 +328,8 @@ def main() -> None:
     # Track overall success
     success: bool = True
     files_formatted = 0
-    formatted_paths: list[Path] = []  # Track paths for --stage
+    files_changed = 0
+    changed_paths: list[Path] = []  # Track paths that actually changed
 
     # Format all requested file types
     for file_type, formatter in formatters.items():
@@ -348,26 +343,38 @@ def main() -> None:
             continue
 
         for file_path in files_by_type[file_type]:
+            rel = file_path.relative_to(root_dir)
+            before = file_path.read_bytes()
             if not formatter(file_path):
+                logger.error(f"  {rel} (error)")
                 success = False
             else:
                 files_formatted += 1
-                formatted_paths.append(file_path)
+                changed = file_path.read_bytes() != before
+                if changed:
+                    files_changed += 1
+                    changed_paths.append(file_path)
+                    logger.info(f"  {rel} (changed)")
+                else:
+                    logger.debug(f"  {rel} (unchanged)")
 
     if files_formatted > 0:
-        logger.info(f"Successfully formatted {files_formatted} files")
+        if files_changed:
+            logger.info(f"Formatted {files_formatted} files ({files_changed} changed)")
+        else:
+            logger.info(f"Formatted {files_formatted} files (none changed)")
     else:
         logger.info("No files were formatted")
 
-    # Stage formatted files if requested
-    if args.stage and formatted_paths:
+    # Stage changed files if requested
+    if args.stage and changed_paths:
         try:
             subprocess.run(
-                ["git", "add", "--"] + [str(p) for p in formatted_paths],
+                ["git", "add", "--"] + [str(p) for p in changed_paths],
                 cwd=root_dir,
                 check=True,
             )
-            logger.info(f"Staged {len(formatted_paths)} formatted files")
+            logger.info(f"Staged {len(changed_paths)} changed files")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to stage files: {e}")
             success = False
