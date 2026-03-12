@@ -36,15 +36,15 @@ from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.scenario import (
-    load_scenario_matrix,
+    load_scenario_variants,
     run_scenario_with_monitor,
 )
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
 
-# Keys that are merged as dicts (test values override defaults per-key).
-# All other keys are replaced entirely when overridden.
+# Keys within ``network:`` that are merged as dicts (test values override
+# defaults per-key).  All other network keys are replaced entirely.
 _DICT_MERGE_KEYS = {"log_levels", "env"}
 
 
@@ -61,7 +61,25 @@ class TestResult:
 
 @dataclass
 class SuiteConfig:
-    """Parsed suite configuration."""
+    """Parsed suite configuration.
+
+    YAML structure::
+
+        defaults:
+          network:          # default network config
+            node_count: 5
+            env: { ... }
+          params:           # default scenario params (optional)
+            min_txns: 5
+
+        tests:
+          - name: my_test
+            script: path/to/script.py
+            network:        # per-test network overrides
+              node_count: 7
+            params:         # per-test scenario params
+              drop_count: 3
+    """
 
     defaults: dict[str, Any] = field(default_factory=dict)
     tests: list[dict[str, Any]] = field(default_factory=list)
@@ -115,21 +133,28 @@ class SuiteConfig:
         first_line = docstring.strip().split("\n")[0].strip()
         return first_line or None
 
-    def effective_config(self, test: dict[str, Any]) -> dict[str, Any]:
-        """Merge defaults with per-test overrides."""
-        # Internal keys injected by matrix expansion — skip them.
-        skip = {"name", "script", "_params", "_base_name"}
-        merged = dict(self.defaults)
-        for key, value in test.items():
-            if key in skip:
-                continue
+    def effective_network(self, test: dict[str, Any]) -> dict[str, Any]:
+        """Merge defaults.network with per-test network overrides."""
+        base = dict(self.defaults.get("network", {}))
+        for key, value in test.get("network", {}).items():
             if key in _DICT_MERGE_KEYS and isinstance(value, dict):
-                base = merged.get(key, {})
-                if isinstance(base, dict):
-                    merged[key] = {**base, **value}
+                existing = base.get(key, {})
+                if isinstance(existing, dict):
+                    base[key] = {**existing, **value}
                     continue
-            merged[key] = value
-        return merged
+            base[key] = value
+        return base
+
+    def effective_params(self, test: dict[str, Any]) -> dict[str, Any] | None:
+        """Merge defaults.params with per-test params.
+
+        Returns None if neither defaults nor test define params.
+        """
+        base = self.defaults.get("params")
+        override = test.get("params")
+        if base is None and override is None:
+            return None
+        return {**(base or {}), **(override or {})}
 
 
 def _rotate_log(log_path: Path, *, max_keep: int = 10) -> None:
@@ -159,39 +184,43 @@ def _test_matches(name: str, filter_str: str) -> bool:
 
 
 def _expand_tests(
-    tests: list[dict[str, Any]],
+    suite: SuiteConfig,
     xahaud_root: Path,
     *,
     params_override: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Expand matrix entries into individual test entries.
+    """Expand variant entries into individual test entries.
 
     * ``params_override`` (from ``--params-json``) wins over everything.
-    * ``params:`` in the suite YAML entry produces a single run.
-    * ``matrix`` exported by the script is expanded into ``name[label]`` entries.
+    * ``params:`` in the suite YAML entry (merged with defaults.params)
+      produces a single run.
+    * ``variants`` exported by the script is expanded into ``name@label``
+      entries.
     """
     expanded: list[dict[str, Any]] = []
-    for test in tests:
+    for test in suite.tests:
         if params_override is not None:
             expanded.append({**test, "_params": params_override})
             continue
 
-        if "params" in test:
-            expanded.append({**test, "_params": test["params"]})
+        # Merge defaults.params + test.params
+        effective = suite.effective_params(test)
+        if effective is not None:
+            expanded.append({**test, "_params": effective})
             continue
 
         script_path = Path(test["script"])
         if not script_path.is_absolute():
             script_path = xahaud_root / script_path
 
-        matrix: list[dict[str, Any]] | None = None
+        variants: list[dict[str, Any]] | None = None
         if script_path.exists():
             with contextlib.suppress(Exception):
-                matrix = load_scenario_matrix(script_path)
+                variants = load_scenario_variants(script_path)
 
-        if matrix:
+        if variants:
             base_name = test["name"]
-            for entry in matrix:
+            for entry in variants:
                 label = entry["label"]
                 params = {k: v for k, v in entry.items() if k != "label"}
                 expanded.append(
@@ -308,7 +337,7 @@ def _run_one_test(
             error=f"Script not found: {script_path}",
         )
 
-    config = suite.effective_config(test)
+    config = suite.effective_network(test)
     if env_override:
         base_env = config.get("env", {})
         config["env"] = {
@@ -446,8 +475,8 @@ def run_suite(
         snapshot_on_fail: Snapshot logs on failure.
         test_filter: If set, only run tests matching these names.
             Supports ``name[label]`` for exact match, or ``name``
-            to match all matrix variants.
-        params_override: If set, override all matrix/params with these
+            to match all variants.
+        params_override: If set, override all variant/params with these
             values (from ``--params-json``).
         env_override: If set, merge these env vars into every test config
             (overrides both defaults and per-test env).
@@ -463,14 +492,14 @@ def run_suite(
     suite = SuiteConfig.from_yaml(suite_path)
 
     # Expand matrix entries before filtering
-    tests = _expand_tests(suite.tests, xahaud_root, params_override=params_override)
+    tests = _expand_tests(suite, xahaud_root, params_override=params_override)
 
     if test_filter:
         tests = [
             t for t in tests if any(_test_matches(t["name"], f) for f in test_filter)
         ]
         if not tests:
-            available = [t["name"] for t in _expand_tests(suite.tests, xahaud_root)]
+            available = [t["name"] for t in _expand_tests(suite, xahaud_root)]
             raise ValueError(
                 f"No tests match filter {test_filter}. Available: {available}"
             )
@@ -480,7 +509,7 @@ def run_suite(
         console.print(f"\n[bold]Suite:[/bold] {suite_path}")
         console.print(f"[bold]Tests:[/bold] {len(tests)}")
         for i, test in enumerate(tests, 1):
-            config = suite.effective_config(test)
+            config = suite.effective_network(test)
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
             console.print(f"     script: {test['script']}")
             params = test.get("_params")

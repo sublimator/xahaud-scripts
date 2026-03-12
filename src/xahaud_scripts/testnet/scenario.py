@@ -1685,42 +1685,42 @@ def load_scenario_script(script_path: Path) -> Any:
     return fn
 
 
-def load_scenario_matrix(script_path: Path) -> list[dict[str, Any]] | None:
-    """Extract and validate a ``matrix`` list from a scenario script.
+def load_scenario_variants(script_path: Path) -> list[dict[str, Any]] | None:
+    """Extract and validate a ``variants`` list from a scenario script.
 
-    Each matrix entry must be a dict with a unique ``label`` key.
-    Returns None if the script has no ``matrix`` attribute.
+    Each variant entry must be a dict with a unique ``label`` key.
+    Returns None if the script has no ``variants`` attribute.
 
     Raises:
-        ValueError: If matrix is malformed or has duplicate/missing labels.
+        ValueError: If variants is malformed or has duplicate/missing labels.
     """
     module = _load_scenario_module(script_path)
-    matrix = getattr(module, "matrix", None)
-    if matrix is None:
+    variants = getattr(module, "variants", None)
+    if variants is None:
         return None
 
-    if not isinstance(matrix, list) or not matrix:
-        raise ValueError(f"'matrix' must be a non-empty list: {script_path}")
+    if not isinstance(variants, list) or not variants:
+        raise ValueError(f"'variants' must be a non-empty list: {script_path}")
 
     labels: set[str] = set()
-    for i, entry in enumerate(matrix):
+    for i, entry in enumerate(variants):
         if not isinstance(entry, dict):
-            raise ValueError(f"matrix[{i}] must be a dict: {script_path}")
+            raise ValueError(f"variants[{i}] must be a dict: {script_path}")
         label = entry.get("label")
         if not label or not isinstance(label, str):
             raise ValueError(
-                f"matrix[{i}] missing required 'label' string: {script_path}"
+                f"variants[{i}] missing required 'label' string: {script_path}"
             )
         if not re.fullmatch(r"[a-zA-Z0-9_]+", label):
             raise ValueError(
-                f"matrix[{i}] label '{label}' must be alphanumeric/underscore only: "
+                f"variants[{i}] label '{label}' must be alphanumeric/underscore only: "
                 f"{script_path}"
             )
         if label in labels:
-            raise ValueError(f"Duplicate matrix label '{label}': {script_path}")
+            raise ValueError(f"Duplicate variant label '{label}': {script_path}")
         labels.add(label)
 
-    return matrix
+    return variants
 
 
 async def run_scenario_with_monitor(

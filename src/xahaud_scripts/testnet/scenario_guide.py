@@ -313,14 +313,14 @@ Pass any of these as kwargs: `ctx.txn_generator(min_txns=1, lls_offset=5)`
 
     # -- Parameterized tests --
     parts.append("""\
-## Parameterized Tests (Matrix)
+## Parameterized Tests (Variants)
 
-A scenario script can export a ``matrix`` list to run the same scenario with
+A scenario script can export a ``variants`` list to run the same scenario with
 different configurations. Each entry must have a unique ``label`` key; the
 remaining keys are passed as keyword arguments to the scenario function.
 
 ```python
-matrix = [
+variants = [
     {"label": "light", "min_txns": 5, "max_txns": 10},
     {"label": "heavy", "min_txns": 50, "max_txns": 60},
 ]
@@ -331,7 +331,7 @@ async def scenario(ctx, log, *, min_txns=5, max_txns=10, **_):
     # ...
 ```
 
-The suite runner expands matrix entries into separate tests:
+The suite runner expands variant entries into separate tests:
 ``entropy_with_transactions@light``, ``entropy_with_transactions@heavy``.
 
 Labels must be alphanumeric/underscore only (``[a-zA-Z0-9_]+``).
@@ -345,7 +345,7 @@ x-testnet suite suite.yml --test entropy_with_transactions
 # Run one variant
 x-testnet suite suite.yml --test entropy_with_transactions@heavy
 
-# Override params from CLI (skips matrix)
+# Override params from CLI (skips variants)
 x-testnet suite suite.yml --test entropy_with_transactions \\
     --params-json '{"min_txns": 100, "max_txns": 200}'
 
@@ -354,16 +354,33 @@ x-testnet run --scenario-script my_test.py \\
     --params-json '{"min_txns": 100}'
 ```
 
-### suite.yml params
+### Suite YAML structure
 
-Individual test entries can also specify params directly (skips script matrix):
+Suite files use ``network:`` for network config and ``params:`` for scenario
+parameters. Both support defaults that merge with per-test overrides:
 
 ```yaml
+defaults:
+  network:
+    node_count: 5
+    launcher: tmux
+    env:
+      XAHAU_RESOURCE_PER_PORT: "1"
+  params:                 # optional default scenario params
+    min_txns: 5
+
 tests:
-  - name: entropy_custom
-    script: entropy_with_transactions.py
-    params: { min_txns: 100, max_txns: 200 }
+  - name: my_test
+    script: path/to/script.py
+    network:              # overrides/merges with defaults.network
+      node_count: 7
+      env:
+        EXTRA_VAR: "1"    # merged into defaults.network.env
+    params:               # overrides/merges with defaults.params
+      drop_count: 3
 ```
+
+Dict keys (``env``, ``log_levels``) are shallow-merged; all other keys replace.
 """)
 
     return "\n".join(parts)

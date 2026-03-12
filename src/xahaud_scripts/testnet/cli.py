@@ -2230,7 +2230,7 @@ def scenario_test_guide() -> None:
     "--params-json",
     "params_json",
     default=None,
-    help="JSON object of params to pass to scenario functions as kwargs (overrides matrix).",
+    help="JSON object of params to pass to scenario functions as kwargs (overrides variants).",
 )
 @click.option(
     "--env",
@@ -2271,9 +2271,9 @@ def suite(
     Each test gets a fresh network (teardown -> generate -> run -> scenario).
     Build your binary first, then run the suite.
 
-    Scripts can export a ``matrix`` list for parameterized testing::
+    Scripts can export a ``variants`` list for parameterized testing::
 
-        matrix = [
+        variants = [
             {"label": "light", "min_txns": 5, "max_txns": 10},
             {"label": "heavy", "min_txns": 50, "max_txns": 60},
         ]
@@ -2299,7 +2299,7 @@ def suite(
 
     if list_tests:
         suite_config = SuiteConfig.from_yaml(suite_file)
-        tests = _expand_tests(suite_config.tests, xahaud_root)
+        tests = _expand_tests(suite_config, xahaud_root)
         for test in tests:
             script = Path(test["script"])
             if not script.is_absolute():
