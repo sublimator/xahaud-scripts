@@ -411,21 +411,25 @@ def _run_one_test(
         # 6. Always snapshot to latest/
         _snapshot_test(network, latest_dir)
 
+        snapshot_dir = None
         if not passed and snapshot_on_fail:
             # Preserve a timestamped copy for failure investigation
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             fail_dir = runs_dir / f"{timestamp}-{name}"
             shutil.copytree(latest_dir, fail_dir)
             logger.info(f"Failure snapshot: {fail_dir}")
-            return TestResult(
-                name=name,
-                passed=False,
-                duration=duration,
-                error="Scenario failed",
-                snapshot_dir=fail_dir,
-            )
+            snapshot_dir = fail_dir
 
-        return TestResult(name=name, passed=passed, duration=duration)
+        # Kill processes but keep dirs — the next test's pre-test
+        # teardown (or the user) handles cleanup.
+        network.teardown(keep_dirs=True)
+        return TestResult(
+            name=name,
+            passed=passed,
+            duration=duration,
+            error="Scenario failed" if not passed else None,
+            snapshot_dir=snapshot_dir,
+        )
 
     except KeyboardInterrupt:
         duration = time.monotonic() - start
@@ -442,6 +446,7 @@ def _run_one_test(
                 fail_dir = runs_dir / f"{timestamp}-{name}"
                 shutil.copytree(latest_dir, fail_dir)
                 snapshot_dir = fail_dir
+        network.teardown(keep_dirs=True)
         return TestResult(
             name=name,
             passed=False,
@@ -449,8 +454,6 @@ def _run_one_test(
             error=str(e),
             snapshot_dir=snapshot_dir,
         )
-    else:
-        network.teardown()
 
 
 def run_suite(
