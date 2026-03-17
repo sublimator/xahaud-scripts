@@ -300,6 +300,11 @@ def _build_launch_config(
     for key, value in config.get("env", {}).items():
         extra_env[key] = str(value)
 
+    # Per-node environment variables: node_env: {3: {KEY: VAL}, 4: {KEY: VAL}}
+    node_env: dict[int, dict[str, str]] = {}
+    for node_id_str, env_dict in config.get("node_env", {}).items():
+        node_env[int(node_id_str)] = {k: str(v) for k, v in env_dict.items()}
+
     return LaunchConfig(
         xahaud_root=xahaud_root,
         rippled_path=rippled_path,
@@ -309,6 +314,7 @@ def _build_launch_config(
         slave_delay=config.get("slave_delay", 1.0),
         extra_args=[],
         extra_env=extra_env,
+        node_env=node_env,
     )
 
 
