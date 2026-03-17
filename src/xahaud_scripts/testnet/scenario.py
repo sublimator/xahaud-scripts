@@ -897,7 +897,8 @@ class ScenarioContext:
         """Patch xrpl-py binary codec with Xahau-specific definitions.
 
         Called lazily on first transaction operation. Fetches
-        server_definitions via HTTP RPC and patches the codec.
+        server_definitions via HTTP RPC, saves to testnet dir, and
+        patches the codec.
         """
         if self._definitions_patched:
             return
@@ -909,6 +910,14 @@ class ScenarioContext:
             raise RuntimeError(
                 f"Failed to fetch server_definitions from node {node_id}"
             )
+
+        # Save to testnet dir alongside configs
+        import json
+
+        defs_file = self._network.base_dir / "server-definitions.json"
+        defs = {k: v for k, v in result.items() if k != "status"}
+        defs_file.write_text(json.dumps(defs, indent=2))
+
         patch_definitions(result)
         self._definitions_patched = True
 

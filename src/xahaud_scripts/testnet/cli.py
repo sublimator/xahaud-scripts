@@ -869,18 +869,19 @@ def server_info(ctx: click.Context, node: str) -> None:
     "--output",
     type=click.Path(path_type=Path),
     default=None,
-    help="Output file (default: stdout)",
+    help="Output file (default: testnet/server-definitions.json, '-' for stdout)",
 )
 @click.pass_context
 def server_definitions(ctx: click.Context, node: str, output: Path | None) -> None:
     """Fetch server definitions and save to file.
 
     Queries a node for its server_definitions and writes the result
-    to a file (or stdout). The output is the unwrapped definitions object.
+    to a file. Defaults to testnet/server-definitions.json.
 
     Examples:
-        x-testnet server-definitions -o definitions.json
-        x-testnet server-definitions --node n1 -o /tmp/defs.json
+        x-testnet server-definitions
+        x-testnet server-definitions -o /tmp/defs.json
+        x-testnet server-definitions -o -
     """
     node_id = _parse_node_spec(node)
     network = _create_network(ctx)
@@ -898,11 +899,14 @@ def server_definitions(ctx: click.Context, node: str, output: Path | None) -> No
 
     formatted = json.dumps(result, indent=2)
 
-    if output:
+    if output is None:
+        output = network.base_dir / "server-definitions.json"
+
+    if str(output) == "-":
+        click.echo(formatted)
+    else:
         output.write_text(formatted)
         click.echo(f"Saved server definitions to {output}")
-    else:
-        click.echo(formatted)
 
 
 @testnet.command()
