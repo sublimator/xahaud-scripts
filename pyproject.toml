@@ -23,6 +23,7 @@ dependencies = [
     "gcovr>=7.0",
     "graphviz>=0.21",
     "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
 ]
 
 [project.scripts]

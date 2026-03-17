@@ -570,6 +570,22 @@ def main(
 
     logger.debug(f"Command line arguments: {' '.join(sys.argv[1:])}")
 
+    # Set up run recorder
+    from xahaud_scripts.utils.runs_db import RunRecorder
+
+    recorder = RunRecorder(
+        worktree=get_xahaud_root(),
+        target=target,
+        build_type=build_type,
+        test_suite=" ".join(rippled_args) if rippled_args else None,
+        times=times,
+        coverage=coverage,
+        ccache=ccache,
+        unity=unity,
+        dry_run=dry_run,
+        cli_args=" ".join(sys.argv[1:]),
+    )
+
     try:
         # Verify lldb_commands_file path if provided
         if lldb_commands_file:
@@ -630,6 +646,7 @@ def main(
                 if ccache_stats and ccache and not dry_run:
                     ccache_zero_stats()
 
+                recorder.build_started()
                 build_successful = build_rippled(
                     reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
@@ -646,6 +663,7 @@ def main(
                     dry_run=dry_run,
                     unity=unity,
                 )
+                recorder.build_finished(build_successful)
 
                 # Show ccache stats after build if requested
                 if ccache_stats and ccache and not dry_run:
@@ -655,10 +673,12 @@ def main(
 
                 if not build_successful:
                     logger.error("Build failed, cannot run tests")
+                    recorder.save()
                     sys.exit(1)
 
                 if dry_run:
                     logger.info("Dry run complete - no commands were executed")
+                    recorder.save()
                     sys.exit(0)
             else:
                 logger.info("Skipping build as requested")
@@ -706,6 +726,8 @@ def main(
             # Determine which lldb mode to use
             use_lldb = lldb or lldb_all_threads
 
+            if times > 0:
+                recorder.test_started()
             exit_code = run_rippled(
                 list(rippled_args),
                 use_lldb,
@@ -715,6 +737,8 @@ def main(
                 env=env,
                 lldb_all_threads=lldb_all_threads,
             )
+            if times > 0:
+                recorder.test_finished(exit_code)
 
             # Generate coverage report automatically when coverage is enabled
             if coverage:
@@ -768,16 +792,25 @@ def main(
 
             # Return the exit code from the last process
             logger.info(f"Exiting with code {exit_code}")
+            recorder.save()
             sys.exit(exit_code)
 
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        recorder.interrupted()
+        recorder.save()
+        sys.exit(130)
     except click.ClickException as e:
         logger.error(f"Command line error: {e}")
+        recorder.save()
         raise
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed with exit code {e.returncode}")
+        recorder.save()
         sys.exit(e.returncode)
     except Exception as e:
         logger.critical(f"Unexpected error: {e}", exc_info=True)
+        recorder.save()
         sys.exit(1)
 
 
