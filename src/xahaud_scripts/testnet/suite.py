@@ -363,8 +363,8 @@ def _run_one_test(
     per_test_log = latest_dir / "scenario.log"
 
     try:
-        # 1. Teardown any prior state
-        network.teardown()
+        # 1. Kill any prior node processes (generate() handles dir cleanup)
+        network.teardown(keep_dirs=True)
 
         # 2. Generate fresh configs
         log_levels = config.get("log_levels")
