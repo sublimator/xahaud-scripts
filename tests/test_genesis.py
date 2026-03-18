@@ -43,3 +43,21 @@ def test_named_amendments_match_genesis_json():
 def test_no_duplicate_amendments():
     """No duplicate names in the list."""
     assert len(GENESIS_AMENDMENTS) == len(set(GENESIS_AMENDMENTS))
+
+
+def test_resolve_feature_hash_strips_feature_prefix():
+    """The C++ 'feature' prefix is stripped, 'fix' prefix is kept."""
+    from xahaud_scripts.testnet.config import _resolve_feature_hash
+
+    # featureX → hashes as X
+    assert _resolve_feature_hash("featureExport") == _name_to_hash("Export")
+    assert _resolve_feature_hash("featureHooks") == _name_to_hash("Hooks")
+
+    # fixX → hashes as fixX (fix is part of the name)
+    assert _resolve_feature_hash("fixXahauV2") == _name_to_hash("fixXahauV2")
+
+    # Plain names pass through
+    assert _resolve_feature_hash("ConsensusEntropy") == _name_to_hash(
+        "ConsensusEntropy"
+    )
+    assert _resolve_feature_hash("Export") == _name_to_hash("Export")

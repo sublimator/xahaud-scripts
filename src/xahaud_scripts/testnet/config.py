@@ -124,12 +124,22 @@ def _resolve_feature_hash(spec: str) -> str:
     Accepts:
         @Name           — name-to-hash via sha512Half
         ABC123... (64)  — raw 64-char hex hash
-        Name            — bare name, auto-hashed via sha512Half
+        Name            — bare name, hashed via sha512Half
+
+    The C++ convention uses ``featureX`` for the variable name but the
+    amendment name is just ``X`` (without ``feature`` prefix).  The
+    ``fix`` prefix IS part of the name.  So we strip ``feature`` but
+    keep ``fix``.
     """
     if spec.startswith("@"):
-        return feature_name_to_hash(spec[1:])
-    if len(spec) == 64 and all(c in "0123456789abcdefABCDEF" for c in spec):
+        spec = spec[1:]
+    elif len(spec) == 64 and all(c in "0123456789abcdefABCDEF" for c in spec):
         return spec.upper()
+
+    # Strip C++ "feature" prefix convention
+    if spec.startswith("feature"):
+        spec = spec.removeprefix("feature")
+
     return feature_name_to_hash(spec)
 
 
