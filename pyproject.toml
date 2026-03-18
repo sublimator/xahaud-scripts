@@ -33,6 +33,7 @@ x-build-jshooks-header = "xahaud_scripts.build_jshooks_header:main"
 x-build-test-hooks = "xahaud_scripts.build_test_hooks:main"
 x-format-changed = "xahaud_scripts.format_changed:main"
 x-testnet = "xahaud_scripts.testnet.cli:main"
+x-run-stats = "xahaud_scripts.run_stats:main"
 xr-build = "xahaud_scripts.build_xrpld:main"
 xr-coverage-diff = "xahaud_scripts.build_xrpld:coverage_diff"
 
