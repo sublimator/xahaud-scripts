@@ -265,9 +265,15 @@ def _create_network(
 ) -> TestNetwork:
     """Create a TestNetwork from effective config."""
     node_count = config.get("node_count", 5)
+    validators = config.get("validators")
     launcher_type = config.get("launcher")
 
-    network_config = NetworkConfig(node_count=node_count)
+    if validators is not None and validators > node_count:
+        raise ValueError(
+            f"validators ({validators}) cannot exceed node_count ({node_count})"
+        )
+
+    network_config = NetworkConfig(node_count=node_count, validators=validators)
     launcher = get_launcher(launcher_type)
     rpc_client = RequestsRPCClient(network_config.base_port_rpc)
     process_manager = UnixProcessManager()

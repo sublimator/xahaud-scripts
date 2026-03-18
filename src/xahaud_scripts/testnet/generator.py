@@ -388,6 +388,7 @@ def find_free_port_base(
                 return NC(
                     network_id=network_config.network_id,
                     node_count=network_config.node_count,
+                    validators=network_config.validators,
                     base_port_peer=network_config.base_port_peer + offset,
                     base_port_rpc=network_config.base_port_rpc + offset,
                     base_port_ws=network_config.base_port_ws + offset,
@@ -463,18 +464,26 @@ def generate_all_configs(
                 )
                 raise PortConflictError(msg)
 
-    logger.info(f"Generating configs for {network_config.node_count} nodes")
+    vc = network_config.validator_count
+    nc = network_config.node_count
+    if vc < nc:
+        logger.info(
+            f"Generating configs for {nc} nodes ({vc} validators, "
+            f"{nc - vc} non-UNL peers)"
+        )
+    else:
+        logger.info(f"Generating configs for {nc} nodes")
 
     # Phase 1: Generate validator keys for all nodes
     validator_infos: list[dict[str, str]] = []
-    for node_id in range(network_config.node_count):
+    for node_id in range(nc):
         logger.info(f"  Generating keys for node {node_id}")
         node_dir = base_dir / f"n{node_id}"
         info = key_generator.generate(node_id, node_dir)
         validator_infos.append(info)
 
-    # Get all public keys
-    all_validators = [info["public_key"] for info in validator_infos]
+    # UNL contains only the first `validators` nodes' keys
+    unl_keys = [info["public_key"] for info in validator_infos[:vc]]
 
     # Phase 2: Generate configs for all nodes
     nodes: list[NodeInfo] = []
@@ -482,8 +491,8 @@ def generate_all_configs(
         logger.info(f"  Generating config for node {node_id}")
         node_dir = base_dir / f"n{node_id}"
 
-        # Generate validators.txt
-        validators_file = generate_validators_file(node_dir, all_validators)
+        # Generate validators.txt (UNL validators only)
+        validators_file = generate_validators_file(node_dir, unl_keys)
 
         # Generate xahaud.cfg
         config_path = generate_node_config(

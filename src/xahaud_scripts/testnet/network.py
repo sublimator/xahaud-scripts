@@ -474,6 +474,7 @@ class TestNetwork:
         network_info: dict[str, Any] = {
             "network_id": self._config.network_id,
             "node_count": self._config.node_count,
+            "validators": self._config.validators,
             "base_port_peer": self._config.base_port_peer,
             "base_port_rpc": self._config.base_port_rpc,
             "base_port_ws": self._config.base_port_ws,
@@ -546,6 +547,7 @@ class TestNetwork:
             self._config = NetworkConfig(
                 network_id=network_info.get("network_id", self._config.network_id),
                 node_count=network_info.get("node_count", len(self._nodes)),
+                validators=network_info.get("validators"),
                 base_port_peer=network_info["base_port_peer"],
                 base_port_rpc=network_info["base_port_rpc"],
                 base_port_ws=network_info["base_port_ws"],

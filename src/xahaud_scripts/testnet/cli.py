@@ -90,6 +90,7 @@ def _parse_node_list(specs: str, node_count: int = 5) -> list[int]:
 def _create_network(
     ctx: click.Context,
     node_count: int | None = None,
+    validators: int | None = None,
     launcher_type: str | None = None,
 ) -> TestNetwork:
     """Create a TestNetwork instance from context."""
@@ -100,7 +101,7 @@ def _create_network(
     if node_count is None:
         node_count = ctx.obj.get("node_count", 5)
 
-    network_config = NetworkConfig(node_count=node_count)
+    network_config = NetworkConfig(node_count=node_count, validators=validators)
 
     return TestNetwork(
         base_dir=base_dir,
@@ -184,6 +185,13 @@ def testnet(
     help=f"Number of nodes (1-{MAX_NODE_COUNT})",
 )
 @click.option(
+    "--validators",
+    type=click.IntRange(1, MAX_NODE_COUNT),
+    default=None,
+    help="Number of UNL validators (default: all nodes). "
+    "Nodes 0..validators-1 are on the UNL; the rest are non-UNL peers.",
+)
+@click.option(
     "--log-level-suite",
     "log_level_suite",
     type=click.Choice(["consensus", "network", "verbose"]),
@@ -213,6 +221,7 @@ def testnet(
 def generate(
     ctx: click.Context,
     node_count: int,
+    validators: int | None,
     log_level_suite: str | None,
     log_levels: tuple[str, ...],
     find_ports: bool,
@@ -226,11 +235,15 @@ def generate(
     Examples:
         testnet generate
         testnet generate --node-count 3
+        testnet generate --node-count 7 --validators 5
         testnet generate --log-level-suite consensus
         testnet generate --rc delay=200,jitter=50
-        testnet generate --rc delay=200 --rc n0@n2:drop=100
         testnet generate --find-ports
     """
+    if validators is not None and validators > node_count:
+        raise click.BadParameter(
+            f"--validators ({validators}) cannot exceed --node-count ({node_count})"
+        )
     from xahaud_scripts.testnet.generator import LOG_LEVEL_SUITES
 
     # Build log levels: start with suite, then apply overrides
@@ -267,7 +280,7 @@ def generate(
 
     from xahaud_scripts.testnet.generator import PortConflictError
 
-    network = _create_network(ctx, node_count=node_count)
+    network = _create_network(ctx, node_count=node_count, validators=validators)
     try:
         network.generate(
             log_levels=log_level_dict,
@@ -277,13 +290,18 @@ def generate(
     except PortConflictError as e:
         raise click.ClickException(str(e)) from e
 
+    vc = network._config.validator_count
     click.echo(f"\nGenerated configs for {node_count} nodes")
+    if vc < node_count:
+        click.echo(f"  Validators: {vc} (n0-n{vc - 1})")
+        click.echo(f"  Non-UNL peers: {node_count - vc} (n{vc}-n{node_count - 1})")
     click.echo(f"  Base directory: {network.base_dir}")
     if rc_specs:
         click.echo(f"  Runtime config: {len(rc_specs)} spec(s) persisted")
     click.echo("\nValidator public keys:")
     for node in network.nodes:
-        click.echo(f"  Node {node.id}: {node.public_key}")
+        suffix = "" if node.id < vc else " (non-UNL)"
+        click.echo(f"  Node {node.id}: {node.public_key}{suffix}")
 
 
 @testnet.command()

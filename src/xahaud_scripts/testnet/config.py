@@ -258,6 +258,8 @@ class NetworkConfig:
     Attributes:
         network_id: Network identifier for the test network
         node_count: Number of nodes in the network
+        validators: Number of nodes on the UNL (default: all).
+            Nodes 0..validators-1 are validators; the rest are non-UNL peers.
         base_port_peer: Base port for peer connections (node N uses base + N)
         base_port_rpc: Base port for RPC connections (node N uses base + N)
         base_port_ws: Base port for WebSocket connections (node N uses base + N)
@@ -265,9 +267,15 @@ class NetworkConfig:
 
     network_id: int = DEFAULT_NETWORK_ID
     node_count: int = DEFAULT_NODE_COUNT
+    validators: int | None = None
     base_port_peer: int = DEFAULT_BASE_PORT_PEER
     base_port_rpc: int = DEFAULT_BASE_PORT_RPC
     base_port_ws: int = DEFAULT_BASE_PORT_WS
+
+    @property
+    def validator_count(self) -> int:
+        """Number of UNL validators (defaults to node_count)."""
+        return self.validators if self.validators is not None else self.node_count
 
     def port_peer(self, node_id: int) -> int:
         """Get peer port for a node."""
