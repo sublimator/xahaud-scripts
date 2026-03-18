@@ -553,14 +553,19 @@ def main(
 
     # Check environment variable for ccache if not explicitly set
     if ccache is None:
-        ccache = os.environ.get("RUN_TESTS_CCACHE", "").lower() in (
+        if os.environ.get("RUN_TESTS_CCACHE", "").lower() in (
             "1",
             "true",
             "yes",
             "on",
-        )
-        if ccache:
+        ):
+            ccache = True
             logger.info("Enabled ccache from RUN_TESTS_CCACHE environment variable")
+        elif reconfigure_build:
+            ccache = True
+            logger.info("Enabled ccache (default when --reconfigure-build)")
+        else:
+            ccache = False
 
     # Convert Path objects to strings for JSON serialization
     args_dict = {k: str(v) if isinstance(v, Path) else v for k, v in locals().items()}
