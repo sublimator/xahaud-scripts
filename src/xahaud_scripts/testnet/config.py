@@ -29,7 +29,11 @@ MAX_NODE_COUNT = 20
 
 
 def get_bundled_genesis_file() -> Path:
-    """Get the path to the bundled genesis.json file."""
+    """Get the path to the bundled genesis.json file.
+
+    The amendments list is generated from named amendments in
+    genesis_amendments.py rather than hardcoded hashes.
+    """
     return Path(
         str(
             importlib.resources.files("xahaud_scripts.testnet.data").joinpath(
