@@ -249,6 +249,22 @@ class TestNetwork:
         logger.info("Launching test network...")
 
         for i, node in enumerate(self._nodes):
+            # Per-node port check right before launch
+            node_ports = [node.port_peer, node.port_rpc, node.port_ws]
+            for port in node_ports:
+                conns = self._process_mgr.get_port_state(port)
+                conns = [c for c in conns if c["process"] not in ignored_processes]
+                if conns:
+                    for c in conns:
+                        logger.warning(
+                            f"  Port {port} in use by {c['process']} "
+                            f"(PID {c['pid']}, {c['state']}) — "
+                            f"killing before launching node {node.id}"
+                        )
+                        if c["state"] in ("LISTEN", "ESTABLISHED", "CLOSE_WAIT"):
+                            self._process_mgr.kill(int(c["pid"]))
+                    time.sleep(0.5)
+
             logger.info(f"  Launching Node {node.id}")
 
             success = self._launcher.launch(node, launch_config)
