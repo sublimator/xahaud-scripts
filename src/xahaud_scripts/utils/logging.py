@@ -17,7 +17,7 @@ def setup_logging(log_level: str, logger: logging.Logger) -> None:
     # Configure the root logger
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
