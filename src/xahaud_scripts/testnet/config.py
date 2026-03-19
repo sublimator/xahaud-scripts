@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Default port bases
-DEFAULT_BASE_PORT_PEER = 51235
+# Peer port must be BELOW the ephemeral range (49152-65535 on macOS)
+# to avoid collisions with outbound ephemeral ports from any process.
+DEFAULT_BASE_PORT_PEER = 21235
 DEFAULT_BASE_PORT_RPC = 5005
 DEFAULT_BASE_PORT_WS = 6005
 DEFAULT_NETWORK_ID = 99999
