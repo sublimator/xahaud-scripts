@@ -498,32 +498,43 @@ def main(
     if conan:
         console.rule("[bold blue]Conan Install")
         run_cmd(["conan", "--version"])
-        run_cmd(
-            [
-                "conan",
-                "install",
-                "--output-folder",
-                ".",
-                "--build",
-                "missing",
-                "-r",
-                "conancenter",
-                "-r",
-                "xrplf",
-                "--options:host",
-                "&:tests=True",
-                "--options:host",
-                "&:xrpld=True",
-                "--settings:all",
-                f"build_type={build_type}",
-                "--conf",
-                "tools.build:cxxflags="
-                "['-Wno-missing-template-arg-list-after-template-kw']",
-                "..",
-            ],
-            cwd=build_path,
-            env={"CONAN_CPU_COUNT": "4"},
+        # Enable xrplf remote (may be disabled), restore state after install
+        subprocess.run(
+            ["conan", "remote", "enable", "xrplf"],
+            capture_output=True,
         )
+        try:
+            run_cmd(
+                [
+                    "conan",
+                    "install",
+                    "--output-folder",
+                    ".",
+                    "--build",
+                    "missing",
+                    "-r",
+                    "conancenter",
+                    "-r",
+                    "xrplf",
+                    "--options:host",
+                    "&:tests=True",
+                    "--options:host",
+                    "&:xrpld=True",
+                    "--settings:all",
+                    f"build_type={build_type}",
+                    "--conf",
+                    "tools.build:cxxflags="
+                    "['-Wno-missing-template-arg-list-after-template-kw']",
+                    "..",
+                ],
+                cwd=build_path,
+                env={"CONAN_CPU_COUNT": "4"},
+            )
+        finally:
+            subprocess.run(
+                ["conan", "remote", "disable", "xrplf"],
+                capture_output=True,
+            )
 
     # ── Apply Patches ──
     if patches:
