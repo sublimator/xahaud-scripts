@@ -247,32 +247,44 @@ class WasmCompiler:
         """Check if source is WAT format (contains module declaration)."""
         return "(module" in source
 
-    def compile_c(self, source: str, label: str = "source") -> bytes:
+    def compile_c(
+        self,
+        source: str,
+        label: str = "source",
+        validate: bool = True,
+        include_dirs: list[Path] | None = None,
+    ) -> bytes:
         """Compile C source to WASM.
 
         Args:
             source: C source code
             label: Label for error messages
+            validate: Whether to validate declarations (default True)
+            include_dirs: Extra -I paths for wasmcc
 
         Returns:
             Compiled WASM bytecode
         """
         logger.debug(f"Compiling C for {label}")
 
-        if self.validate_c:
+        if validate and self.validate_c:
             self._validator.validate(source, label)
 
+        cmd = [
+            "wasmcc",
+            "-x",
+            "c",
+            "/dev/stdin",
+            "-o",
+            "/dev/stdout",
+            "-O2",
+            "-Wl,--allow-undefined",
+        ]
+        for d in include_dirs or []:
+            cmd.extend(["-I", str(d)])
+
         wasmcc_result = subprocess.run(
-            [
-                "wasmcc",
-                "-x",
-                "c",
-                "/dev/stdin",
-                "-o",
-                "/dev/stdout",
-                "-O2",
-                "-Wl,--allow-undefined",
-            ],
+            cmd,
             input=source.encode("utf-8"),
             capture_output=True,
             check=True,
@@ -308,7 +320,13 @@ class WasmCompiler:
 
         return result.stdout
 
-    def compile(self, source: str, label: str = "source") -> bytes:
+    def compile(
+        self,
+        source: str,
+        label: str = "source",
+        validate: bool = True,
+        include_dirs: list[Path] | None = None,
+    ) -> bytes:
         """Compile source to WASM, using cache if available.
 
         Automatically detects whether source is C or WAT format.
@@ -316,6 +334,8 @@ class WasmCompiler:
         Args:
             source: C or WAT source code
             label: Label for logging and error messages
+            validate: Whether to validate C declarations (default True)
+            include_dirs: Extra -I paths for wasmcc
 
         Returns:
             Compiled WASM bytecode
@@ -337,7 +357,9 @@ class WasmCompiler:
             if is_wat:
                 bytecode = self.compile_wat(source)
             else:
-                bytecode = self.compile_c(source, label)
+                bytecode = self.compile_c(
+                    source, label, validate=validate, include_dirs=include_dirs
+                )
 
             self.cache.put(source, is_wat, bytecode)
             return bytecode

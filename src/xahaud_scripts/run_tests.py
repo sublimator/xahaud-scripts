@@ -290,6 +290,12 @@ def run_rippled(
     help="Compile WASM hooks from test file before building (e.g., Export_test.cpp)",
 )
 @click.option(
+    "--hooks-c-dir",
+    "hooks_c_dir",
+    multiple=True,
+    help="Hook source dirs as domain=path (e.g. tipbot=/path/to/hooks). Repeatable.",
+)
+@click.option(
     "--lldb/--no-lldb",
     is_flag=True,
     default=False,
@@ -447,6 +453,7 @@ def main(
     log_level,
     build_jshooks_header,
     compile_hooks,
+    hooks_c_dir,
     lldb,
     lldb_all_threads,
     lldb_commands_file,
@@ -629,7 +636,10 @@ def main(
             if compile_hooks:
                 logger.info(f"Compiling WASM hooks from {compile_hooks}...")
                 try:
-                    run_command(["x-build-test-hooks", str(compile_hooks)])
+                    cmd = ["x-build-test-hooks", str(compile_hooks)]
+                    for entry in hooks_c_dir:
+                        cmd.extend(["--hooks-c-dir", entry])
+                    run_command(cmd)
                     logger.info("WASM hooks compiled successfully")
                 except Exception as e:
                     logger.error(f"Failed to compile WASM hooks: {e}")

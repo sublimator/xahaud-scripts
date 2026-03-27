@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -42,27 +43,112 @@ class OutputFormatter:
         return "\n".join(lines)
 
 
+@dataclass
+class HookBlock:
+    """A hook block to compile."""
+
+    map_key: str  # C++ map key: inline source or "file:xxx.c"
+    source: str  # Compilable source code
+    line_number: int  # Line number in test file
+    is_file_ref: bool  # True if from external file
+
+
 class SourceExtractor:
     """Extract WASM test blocks from source file."""
 
-    def __init__(self, input_file: Path) -> None:
+    def __init__(
+        self,
+        input_file: Path,
+        hooks_c_dirs: dict[str, Path] | None = None,
+    ) -> None:
         self.input_file = input_file
+        self.hooks_c_dirs = hooks_c_dirs or {}
 
-    def extract(self) -> list[tuple[str, int]]:
-        """Extract all WASM test blocks with line numbers."""
+    def _resolve_file_ref(self, ref: str, line_number: int) -> tuple[str, Path]:
+        """Resolve a file:domain/path reference.
+
+        Returns (domain, resolved_path).
+        """
+        if "/" not in ref:
+            raise click.ClickException(
+                f'"file:{ref}" at line {line_number} is missing a domain. '
+                f'Use "file:<domain>/<path>" (e.g. "file:tipbot/tip.c")'
+            )
+
+        domain, path = ref.split("/", 1)
+
+        if not self.hooks_c_dirs:
+            raise click.ClickException(
+                f'Found file reference "file:{ref}" at line {line_number} '
+                f"but no --hooks-c-dir was specified"
+            )
+
+        if domain not in self.hooks_c_dirs:
+            available = ", ".join(sorted(self.hooks_c_dirs))
+            raise click.ClickException(
+                f'Unknown domain "{domain}" in "file:{ref}" at line {line_number}. '
+                f"Available: {available}"
+            )
+
+        file_path = self.hooks_c_dirs[domain] / path
+        if not file_path.exists():
+            raise click.ClickException(
+                f"Hook file not found: {file_path} "
+                f'(referenced as "file:{ref}" at line {line_number})'
+            )
+
+        return domain, file_path
+
+    def extract(self) -> list[HookBlock]:
+        """Extract all WASM test blocks and file references."""
         logger.info(f"Reading {self.input_file}")
         content = self.input_file.read_text()
 
-        pattern = r'R"\[test\.hook\]\((.*?)\)\[test\.hook\]"'
-        blocks_with_lines = []
+        blocks: list[HookBlock] = []
 
+        # Inline blocks: R"[test.hook](...)[test.hook]"
+        pattern = r'R"\[test\.hook\]\((.*?)\)\[test\.hook\]"'
         for match in re.finditer(pattern, content, re.DOTALL):
             source = match.group(1)
             line_number = content[: match.start()].count("\n") + 1
-            blocks_with_lines.append((source, line_number))
+            blocks.append(
+                HookBlock(
+                    map_key=source,
+                    source=source,
+                    line_number=line_number,
+                    is_file_ref=False,
+                )
+            )
 
-        logger.info(f"Found {len(blocks_with_lines)} WASM test blocks")
-        return blocks_with_lines
+        # File references: "file:domain/path.c"
+        file_pattern = r'"file:([^"]+)"'
+        seen_refs: set[str] = set()
+        for match in re.finditer(file_pattern, content):
+            ref = match.group(1)
+            if ref in seen_refs:
+                continue
+            seen_refs.add(ref)
+
+            line_number = content[: match.start()].count("\n") + 1
+            _domain, file_path = self._resolve_file_ref(ref, line_number)
+
+            source = file_path.read_text()
+            blocks.append(
+                HookBlock(
+                    map_key=f"file:{ref}",
+                    source=source,
+                    line_number=line_number,
+                    is_file_ref=True,
+                )
+            )
+
+        inline_count = sum(1 for b in blocks if not b.is_file_ref)
+        file_count = sum(1 for b in blocks if b.is_file_ref)
+        logger.info(
+            f"Found {len(blocks)} hook blocks"
+            f" ({inline_count} inline, {file_count} file refs)"
+        )
+        return blocks
 
 
 class OutputWriter:
@@ -119,7 +205,9 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
         return result.stdout
 
     def write(
-        self, compiled_blocks: dict[int, tuple[str, bytes]], force_write: bool = False
+        self,
+        compiled_blocks: dict[int, tuple[HookBlock, bytes]],
+        force_write: bool = False,
     ) -> None:
         """Write all compiled blocks to output file, only if changed.
 
@@ -132,11 +220,15 @@ std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
         unformatted = []
         unformatted.append(self._get_header())
         for counter in sorted(compiled_blocks.keys()):
-            source, bytecode = compiled_blocks[counter]
-            unformatted.append(f"/* ==== WASM: {counter} ==== */\n")
-            unformatted.append('{ R"[test.hook](')
-            unformatted.append(source)
-            unformatted.append(')[test.hook]",\n{\n')
+            block, bytecode = compiled_blocks[counter]
+            if block.is_file_ref:
+                unformatted.append(f"/* ==== WASM: {block.map_key} ==== */\n")
+                unformatted.append(f'{{ "{block.map_key}",\n{{\n')
+            else:
+                unformatted.append(f"/* ==== WASM: {counter} ==== */\n")
+                unformatted.append('{ R"[test.hook](')
+                unformatted.append(block.map_key)
+                unformatted.append(')[test.hook]",\n{\n')
             unformatted.append(OutputFormatter.bytes_to_cpp_array(bytecode))
             unformatted.append("\n}},\n\n")
         unformatted.append(self._get_footer())
@@ -175,13 +267,18 @@ class TestHookBuilder:
     """Main builder orchestrating the compilation process."""
 
     def __init__(
-        self, jobs: int, force_write: bool, input_file: Path | None = None
+        self,
+        jobs: int,
+        force_write: bool,
+        input_file: Path | None = None,
+        hooks_c_dirs: dict[str, Path] | None = None,
     ) -> None:
         self.jobs = jobs
         self.force_write = force_write
 
         xahaud_root = Path(get_xahaud_root())
         test_app_dir = xahaud_root / "src" / "test" / "app"
+        self.hook_include_dir = xahaud_root / "hook"
 
         self.wasm_dir = test_app_dir / "generated" / "hook" / "c"
 
@@ -201,7 +298,7 @@ class TestHookBuilder:
         self.checker = BinaryChecker()
         self.cache = CompilationCache()
         self.compiler = WasmCompiler(cache=self.cache)
-        self.extractor = SourceExtractor(self.input_file)
+        self.extractor = SourceExtractor(self.input_file, hooks_c_dirs=hooks_c_dirs)
         self.writer = OutputWriter(
             self.output_file, self.cache.cache_dir, self.symbol_name
         )
@@ -213,11 +310,17 @@ class TestHookBuilder:
         return os.cpu_count() or 1
 
     def compile_block(
-        self, counter: int, source: str, line_number: int
-    ) -> tuple[int, str, bytes]:
+        self, counter: int, block: HookBlock
+    ) -> tuple[int, HookBlock, bytes]:
         """Compile a single block."""
-        bytecode = self.compiler.compile(source, f"Block {counter}")
-        return (counter, source, bytecode)
+        label = block.map_key if block.is_file_ref else f"Block {counter}"
+        bytecode = self.compiler.compile(
+            block.source,
+            label,
+            validate=not block.is_file_ref,
+            include_dirs=[self.hook_include_dir] if block.is_file_ref else None,
+        )
+        return (counter, block, bytecode)
 
     def _format_block_ranges(self, block_numbers: list[int]) -> str:
         """Format block numbers as compact ranges (e.g., '1-3,5,7-9')."""
@@ -247,29 +350,30 @@ class TestHookBuilder:
         return ",".join(ranges)
 
     def compile_all_blocks(
-        self, blocks: list[tuple[str, int]]
-    ) -> dict[int, tuple[str, bytes]]:
+        self, blocks: list[HookBlock]
+    ) -> dict[int, tuple[HookBlock, bytes]]:
         """Compile all blocks in parallel."""
         workers = self._get_worker_count()
         logger.info(f"Compiling {len(blocks)} blocks using {workers} workers")
 
-        compiled: dict[int, tuple[str, bytes]] = {}
+        compiled: dict[int, tuple[HookBlock, bytes]] = {}
         failed_blocks = []
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(self.compile_block, i, block, line_num): (i, line_num)
-                for i, (block, line_num) in enumerate(blocks)
+                executor.submit(self.compile_block, i, block): (i, block)
+                for i, block in enumerate(blocks)
             }
 
             for future in as_completed(futures):
-                counter, line_num = futures[future]
+                counter, block = futures[future]
                 try:
-                    result_counter, source, bytecode = future.result()
-                    compiled[result_counter] = (source, bytecode)
+                    result_counter, result_block, bytecode = future.result()
+                    compiled[result_counter] = (result_block, bytecode)
                 except Exception as e:
+                    label = block.map_key if block.is_file_ref else f"Block {counter}"
                     logger.error(
-                        f"Block {counter} (line {line_num} in {self.input_file.name}) failed: {e}"
+                        f"{label} (line {block.line_number} in {self.input_file.name}) failed: {e}"
                     )
                     failed_blocks.append(counter)
 
@@ -332,11 +436,27 @@ class TestHookBuilder:
     is_flag=True,
     help="Always write output file even if unchanged",
 )
-def main(input_file: Path | None, log_level: str, jobs: int, force_write: bool) -> None:
+@click.option(
+    "--hooks-c-dir",
+    "hooks_c_dir_raw",
+    multiple=True,
+    help="Hook source dirs as domain=path (e.g. tipbot=/path/to/hooks). Repeatable.",
+)
+def main(
+    input_file: Path | None,
+    log_level: str,
+    jobs: int,
+    force_write: bool,
+    hooks_c_dir_raw: tuple[str, ...],
+) -> None:
     """Generate _hooks.h from a test file containing WASM blocks.
 
     Extracts WASM test code blocks, compiles them using wasmcc or wat2wasm,
     and generates a C++ header with the compiled bytecode.
+
+    Test files can contain inline hooks via R"[test.hook](...)[test.hook]"
+    and/or external file references via "file:domain/path.c" (requires
+    --hooks-c-dir domain=path).
 
     If INPUT_FILE is provided, output is named <stem>_hooks.h (e.g.,
     Export_test.cpp -> Export_test_hooks.h).
@@ -351,13 +471,31 @@ def main(input_file: Path | None, log_level: str, jobs: int, force_write: bool) 
 
         x-build-test-hooks -j 4 Foo_test.cpp       # 4 workers
 
-        x-build-test-hooks --force-write           # Always write output
+        x-build-test-hooks --hooks-c-dir tipbot=/path/to/hooks Tip_test.cpp
     """
     setup_logging(log_level, logger)
 
+    hooks_c_dirs: dict[str, Path] = {}
+    for entry in hooks_c_dir_raw:
+        if "=" not in entry:
+            raise click.ClickException(
+                f'Invalid --hooks-c-dir "{entry}". Expected domain=path '
+                f"(e.g. tipbot=/path/to/hooks)"
+            )
+        domain, dir_path = entry.split("=", 1)
+        resolved = Path(dir_path).expanduser().resolve()
+        if not resolved.is_dir():
+            raise click.ClickException(
+                f'--hooks-c-dir "{domain}": directory not found: {resolved}'
+            )
+        hooks_c_dirs[domain] = resolved
+
     try:
         builder = TestHookBuilder(
-            jobs=jobs, force_write=force_write, input_file=input_file
+            jobs=jobs,
+            force_write=force_write,
+            input_file=input_file,
+            hooks_c_dirs=hooks_c_dirs or None,
         )
         builder.build()
     except RuntimeError as e:
