@@ -196,6 +196,7 @@ def run_rippled(
     env: dict | None = None,
     lldb_all_threads: bool = False,
     build_dir: str | None = None,
+    tee_file: Path | None = None,
 ) -> int:
     """Run the rippled executable, optionally with lldb, multiple times.
 
@@ -257,8 +258,27 @@ def run_rippled(
 
                 # Don't use check=True here to allow lldb to exit naturally
                 # Pass the environment with coverage settings
-                process = run_command(cmd, check=False, env=env)
-                exit_code = process.returncode
+                if tee_file is not None and not use_lldb:
+                    tee_file.parent.mkdir(parents=True, exist_ok=True)
+                    with open(tee_file, "a") as tf:
+                        with subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            env=env,
+                        ) as proc:
+                            assert proc.stdout is not None
+                            for line in proc.stdout:
+                                sys.stdout.write(line)
+                                sys.stdout.flush()
+                                tf.write(line)
+                                tf.flush()
+                            proc.wait()
+                        exit_code = proc.returncode
+                else:
+                    process = run_command(cmd, check=False, env=env)
+                    exit_code = process.returncode
 
                 # If a run fails and we're not at the last iteration
                 if exit_code != 0 and i < times - 1:
@@ -660,6 +680,8 @@ def main(
             build_dir = os.path.join(xahaud_root, build_dir)
         logger.info(f"Using xahaud root directory: {xahaud_root}")
         logger.info(f"Build directory: {build_dir}")
+        tee_file = get_build_output_path(xahaud_root, build_type)
+        logger.info(f"Output tee: {tee_file}")
 
         with change_directory(xahaud_root):
             # Build JS hooks header if needed
@@ -697,9 +719,6 @@ def main(
                 # Zero ccache stats before build if requested
                 if ccache_stats and ccache and not dry_run:
                     ccache_zero_stats()
-
-                tee_file = get_build_output_path(xahaud_root, build_type)
-                logger.info(f"Build output tee: {tee_file}")
 
                 recorder.build_started()
                 build_successful = build_rippled(
@@ -794,6 +813,7 @@ def main(
                 env=env,
                 lldb_all_threads=lldb_all_threads,
                 build_dir=build_dir,
+                tee_file=tee_file,
             )
             if times > 0:
                 recorder.test_finished(exit_code)
