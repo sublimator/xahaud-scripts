@@ -68,12 +68,12 @@ def detect_coverage_version(xahaud_root: str) -> str:
     return "v1"
 
 
-def do_build_jshooks_header() -> None:
+def do_build_jshooks_header(tee_file: Path | None = None) -> None:
     """Build the JS hooks header."""
     logger.info("Building JS hooks header...")
 
     try:
-        run_command(["build-jshooks-header", "--canonical"])
+        run_command(["build-jshooks-header", "--canonical"], tee_file=tee_file)
         logger.info("JS hooks header built successfully")
     except Exception as e:
         logger.error(f"Failed to build JS hooks header: {e}")
@@ -171,7 +171,7 @@ def build_rippled(
             use_conan=use_conan,
             unity=unity,
         )
-        if not cmake_configure(build_dir, options, dry_run=dry_run):
+        if not cmake_configure(build_dir, options, dry_run=dry_run, tee_file=tee_file):
             return False
 
     # Build the target
@@ -258,27 +258,13 @@ def run_rippled(
 
                 # Don't use check=True here to allow lldb to exit naturally
                 # Pass the environment with coverage settings
-                if tee_file is not None and not use_lldb:
-                    tee_file.parent.mkdir(parents=True, exist_ok=True)
-                    with open(tee_file, "a") as tf:
-                        with subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            env=env,
-                        ) as proc:
-                            assert proc.stdout is not None
-                            for line in proc.stdout:
-                                sys.stdout.write(line)
-                                sys.stdout.flush()
-                                tf.write(line)
-                                tf.flush()
-                            proc.wait()
-                        exit_code = proc.returncode
-                else:
-                    process = run_command(cmd, check=False, env=env)
-                    exit_code = process.returncode
+                process = run_command(
+                    cmd,
+                    check=False,
+                    env=env,
+                    tee_file=tee_file if not use_lldb else None,
+                )
+                exit_code = process.returncode
 
                 # If a run fails and we're not at the last iteration
                 if exit_code != 0 and i < times - 1:
@@ -681,13 +667,15 @@ def main(
         logger.info(f"Using xahaud root directory: {xahaud_root}")
         logger.info(f"Build directory: {build_dir}")
         tee_file = get_build_output_path(xahaud_root, build_type)
+        tee_file.parent.mkdir(parents=True, exist_ok=True)
+        tee_file.write_text("")  # truncate at session start
         logger.info(f"Output tee: {tee_file}")
 
         with change_directory(xahaud_root):
             # Build JS hooks header if needed
             if build_jshooks_header:
                 logger.info("Building JS hooks header...")
-                do_build_jshooks_header()
+                do_build_jshooks_header(tee_file=tee_file)
 
             # Compile WASM hooks from test file if requested
             if compile_hooks:
@@ -698,7 +686,7 @@ def main(
                         cmd.extend(["--hooks-c-dir", entry])
                     if hook_coverage:
                         cmd.append("--hook-coverage")
-                    run_command(cmd)
+                    run_command(cmd, tee_file=tee_file)
                     logger.info("WASM hooks compiled successfully")
                 except Exception as e:
                     logger.error(f"Failed to compile WASM hooks: {e}")

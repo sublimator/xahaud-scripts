@@ -1,8 +1,6 @@
 """CMake configuration and build utilities."""
 
 import os
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +62,7 @@ def cmake_configure(
     build_dir: str,
     options: CMakeOptions,
     dry_run: bool = False,
+    tee_file: Path | None = None,
 ) -> bool:
     """Configure the CMake build.
 
@@ -230,7 +229,7 @@ set(CMAKE_CXX_COMPILER_LAUNCHER {ccache_launcher} CACHE STRING "C++ compiler lau
             return True
 
         try:
-            run_command(cmake_cmd)
+            run_command(cmake_cmd, tee_file=tee_file)
             logger.info("CMake configuration completed successfully")
             return True
         except Exception as e:
@@ -307,29 +306,7 @@ def cmake_build(
             return True
 
         try:
-            if tee_file is not None:
-                tee_file.parent.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Teeing build output to {tee_file}")
-                with open(tee_file, "w") as tf:
-                    with subprocess.Popen(
-                        build_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        env=env,
-                    ) as proc:
-                        assert proc.stdout is not None
-                        for line in proc.stdout:
-                            sys.stdout.write(line)
-                            sys.stdout.flush()
-                            tf.write(line)
-                            tf.flush()
-                        proc.wait()
-                    if proc.returncode != 0:
-                        raise subprocess.CalledProcessError(proc.returncode, build_cmd)
-                logger.info(f"Build output saved to {tee_file}")
-            else:
-                run_command(build_cmd, env=env)
+            run_command(build_cmd, env=env, tee_file=tee_file)
             logger.info("Build completed successfully")
 
             # Verify the build output exists

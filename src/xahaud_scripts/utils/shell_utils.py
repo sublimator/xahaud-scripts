@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 from xahaud_scripts.utils.logging import make_logger
 
@@ -46,8 +47,13 @@ def run_command(
     check: bool = True,
     capture_output: bool = False,
     env: dict[str, str] | None = None,
+    tee_file: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command and return the result."""
+    """Run a command and return the result.
+
+    When tee_file is set (and capture_output is False), stdout+stderr are
+    streamed to the terminal and appended to tee_file simultaneously.
+    """
     cmd_str = json.dumps(cmd)
     logger.info(f"Running command: {cmd_str}")
 
@@ -60,11 +66,36 @@ def run_command(
                 logger.debug(f"Command stdout: {result.stdout}")
             if result.stderr:
                 logger.debug(f"Command stderr: {result.stderr}")
-        else:
-            result = subprocess.run(cmd, check=check, env=env, text=True)
+            logger.info(f"Command completed with return code: {result.returncode}")
+            return result
 
+        if tee_file is not None:
+            tee_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(tee_file, "a") as tf:
+                with subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=env,
+                ) as proc:
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                        tf.write(line)
+                        tf.flush()
+                    proc.wait()
+                rc = proc.returncode
+            logger.info(f"Command completed with return code: {rc}")
+            if check and rc != 0:
+                raise subprocess.CalledProcessError(rc, cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=rc)
+
+        result = subprocess.run(cmd, check=check, env=env, text=True)
         logger.info(f"Command completed with return code: {result.returncode}")
         return result
+
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed with return code: {e.returncode}")
         if hasattr(e, "output") and e.output:
@@ -73,7 +104,6 @@ def run_command(
             logger.error(f"Command stderr: {e.stderr}")
         if check:
             raise
-        # Create a proper CompletedProcess object with the exception data
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=e.returncode,
