@@ -1,7 +1,10 @@
 """CMake configuration and build utilities."""
 
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from xahaud_scripts.build.ccache import (
     CCACHE_CONFIG_PATH,
@@ -244,6 +247,7 @@ def cmake_build(
     ccache: bool = False,
     ccache_basedir: str | None = None,
     ccache_sloppy: bool = False,
+    tee_file: Path | None = None,
 ) -> bool:
     """Build the specified target.
 
@@ -303,7 +307,29 @@ def cmake_build(
             return True
 
         try:
-            run_command(build_cmd, env=env)
+            if tee_file is not None:
+                tee_file.parent.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Teeing build output to {tee_file}")
+                with open(tee_file, "w") as tf:
+                    with subprocess.Popen(
+                        build_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        env=env,
+                    ) as proc:
+                        assert proc.stdout is not None
+                        for line in proc.stdout:
+                            sys.stdout.write(line)
+                            sys.stdout.flush()
+                            tf.write(line)
+                            tf.flush()
+                        proc.wait()
+                    if proc.returncode != 0:
+                        raise subprocess.CalledProcessError(proc.returncode, build_cmd)
+                logger.info(f"Build output saved to {tee_file}")
+            else:
+                run_command(build_cmd, env=env)
             logger.info("Build completed successfully")
 
             # Verify the build output exists

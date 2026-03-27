@@ -40,8 +40,16 @@ from xahaud_scripts.utils.shell_utils import (
     run_command,
 )
 
+OUTPUTS_DIR = Path.home() / ".config" / "xahaud-scripts" / "outputs"
+
 # Set up logger
 logger = make_logger(__name__)
+
+
+def get_build_output_path(xahaud_root: str, build_type: str) -> Path:
+    """Return the tee file path for this worktree + build type."""
+    slug = f"{Path(xahaud_root).name}-{build_type.lower()}"
+    return OUTPUTS_DIR / f"{slug}.txt"
 
 
 def detect_coverage_version(xahaud_root: str) -> str:
@@ -88,6 +96,7 @@ def build_rippled(
     dry_run: bool = False,
     unity: bool = False,
     build_dir: str | None = None,
+    tee_file: Path | None = None,
 ) -> bool:
     """Build the rippled executable.
 
@@ -174,6 +183,7 @@ def build_rippled(
         ccache=use_ccache,
         ccache_basedir=ccache_basedir,
         ccache_sloppy=ccache_sloppy,
+        tee_file=tee_file,
     )
 
 
@@ -697,6 +707,9 @@ def main(
                 if ccache_stats and ccache and not dry_run:
                     ccache_zero_stats()
 
+                tee_file = get_build_output_path(xahaud_root, build_type)
+                logger.info(f"Build output tee: {tee_file}")
+
                 recorder.build_started()
                 build_successful = build_rippled(
                     reconfigure_build=reconfigure_build or dry_run,
@@ -714,6 +727,7 @@ def main(
                     dry_run=dry_run,
                     unity=unity,
                     build_dir=build_dir,
+                    tee_file=tee_file,
                 )
                 recorder.build_finished(build_successful)
 
@@ -865,6 +879,35 @@ def main(
         logger.critical(f"Unexpected error: {e}", exc_info=True)
         recorder.save()
         sys.exit(1)
+
+
+@click.command()
+@click.option(
+    "--build-type",
+    type=click.Choice(["Debug", "Release", "Coverage"], case_sensitive=False),
+    default="Release",
+    help="Build type to follow (default: Release). Coverage maps to Debug.",
+)
+def tail_build(build_type: str) -> None:
+    """Follow the build output log for this worktree.
+
+    Runs tail -F on ~/.config/xahaud-scripts/outputs/<worktree>-<build-type>.txt.
+    Waits for the file if it doesn't exist yet. Run from inside a xahaud worktree.
+
+    Example:
+        x-run-tests-tail
+        x-run-tests-tail --build-type Debug
+    """
+    if build_type.lower() == "coverage":
+        build_type = "Debug"
+    try:
+        xahaud_root = get_xahaud_root()
+    except Exception as e:
+        raise click.ClickException(f"Could not find xahaud root: {e}") from e
+
+    tee_file = get_build_output_path(xahaud_root, build_type)
+    click.echo(f"Following {tee_file}  (Ctrl+C to stop)", err=True)
+    os.execvp("tail", ["tail", "-F", str(tee_file)])
 
 
 if __name__ == "__main__":
