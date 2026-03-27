@@ -174,13 +174,13 @@ class SourceValidator:
         declared = set()
         used = set()
 
-        decl_pattern = r"(?:extern|define)\s+[a-z0-9_]+\s+([a-z_-]+)\s*\("
+        decl_pattern = r"(?:extern|define)\s+[a-z0-9_]+\s+([a-z0-9_-]+)\s*\("
         for match in re.finditer(decl_pattern, normalized):
             func_name = match.group(1)
             if func_name != "sizeof":
                 declared.add(func_name)
 
-        call_pattern = r"([a-z_-]+)\("
+        call_pattern = r"([a-z0-9_-]+)\("
         for match in re.finditer(call_pattern, normalized):
             func_name = match.group(1)
             if func_name != "sizeof" and not func_name.startswith(("hook", "cbak")):
