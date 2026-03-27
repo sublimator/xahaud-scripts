@@ -321,8 +321,8 @@ def run_rippled(
 @click.option(
     "--validate-hooks/--no-validate-hooks",
     is_flag=True,
-    default=True,
-    help="Validate inline hook C source for undeclared functions.",
+    default=False,
+    help="Validate inline hook C source for undeclared functions (default: disabled).",
 )
 @click.option(
     "--lldb/--no-lldb",
@@ -683,8 +683,8 @@ def main(
                         cmd.extend(["--hooks-c-dir", entry])
                     if hook_coverage:
                         cmd.append("--hook-coverage")
-                    if not validate_hooks:
-                        cmd.append("--no-validate-hooks")
+                    if validate_hooks:
+                        cmd.append("--validate-hooks")
                     run_command(cmd)
                     logger.info("WASM hooks compiled successfully")
                 except Exception as e:

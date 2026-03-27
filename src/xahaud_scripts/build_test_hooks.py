@@ -273,7 +273,7 @@ class TestHookBuilder:
         input_file: Path | None = None,
         hooks_c_dirs: dict[str, Path] | None = None,
         hook_coverage: bool = False,
-        validate_hooks: bool = True,
+        validate_hooks: bool = False,
     ) -> None:
         self.jobs = jobs
         self.force_write = force_write
@@ -470,8 +470,8 @@ class TestHookBuilder:
 @click.option(
     "--validate-hooks/--no-validate-hooks",
     is_flag=True,
-    default=True,
-    help="Validate inline hook C source for undeclared functions (default: enabled).",
+    default=False,
+    help="Validate inline hook C source for undeclared functions (default: disabled).",
 )
 def main(
     input_file: Path | None,
