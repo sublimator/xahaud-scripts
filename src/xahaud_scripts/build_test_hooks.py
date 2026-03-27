@@ -279,13 +279,17 @@ class TestHookBuilder:
         self.force_write = force_write
         self.hook_coverage = hook_coverage
 
-        xahaud_root = Path(get_xahaud_root())
-        test_app_dir = xahaud_root / "src" / "test" / "app"
-        self.hook_include_dir = xahaud_root / "hook"
+        # Resolve xahaud root if available (not required when input_file is given)
+        try:
+            xahaud_root: Path | None = Path(get_xahaud_root())
+        except Exception:
+            xahaud_root = None
 
-        self.wasm_dir = test_app_dir / "generated" / "hook" / "c"
+        self.hook_include_dir: Path | None = (
+            xahaud_root / "hook" if xahaud_root else None
+        )
 
-        # Use provided input file or default to SetHook_test.cpp
+        # Use provided input file or default to SetHook_test.cpp (requires xahaud root)
         if input_file is not None:
             self.input_file = input_file
             # Generate output name: Foo_test.cpp -> Foo_test_hooks.h
@@ -294,6 +298,13 @@ class TestHookBuilder:
             # Generate symbol name: Export_test -> export_test_wasm
             self.symbol_name = f"{stem.lower()}_wasm"
         else:
+            if xahaud_root is None:
+                raise click.ClickException(
+                    "No INPUT_FILE given and could not find a xahaud repo root "
+                    "(no CMakeLists.txt + .git found). Either run from inside a "
+                    "xahaud worktree, set XAHAUD_ROOT, or pass an explicit INPUT_FILE."
+                )
+            test_app_dir = xahaud_root / "src" / "test" / "app"
             self.input_file = test_app_dir / "SetHook_test.cpp"
             self.output_file = test_app_dir / "SetHook_wasm.h"
             self.symbol_name = "wasm"  # Keep backward compatibility
@@ -321,7 +332,11 @@ class TestHookBuilder:
             block.source,
             label,
             validate=not block.is_file_ref,
-            include_dirs=[self.hook_include_dir] if block.is_file_ref else None,
+            include_dirs=(
+                [self.hook_include_dir]
+                if block.is_file_ref and self.hook_include_dir
+                else None
+            ),
             coverage=self.hook_coverage,
         )
         return (counter, block, bytecode)
@@ -407,8 +422,6 @@ class TestHookBuilder:
         if not self.checker.check_all(required):
             logger.error("Missing required binaries")
             sys.exit(1)
-
-        self.wasm_dir.mkdir(parents=True, exist_ok=True)
 
         blocks = self.extractor.extract()
         compiled = self.compile_all_blocks(blocks)
