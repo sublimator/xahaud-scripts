@@ -9,6 +9,9 @@ import re
 import subprocess
 from pathlib import Path
 
+import tree_sitter_c as tsc
+from tree_sitter import Language, Node, Parser
+
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -168,33 +171,90 @@ class CompilationCache:
         logger.debug(f"Cached: {cache_key[:16]}... ({len(bytecode)} bytes)")
 
 
+_C_LANGUAGE = Language(tsc.language())
+_C_PARSER = Parser(_C_LANGUAGE)
+
+
 class SourceValidator:
-    """Validate C source code for undeclared functions."""
+    """Validate C source code for undeclared functions using tree-sitter."""
 
     def extract_declarations(self, source: str) -> tuple[list[str], list[str]]:
-        """Extract declared and used function names.
+        """Extract declared and used function names via AST parsing.
 
         Returns:
             Tuple of (declared_functions, used_functions)
         """
-        normalized = re.sub(r"\s+", " ", source)
+        tree = _C_PARSER.parse(source.encode("utf-8"))
 
-        declared = set()
-        used = set()
+        declared: set[str] = set()
+        used: set[str] = set()
 
-        decl_pattern = r"(?:extern|define)\s+[a-z0-9_]+\s+([a-z0-9_-]+)\s*\("
-        for match in re.finditer(decl_pattern, normalized):
-            func_name = match.group(1)
-            if func_name != "sizeof":
-                declared.add(func_name)
-
-        call_pattern = r"([a-z0-9_-]+)\("
-        for match in re.finditer(call_pattern, normalized):
-            func_name = match.group(1)
-            if func_name != "sizeof" and not func_name.startswith(("hook", "cbak")):
-                used.add(func_name)
+        self._walk(tree.root_node, declared, used)
 
         return sorted(declared), sorted(used)
+
+    def _walk(self, node: Node, declared: set[str], used: set[str]) -> None:
+        """Recursively walk AST nodes collecting declared and used functions."""
+        # Skip comments and string literals entirely
+        if node.type in ("comment", "string_literal", "char_literal"):
+            return
+
+        if node.type == "declaration":
+            self._handle_declaration(node, declared)
+        elif node.type == "call_expression":
+            self._handle_call(node, used)
+
+        for child in node.children:
+            self._walk(child, declared, used)
+
+    def _handle_declaration(self, node: Node, declared: set[str]) -> None:
+        """Extract function name from an extern declaration."""
+        # Check for extern storage class
+        has_extern = any(
+            child.type == "storage_class_specifier" and child.text == b"extern"
+            for child in node.children
+        )  # child.text is bytes | None; == b"extern" is False when None
+        if not has_extern:
+            return
+
+        # Find function declarator — may be direct or pointer-wrapped
+        for child in node.children:
+            name = self._extract_declarator_name(child)
+            if name and name != "sizeof":
+                declared.add(name)
+
+    def _extract_declarator_name(self, node: Node) -> str | None:
+        """Extract function name from a declarator node."""
+        if node.type == "function_declarator":
+            for child in node.children:
+                if child.type == "identifier":
+                    return child.text.decode("utf-8") if child.text else None
+                if child.type in (
+                    "parenthesized_declarator",
+                    "pointer_declarator",
+                    "function_declarator",
+                ):
+                    result = self._extract_declarator_name(child)
+                    if result:
+                        return result
+        elif node.type in ("pointer_declarator", "parenthesized_declarator"):
+            for child in node.children:
+                result = self._extract_declarator_name(child)
+                if result:
+                    return result
+        return None
+
+    def _handle_call(self, node: Node, used: set[str]) -> None:
+        """Extract function name from a call_expression node."""
+        if not node.children:
+            return
+        func_node = node.children[0]
+
+        # Direct call: name(...)
+        if func_node.type == "identifier" and func_node.text:
+            name = func_node.text.decode("utf-8")
+            if name != "sizeof" and not name.startswith(("hook", "cbak")):
+                used.add(name)
 
     def validate(self, source: str, label: str = "source") -> None:
         """Validate that all used functions are declared.
