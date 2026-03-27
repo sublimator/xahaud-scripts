@@ -14,6 +14,28 @@ from xahaud_scripts.utils.logging import make_logger
 logger = make_logger(__name__)
 
 
+def find_wasi_sdk() -> Path | None:
+    """Find wasi-sdk installation via mise."""
+    try:
+        result = subprocess.run(
+            ["mise", "where", "wasi-sdk"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        base = Path(result.stdout.strip())
+        # mise installs wasi-sdk with a nested wasi-sdk/ directory
+        sdk = base / "wasi-sdk"
+        if not sdk.exists():
+            sdk = base
+        clang = sdk / "bin" / "clang"
+        if clang.exists():
+            return sdk
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return None
+
+
 class BinaryChecker:
     """Check for required binaries and provide installation instructions."""
 
@@ -112,35 +134,43 @@ class CompilationCache:
         return versions
 
     def _compute_cache_key(
-        self, source: str, is_wat: bool, coverage: bool = False
+        self,
+        source: str,
+        is_wat: bool,
+        coverage: bool = False,
+        hooks_compiler: str = "wasmcc",
     ) -> str:
         """Compute cache key from source and binary versions."""
         hasher = hashlib.sha256()
         hasher.update(source.encode("utf-8"))
         hasher.update(b"wat" if is_wat else b"c")
+        hasher.update(hooks_compiler.encode("utf-8"))
         if coverage:
             hasher.update(b"coverage")
 
         if is_wat:
             hasher.update(self.binary_versions["wat2wasm"].encode("utf-8"))
         else:
-            hasher.update(self.binary_versions["wasmcc"].encode("utf-8"))
-            hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
+            compiler_key = (
+                "wasi-sdk-clang" if hooks_compiler == "wasi-sdk" else "wasmcc"
+            )
+            if compiler_key in self.binary_versions:
+                hasher.update(self.binary_versions[compiler_key].encode("utf-8"))
+            hasher.update(self.binary_versions.get("hook-cleaner", "").encode("utf-8"))
 
         return hasher.hexdigest()
 
-    def get(self, source: str, is_wat: bool, coverage: bool = False) -> bytes | None:
-        """Get cached bytecode if available.
-
-        Args:
-            source: The source code that was compiled
-            is_wat: True if source is WAT format, False for C
-            coverage: True if compiled with coverage instrumentation
-
-        Returns:
-            The cached WASM bytecode, or None if not cached
-        """
-        cache_key = self._compute_cache_key(source, is_wat, coverage=coverage)
+    def get(
+        self,
+        source: str,
+        is_wat: bool,
+        coverage: bool = False,
+        hooks_compiler: str = "wasmcc",
+    ) -> bytes | None:
+        """Get cached bytecode if available."""
+        cache_key = self._compute_cache_key(
+            source, is_wat, coverage=coverage, hooks_compiler=hooks_compiler
+        )
         cache_file = self.cache_dir / f"{cache_key}.wasm"
 
         if cache_file.exists():
@@ -151,17 +181,17 @@ class CompilationCache:
         return None
 
     def put(
-        self, source: str, is_wat: bool, bytecode: bytes, coverage: bool = False
+        self,
+        source: str,
+        is_wat: bool,
+        bytecode: bytes,
+        coverage: bool = False,
+        hooks_compiler: str = "wasmcc",
     ) -> None:
-        """Store bytecode in cache.
-
-        Args:
-            source: The source code that was compiled
-            is_wat: True if source is WAT format, False for C
-            bytecode: The compiled WASM bytecode
-            coverage: True if compiled with coverage instrumentation
-        """
-        cache_key = self._compute_cache_key(source, is_wat, coverage=coverage)
+        """Store bytecode in cache."""
+        cache_key = self._compute_cache_key(
+            source, is_wat, coverage=coverage, hooks_compiler=hooks_compiler
+        )
         cache_file = self.cache_dir / f"{cache_key}.wasm"
 
         cache_file.write_bytes(bytecode)
@@ -174,24 +204,36 @@ class WasmCompiler:
     Supports both C (via wasmcc + hook-cleaner) and WAT (via wat2wasm) sources.
     Uses a CompilationCache to avoid redundant compilation.
 
+    The ``hooks_compiler`` parameter selects the C compiler backend:
+    - ``"wasmcc"`` (default): wasienv clang-9 wrapper
+    - ``"wasi-sdk"``: modern clang from wasi-sdk (install: ``mise install wasi-sdk``)
+
     Example:
-        cache = CompilationCache()
-        compiler = WasmCompiler(cache=cache)
-
-        # Compile C source
+        compiler = WasmCompiler(hooks_compiler="wasi-sdk")
         bytecode = compiler.compile(c_source)
-
-        # Compile WAT source
-        bytecode = compiler.compile(wat_source)
     """
 
-    def __init__(self, cache: CompilationCache | None = None) -> None:
+    def __init__(
+        self,
+        cache: CompilationCache | None = None,
+        hooks_compiler: str = "wasmcc",
+    ) -> None:
         """Initialize the compiler.
 
         Args:
             cache: Optional cache for compiled bytecode. If None, creates a new one.
+            hooks_compiler: C compiler backend — "wasmcc" or "wasi-sdk".
         """
         self.cache = cache or CompilationCache()
+        self.hooks_compiler = hooks_compiler
+        self._wasi_sdk_path: Path | None = None
+
+        if hooks_compiler == "wasi-sdk":
+            self._wasi_sdk_path = find_wasi_sdk()
+            if not self._wasi_sdk_path:
+                raise RuntimeError(
+                    "wasi-sdk not found. Install with: mise install wasi-sdk"
+                )
 
     @staticmethod
     def is_wat_format(source: str) -> bool:
@@ -210,14 +252,26 @@ class WasmCompiler:
         Args:
             source: C source code
             label: Label for error messages
-            include_dirs: Extra -I paths for wasmcc
+            include_dirs: Extra -I paths for the compiler
             coverage: Compile with SanitizerCoverage instrumentation
 
         Returns:
             Compiled WASM bytecode
         """
-        logger.debug(f"Compiling C for {label}")
+        logger.debug(f"Compiling C for {label} (compiler={self.hooks_compiler})")
 
+        if self.hooks_compiler == "wasi-sdk":
+            return self._compile_c_wasi_sdk(source, label, include_dirs, coverage)
+        return self._compile_c_wasmcc(source, label, include_dirs, coverage)
+
+    def _compile_c_wasmcc(
+        self,
+        source: str,
+        label: str,
+        include_dirs: list[Path] | None,
+        coverage: bool,
+    ) -> bytes:
+        """Compile C via wasmcc (wasienv clang-9) + hook-cleaner."""
         cmd = [
             "wasmcc",
             "-x",
@@ -249,6 +303,65 @@ class WasmCompiler:
         cleaner_result = subprocess.run(
             cleaner_cmd,
             input=wasmcc_result.stdout,
+            capture_output=True,
+            check=True,
+        )
+
+        return cleaner_result.stdout
+
+    def _compile_c_wasi_sdk(
+        self,
+        source: str,
+        label: str,
+        include_dirs: list[Path] | None,
+        coverage: bool,
+    ) -> bytes:
+        """Compile C via wasi-sdk (modern clang) + hook-cleaner."""
+        assert self._wasi_sdk_path is not None
+        clang = str(self._wasi_sdk_path / "bin" / "clang")
+        sysroot = str(self._wasi_sdk_path / "share" / "wasi-sysroot")
+
+        cmd = [
+            clang,
+            "--target=wasm32-wasip1",
+            f"--sysroot={sysroot}",
+            "-nostdlib",
+            "-x",
+            "c",
+            "/dev/stdin",
+            "-o",
+            "/dev/stdout",
+            # Hook code relies on implicit pointer-to-int casts (WASM32 addrs)
+            "-Wno-incompatible-pointer-types",
+            "-Wno-int-conversion",
+            "-Wno-macro-redefined",
+            "-Wl,--allow-undefined",
+            "-Wl,--no-entry",
+            "-Wl,--export=hook",
+            "-Wl,--export=cbak",
+        ]
+        if coverage:
+            cmd.extend(["-fsanitize-coverage=trace-pc-guard", "-g", "-O0"])
+        else:
+            cmd.append("-O2")
+
+        for d in include_dirs or []:
+            cmd.extend(["-I", str(d)])
+
+        clang_result = subprocess.run(
+            cmd,
+            input=source.encode("utf-8"),
+            capture_output=True,
+            check=True,
+        )
+
+        cleaner_cmd = ["hook-cleaner", "-", "-"]
+        if coverage:
+            cleaner_cmd.append("--keep-coverage")
+
+        cleaner_result = subprocess.run(
+            cleaner_cmd,
+            input=clang_result.stdout,
             capture_output=True,
             check=True,
         )
@@ -301,13 +414,20 @@ class WasmCompiler:
         """
         is_wat = self.is_wat_format(source)
 
-        cached = self.cache.get(source, is_wat, coverage=coverage)
+        cached = self.cache.get(
+            source, is_wat, coverage=coverage, hooks_compiler=self.hooks_compiler
+        )
         if cached is not None:
             logger.info(f"{label}: using cached bytecode")
             return cached
 
+        compiler_tag = (
+            f" [{self.hooks_compiler}]" if self.hooks_compiler != "wasmcc" else ""
+        )
         cov_tag = " (coverage)" if coverage else ""
-        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}{cov_tag}")
+        logger.info(
+            f"{label}: compiling {'WAT' if is_wat else 'C'}{compiler_tag}{cov_tag}"
+        )
 
         try:
             if is_wat:
@@ -324,7 +444,13 @@ class WasmCompiler:
                     coverage=coverage,
                 )
 
-            self.cache.put(source, is_wat, bytecode, coverage=coverage)
+            self.cache.put(
+                source,
+                is_wat,
+                bytecode,
+                coverage=coverage,
+                hooks_compiler=self.hooks_compiler,
+            )
             return bytecode
 
         except subprocess.CalledProcessError as e:

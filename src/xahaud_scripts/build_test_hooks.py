@@ -300,10 +300,12 @@ class TestHookBuilder:
         input_file: Path | None = None,
         hooks_c_dirs: dict[str, Path] | None = None,
         hook_coverage: bool = False,
+        hooks_compiler: str = "wasmcc",
     ) -> None:
         self.jobs = jobs
         self.force_write = force_write
         self.hook_coverage = hook_coverage
+        self.hooks_compiler = hooks_compiler
 
         # Resolve xahaud root if available (not required when input_file is given)
         try:
@@ -337,7 +339,7 @@ class TestHookBuilder:
 
         self.checker = BinaryChecker()
         self.cache = CompilationCache()
-        self.compiler = WasmCompiler(cache=self.cache)
+        self.compiler = WasmCompiler(cache=self.cache, hooks_compiler=hooks_compiler)
         self.extractor = SourceExtractor(self.input_file, hooks_c_dirs=hooks_c_dirs)
         self.writer = OutputWriter(
             self.output_file, self.cache.cache_dir, self.symbol_name
@@ -493,6 +495,12 @@ class TestHookBuilder:
     default=False,
     help="Compile with SanitizerCoverage instrumentation (-fsanitize-coverage=trace-pc-guard).",
 )
+@click.option(
+    "--hooks-compiler",
+    type=click.Choice(["wasmcc", "wasi-sdk"], case_sensitive=False),
+    default="wasmcc",
+    help="C compiler backend (default: wasmcc). wasi-sdk requires: mise install wasi-sdk",
+)
 def main(
     input_file: Path | None,
     log_level: str,
@@ -500,6 +508,7 @@ def main(
     force_write: bool,
     hooks_c_dir_raw: tuple[str, ...],
     hook_coverage: bool,
+    hooks_compiler: str,
 ) -> None:
     """Generate _hooks.h from a test file containing WASM blocks.
 
@@ -549,6 +558,7 @@ def main(
             input_file=input_file,
             hooks_c_dirs=hooks_c_dirs or None,
             hook_coverage=hook_coverage,
+            hooks_compiler=hooks_compiler,
         )
         builder.build()
     except RuntimeError as e:
