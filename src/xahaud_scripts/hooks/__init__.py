@@ -12,13 +12,11 @@ Example:
 from xahaud_scripts.hooks.compiler import (
     BinaryChecker,
     CompilationCache,
-    SourceValidator,
     WasmCompiler,
 )
 
 __all__ = [
     "BinaryChecker",
     "CompilationCache",
-    "SourceValidator",
     "WasmCompiler",
 ]

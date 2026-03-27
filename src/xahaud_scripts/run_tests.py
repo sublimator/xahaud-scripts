@@ -319,12 +319,6 @@ def run_rippled(
     help="Compile WASM hooks with SanitizerCoverage instrumentation.",
 )
 @click.option(
-    "--validate-hooks/--no-validate-hooks",
-    is_flag=True,
-    default=False,
-    help="Validate inline hook C source for undeclared functions (default: disabled).",
-)
-@click.option(
     "--lldb/--no-lldb",
     is_flag=True,
     default=False,
@@ -489,7 +483,6 @@ def main(
     compile_hooks,
     hooks_c_dir,
     hook_coverage,
-    validate_hooks,
     lldb,
     lldb_all_threads,
     lldb_commands_file,
@@ -683,8 +676,6 @@ def main(
                         cmd.extend(["--hooks-c-dir", entry])
                     if hook_coverage:
                         cmd.append("--hook-coverage")
-                    if validate_hooks:
-                        cmd.append("--validate-hooks")
                     run_command(cmd)
                     logger.info("WASM hooks compiled successfully")
                 except Exception as e:

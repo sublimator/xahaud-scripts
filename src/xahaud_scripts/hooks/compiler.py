@@ -9,9 +9,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import tree_sitter_c as tsc
-from tree_sitter import Language, Node, Parser
-
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -171,113 +168,6 @@ class CompilationCache:
         logger.debug(f"Cached: {cache_key[:16]}... ({len(bytecode)} bytes)")
 
 
-_C_LANGUAGE = Language(tsc.language())
-_C_PARSER = Parser(_C_LANGUAGE)
-
-
-class SourceValidator:
-    """Validate C source code for undeclared functions using tree-sitter."""
-
-    def extract_declarations(self, source: str) -> tuple[list[str], list[str]]:
-        """Extract declared and used function names via AST parsing.
-
-        Returns:
-            Tuple of (declared_functions, used_functions)
-        """
-        tree = _C_PARSER.parse(source.encode("utf-8"))
-
-        declared: set[str] = set()
-        used: set[str] = set()
-
-        self._walk(tree.root_node, declared, used)
-
-        return sorted(declared), sorted(used)
-
-    def _walk(self, node: Node, declared: set[str], used: set[str]) -> None:
-        """Recursively walk AST nodes collecting declared and used functions."""
-        # Skip comments and string literals entirely
-        if node.type in ("comment", "string_literal", "char_literal"):
-            return
-
-        if node.type == "declaration":
-            self._handle_declaration(node, declared)
-        elif node.type == "call_expression":
-            self._handle_call(node, used)
-
-        for child in node.children:
-            self._walk(child, declared, used)
-
-    def _handle_declaration(self, node: Node, declared: set[str]) -> None:
-        """Extract function name from an extern declaration."""
-        # Check for extern storage class
-        has_extern = any(
-            child.type == "storage_class_specifier" and child.text == b"extern"
-            for child in node.children
-        )  # child.text is bytes | None; == b"extern" is False when None
-        if not has_extern:
-            return
-
-        # Find function declarator — may be direct or pointer-wrapped
-        for child in node.children:
-            name = self._extract_declarator_name(child)
-            if name and name != "sizeof":
-                declared.add(name)
-
-    def _extract_declarator_name(self, node: Node) -> str | None:
-        """Extract function name from a declarator node."""
-        if node.type == "function_declarator":
-            for child in node.children:
-                if child.type == "identifier":
-                    return child.text.decode("utf-8") if child.text else None
-                if child.type in (
-                    "parenthesized_declarator",
-                    "pointer_declarator",
-                    "function_declarator",
-                ):
-                    result = self._extract_declarator_name(child)
-                    if result:
-                        return result
-        elif node.type in ("pointer_declarator", "parenthesized_declarator"):
-            for child in node.children:
-                result = self._extract_declarator_name(child)
-                if result:
-                    return result
-        return None
-
-    def _handle_call(self, node: Node, used: set[str]) -> None:
-        """Extract function name from a call_expression node."""
-        if not node.children:
-            return
-        func_node = node.children[0]
-
-        # Direct call: name(...)
-        if func_node.type == "identifier" and func_node.text:
-            name = func_node.text.decode("utf-8")
-            if name != "sizeof" and not name.startswith(("hook", "cbak")):
-                used.add(name)
-
-    def validate(self, source: str, label: str = "source") -> None:
-        """Validate that all used functions are declared.
-
-        Args:
-            source: C source code to validate
-            label: Label for error messages (e.g., block number)
-
-        Raises:
-            ValueError: If undeclared functions are found
-        """
-        declared, used = self.extract_declarations(source)
-        undeclared = set(used) - set(declared)
-
-        if undeclared:
-            logger.error(
-                f"Undeclared functions in {label}: {', '.join(sorted(undeclared))}"
-            )
-            logger.debug(f"  Declared: {', '.join(declared)}")
-            logger.debug(f"  Used: {', '.join(used)}")
-            raise ValueError(f"Undeclared functions: {', '.join(sorted(undeclared))}")
-
-
 class WasmCompiler:
     """Compile WASM from C or WAT source.
 
@@ -295,20 +185,13 @@ class WasmCompiler:
         bytecode = compiler.compile(wat_source)
     """
 
-    def __init__(
-        self,
-        cache: CompilationCache | None = None,
-        validate_c: bool = True,
-    ) -> None:
+    def __init__(self, cache: CompilationCache | None = None) -> None:
         """Initialize the compiler.
 
         Args:
             cache: Optional cache for compiled bytecode. If None, creates a new one.
-            validate_c: Whether to validate C source for undeclared functions.
         """
         self.cache = cache or CompilationCache()
-        self.validate_c = validate_c
-        self._validator = SourceValidator()
 
     @staticmethod
     def is_wat_format(source: str) -> bool:
@@ -319,7 +202,6 @@ class WasmCompiler:
         self,
         source: str,
         label: str = "source",
-        validate: bool = True,
         include_dirs: list[Path] | None = None,
         coverage: bool = False,
     ) -> bytes:
@@ -328,7 +210,6 @@ class WasmCompiler:
         Args:
             source: C source code
             label: Label for error messages
-            validate: Whether to validate declarations (default True)
             include_dirs: Extra -I paths for wasmcc
             coverage: Compile with SanitizerCoverage instrumentation
 
@@ -336,9 +217,6 @@ class WasmCompiler:
             Compiled WASM bytecode
         """
         logger.debug(f"Compiling C for {label}")
-
-        if validate and self.validate_c:
-            self._validator.validate(source, label)
 
         cmd = [
             "wasmcc",
@@ -402,7 +280,6 @@ class WasmCompiler:
         self,
         source: str,
         label: str = "source",
-        validate: bool = True,
         include_dirs: list[Path] | None = None,
         coverage: bool = False,
     ) -> bytes:
@@ -413,7 +290,6 @@ class WasmCompiler:
         Args:
             source: C or WAT source code
             label: Label for logging and error messages
-            validate: Whether to validate C declarations (default True)
             include_dirs: Extra -I paths for wasmcc
             coverage: Compile with SanitizerCoverage instrumentation
 
@@ -422,7 +298,6 @@ class WasmCompiler:
 
         Raises:
             subprocess.CalledProcessError: If compilation fails
-            ValueError: If C source has undeclared functions (when validate_c=True)
         """
         is_wat = self.is_wat_format(source)
 
@@ -445,7 +320,6 @@ class WasmCompiler:
                 bytecode = self.compile_c(
                     source,
                     label,
-                    validate=validate,
                     include_dirs=include_dirs,
                     coverage=coverage,
                 )
