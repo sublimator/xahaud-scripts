@@ -172,7 +172,7 @@ class OutputWriter:
 #include <vector>
 namespace ripple {{
 namespace test {{
-std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
+inline std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
 """
 
     def _get_footer(self) -> str:
