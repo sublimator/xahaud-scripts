@@ -125,8 +125,7 @@ class CompilationCache:
             hasher.update(self.binary_versions["wat2wasm"].encode("utf-8"))
         else:
             hasher.update(self.binary_versions["wasmcc"].encode("utf-8"))
-            if not coverage:
-                hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
+            hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
 
         return hasher.hexdigest()
 
@@ -305,13 +304,12 @@ class WasmCompiler:
             check=True,
         )
 
+        cleaner_cmd = ["hook-cleaner", "-", "-"]
         if coverage:
-            # Skip hook-cleaner — it strips the sancov imports
-            logger.debug(f"Coverage mode: skipping hook-cleaner for {label}")
-            return wasmcc_result.stdout
+            cleaner_cmd.append("--keep-coverage")
 
         cleaner_result = subprocess.run(
-            ["hook-cleaner", "-", "-"],
+            cleaner_cmd,
             input=wasmcc_result.stdout,
             capture_output=True,
             check=True,
