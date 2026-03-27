@@ -14,14 +14,14 @@ def setup_logging(log_level: str, logger: logging.Logger) -> None:
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {log_level}")
 
-    # Configure the root logger
+    # Configure the root logger at WARNING so third-party libs stay quiet
     logging.basicConfig(
-        level=numeric_level,
+        level=logging.WARNING,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Set our module logger level
+    # Only lower our own loggers
     logger.setLevel(numeric_level)
     package_logger.setLevel(numeric_level)
     logger.info(f"Logging initialized at level {log_level.upper()}")
