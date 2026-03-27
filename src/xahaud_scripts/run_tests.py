@@ -87,6 +87,7 @@ def build_rippled(
     build_type: str = "Release",
     dry_run: bool = False,
     unity: bool = False,
+    build_dir: str | None = None,
 ) -> bool:
     """Build the rippled executable.
 
@@ -104,12 +105,15 @@ def build_rippled(
         build_type: CMake build type (Debug or Release)
         dry_run: If True, print commands without executing
         unity: If True, enable unity builds (faster clean builds, slower incremental)
+        build_dir: Build directory (default: build-debug for Debug, build for Release)
 
     Returns:
         bool: True if build was successful, False otherwise
     """
     xahaud_root = get_xahaud_root()
-    build_dir = os.path.join(xahaud_root, "build")
+    if build_dir is None:
+        dir_name = "build-debug" if build_type.lower() == "debug" else "build"
+        build_dir = os.path.join(xahaud_root, dir_name)
     logger.info(f"Building {target} in {build_dir}")
 
     # Check if build directory exists
@@ -181,6 +185,7 @@ def run_rippled(
     lldb_commands_file: str | None = None,
     env: dict | None = None,
     lldb_all_threads: bool = False,
+    build_dir: str | None = None,
 ) -> int:
     """Run the rippled executable, optionally with lldb, multiple times.
 
@@ -192,11 +197,13 @@ def run_rippled(
         lldb_commands_file: Path to LLDB commands file
         env: Environment variables to set for the process
         lldb_all_threads: Whether to show all threads in LLDB backtrace
+        build_dir: Build directory containing the rippled executable
 
     Returns:
         int: the exit code of the last run
     """
-    build_dir = os.path.join(get_xahaud_root(), "build")
+    if build_dir is None:
+        build_dir = os.path.join(get_xahaud_root(), "build")
 
     # Verify the rippled executable exists
     rippled_path = os.path.join(build_dir, "rippled")
@@ -432,6 +439,11 @@ def run_rippled(
     help="CMake build type: Debug, Release, or Coverage (Debug + coverage instrumentation + report).",
 )
 @click.option(
+    "--build-dir",
+    default=None,
+    help="Build directory name (default: build-debug for Debug, build for Release).",
+)
+@click.option(
     "--keep-gcda/--no-keep-gcda",
     is_flag=True,
     default=False,
@@ -486,6 +498,7 @@ def main(
     target,
     log_line_numbers,
     build_type,
+    build_dir,
     keep_gcda,
     diff_cover,
     diff_cover_since,
@@ -630,8 +643,13 @@ def main(
 
         # Change to xahaud root directory
         xahaud_root = get_xahaud_root()
-        build_dir = os.path.join(xahaud_root, "build")
+        if build_dir is None:
+            dir_name = "build-debug" if build_type.lower() == "debug" else "build"
+            build_dir = os.path.join(xahaud_root, dir_name)
+        else:
+            build_dir = os.path.join(xahaud_root, build_dir)
         logger.info(f"Using xahaud root directory: {xahaud_root}")
+        logger.info(f"Build directory: {build_dir}")
 
         with change_directory(xahaud_root):
             # Build JS hooks header if needed
@@ -686,6 +704,7 @@ def main(
                     build_type=build_type,
                     dry_run=dry_run,
                     unity=unity,
+                    build_dir=build_dir,
                 )
                 recorder.build_finished(build_successful)
 
@@ -760,6 +779,7 @@ def main(
                 lldb_commands_file,
                 env=env,
                 lldb_all_threads=lldb_all_threads,
+                build_dir=build_dir,
             )
             if times > 0:
                 recorder.test_finished(exit_code)
