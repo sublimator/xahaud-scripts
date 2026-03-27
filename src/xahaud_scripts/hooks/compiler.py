@@ -111,31 +111,37 @@ class CompilationCache:
 
         return versions
 
-    def _compute_cache_key(self, source: str, is_wat: bool) -> str:
+    def _compute_cache_key(
+        self, source: str, is_wat: bool, coverage: bool = False
+    ) -> str:
         """Compute cache key from source and binary versions."""
         hasher = hashlib.sha256()
         hasher.update(source.encode("utf-8"))
         hasher.update(b"wat" if is_wat else b"c")
+        if coverage:
+            hasher.update(b"coverage")
 
         if is_wat:
             hasher.update(self.binary_versions["wat2wasm"].encode("utf-8"))
         else:
             hasher.update(self.binary_versions["wasmcc"].encode("utf-8"))
-            hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
+            if not coverage:
+                hasher.update(self.binary_versions["hook-cleaner"].encode("utf-8"))
 
         return hasher.hexdigest()
 
-    def get(self, source: str, is_wat: bool) -> bytes | None:
+    def get(self, source: str, is_wat: bool, coverage: bool = False) -> bytes | None:
         """Get cached bytecode if available.
 
         Args:
             source: The source code that was compiled
             is_wat: True if source is WAT format, False for C
+            coverage: True if compiled with coverage instrumentation
 
         Returns:
             The cached WASM bytecode, or None if not cached
         """
-        cache_key = self._compute_cache_key(source, is_wat)
+        cache_key = self._compute_cache_key(source, is_wat, coverage=coverage)
         cache_file = self.cache_dir / f"{cache_key}.wasm"
 
         if cache_file.exists():
@@ -145,15 +151,18 @@ class CompilationCache:
         logger.debug(f"Cache miss: {cache_key[:16]}...")
         return None
 
-    def put(self, source: str, is_wat: bool, bytecode: bytes) -> None:
+    def put(
+        self, source: str, is_wat: bool, bytecode: bytes, coverage: bool = False
+    ) -> None:
         """Store bytecode in cache.
 
         Args:
             source: The source code that was compiled
             is_wat: True if source is WAT format, False for C
             bytecode: The compiled WASM bytecode
+            coverage: True if compiled with coverage instrumentation
         """
-        cache_key = self._compute_cache_key(source, is_wat)
+        cache_key = self._compute_cache_key(source, is_wat, coverage=coverage)
         cache_file = self.cache_dir / f"{cache_key}.wasm"
 
         cache_file.write_bytes(bytecode)
@@ -253,6 +262,7 @@ class WasmCompiler:
         label: str = "source",
         validate: bool = True,
         include_dirs: list[Path] | None = None,
+        coverage: bool = False,
     ) -> bytes:
         """Compile C source to WASM.
 
@@ -261,6 +271,7 @@ class WasmCompiler:
             label: Label for error messages
             validate: Whether to validate declarations (default True)
             include_dirs: Extra -I paths for wasmcc
+            coverage: Compile with SanitizerCoverage instrumentation
 
         Returns:
             Compiled WASM bytecode
@@ -277,9 +288,13 @@ class WasmCompiler:
             "/dev/stdin",
             "-o",
             "/dev/stdout",
-            "-O2",
-            "-Wl,--allow-undefined",
         ]
+        if coverage:
+            cmd.extend(["-fsanitize-coverage=trace-pc-guard", "-g", "-O0"])
+        else:
+            cmd.append("-O2")
+        cmd.append("-Wl,--allow-undefined")
+
         for d in include_dirs or []:
             cmd.extend(["-I", str(d)])
 
@@ -289,6 +304,11 @@ class WasmCompiler:
             capture_output=True,
             check=True,
         )
+
+        if coverage:
+            # Skip hook-cleaner — it strips the sancov imports
+            logger.debug(f"Coverage mode: skipping hook-cleaner for {label}")
+            return wasmcc_result.stdout
 
         cleaner_result = subprocess.run(
             ["hook-cleaner", "-", "-"],
@@ -326,6 +346,7 @@ class WasmCompiler:
         label: str = "source",
         validate: bool = True,
         include_dirs: list[Path] | None = None,
+        coverage: bool = False,
     ) -> bytes:
         """Compile source to WASM, using cache if available.
 
@@ -336,6 +357,7 @@ class WasmCompiler:
             label: Label for logging and error messages
             validate: Whether to validate C declarations (default True)
             include_dirs: Extra -I paths for wasmcc
+            coverage: Compile with SanitizerCoverage instrumentation
 
         Returns:
             Compiled WASM bytecode
@@ -346,22 +368,31 @@ class WasmCompiler:
         """
         is_wat = self.is_wat_format(source)
 
-        cached = self.cache.get(source, is_wat)
+        cached = self.cache.get(source, is_wat, coverage=coverage)
         if cached is not None:
             logger.info(f"{label}: using cached bytecode")
             return cached
 
-        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}")
+        cov_tag = " (coverage)" if coverage else ""
+        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}{cov_tag}")
 
         try:
             if is_wat:
+                if coverage:
+                    logger.warning(
+                        f"{label}: coverage not supported for WAT, compiling without"
+                    )
                 bytecode = self.compile_wat(source)
             else:
                 bytecode = self.compile_c(
-                    source, label, validate=validate, include_dirs=include_dirs
+                    source,
+                    label,
+                    validate=validate,
+                    include_dirs=include_dirs,
+                    coverage=coverage,
                 )
 
-            self.cache.put(source, is_wat, bytecode)
+            self.cache.put(source, is_wat, bytecode, coverage=coverage)
             return bytecode
 
         except subprocess.CalledProcessError as e:

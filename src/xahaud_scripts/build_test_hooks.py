@@ -272,9 +272,11 @@ class TestHookBuilder:
         force_write: bool,
         input_file: Path | None = None,
         hooks_c_dirs: dict[str, Path] | None = None,
+        hook_coverage: bool = False,
     ) -> None:
         self.jobs = jobs
         self.force_write = force_write
+        self.hook_coverage = hook_coverage
 
         xahaud_root = Path(get_xahaud_root())
         test_app_dir = xahaud_root / "src" / "test" / "app"
@@ -319,6 +321,7 @@ class TestHookBuilder:
             label,
             validate=not block.is_file_ref,
             include_dirs=[self.hook_include_dir] if block.is_file_ref else None,
+            coverage=self.hook_coverage,
         )
         return (counter, block, bytecode)
 
@@ -392,11 +395,13 @@ class TestHookBuilder:
         workers = self._get_worker_count()
         logger.info(f"  Workers: {workers}")
         logger.info(f"  Force write: {self.force_write}")
+        logger.info(f"  Coverage: {self.hook_coverage}")
         logger.info(f"  Input: {self.input_file}")
         logger.info(f"  Output: {self.output_file}")
         logger.info(f"  Cache: {self.cache.cache_dir}")
 
         # Check WASM compiler binaries + clang-format for output formatting
+        # hook-cleaner is skipped in coverage mode but still check it's available
         required = ["wasmcc", "hook-cleaner", "wat2wasm", "clang-format"]
         if not self.checker.check_all(required):
             logger.error("Missing required binaries")
@@ -442,12 +447,19 @@ class TestHookBuilder:
     multiple=True,
     help="Hook source dirs as domain=path (e.g. tipbot=/path/to/hooks). Repeatable.",
 )
+@click.option(
+    "--hook-coverage/--no-hook-coverage",
+    is_flag=True,
+    default=False,
+    help="Compile with SanitizerCoverage instrumentation (-fsanitize-coverage=trace-pc-guard).",
+)
 def main(
     input_file: Path | None,
     log_level: str,
     jobs: int,
     force_write: bool,
     hooks_c_dir_raw: tuple[str, ...],
+    hook_coverage: bool,
 ) -> None:
     """Generate _hooks.h from a test file containing WASM blocks.
 
@@ -496,6 +508,7 @@ def main(
             force_write=force_write,
             input_file=input_file,
             hooks_c_dirs=hooks_c_dirs or None,
+            hook_coverage=hook_coverage,
         )
         builder.build()
     except RuntimeError as e:
