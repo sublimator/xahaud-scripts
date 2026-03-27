@@ -273,6 +273,7 @@ class TestHookBuilder:
         input_file: Path | None = None,
         hooks_c_dirs: dict[str, Path] | None = None,
         hook_coverage: bool = False,
+        validate_hooks: bool = True,
     ) -> None:
         self.jobs = jobs
         self.force_write = force_write
@@ -299,7 +300,7 @@ class TestHookBuilder:
 
         self.checker = BinaryChecker()
         self.cache = CompilationCache()
-        self.compiler = WasmCompiler(cache=self.cache)
+        self.compiler = WasmCompiler(cache=self.cache, validate_c=validate_hooks)
         self.extractor = SourceExtractor(self.input_file, hooks_c_dirs=hooks_c_dirs)
         self.writer = OutputWriter(
             self.output_file, self.cache.cache_dir, self.symbol_name
@@ -453,6 +454,12 @@ class TestHookBuilder:
     default=False,
     help="Compile with SanitizerCoverage instrumentation (-fsanitize-coverage=trace-pc-guard).",
 )
+@click.option(
+    "--validate-hooks/--no-validate-hooks",
+    is_flag=True,
+    default=True,
+    help="Validate inline hook C source for undeclared functions (default: enabled).",
+)
 def main(
     input_file: Path | None,
     log_level: str,
@@ -460,6 +467,7 @@ def main(
     force_write: bool,
     hooks_c_dir_raw: tuple[str, ...],
     hook_coverage: bool,
+    validate_hooks: bool,
 ) -> None:
     """Generate _hooks.h from a test file containing WASM blocks.
 
@@ -509,6 +517,7 @@ def main(
             input_file=input_file,
             hooks_c_dirs=hooks_c_dirs or None,
             hook_coverage=hook_coverage,
+            validate_hooks=validate_hooks,
         )
         builder.build()
     except RuntimeError as e:
