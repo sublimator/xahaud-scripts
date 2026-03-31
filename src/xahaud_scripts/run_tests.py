@@ -341,7 +341,7 @@ def run_rippled(
     default=None,
     help="File containing lldb commands to run before running rippled",
 )
-@click.option("--times", default=2, type=int, help="Number of times to run the command")
+@click.option("--times", default=1, type=int, help="Number of times to run the command")
 @click.option("--build/--no-build", default=True, is_flag=True, help="Build rippled")
 @click.option(
     "--stop-on-fail/--no-stop-on-fail",
@@ -681,7 +681,7 @@ def main(
             if compile_hooks:
                 logger.info(f"Compiling WASM hooks from {compile_hooks}...")
                 try:
-                    cmd = ["x-build-test-hooks", str(compile_hooks)]
+                    cmd = ["hookz", "build-test-hooks", str(compile_hooks)]
                     for entry in hooks_c_dir:
                         cmd.extend(["--hooks-c-dir", entry])
                     if hook_coverage:

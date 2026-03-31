@@ -638,7 +638,7 @@ class ScenarioContext:
     def __init__(self, network: TestNetwork) -> None:
         self._network = network
         self._accounts: dict[str, AccountInfo] = {}
-        self._compiler: Any = None  # Lazy-init WasmCompiler
+        self._compiler_checked: bool = False
         self._definitions_patched: bool = False
         self._network_id: int | None = None
 
@@ -874,9 +874,7 @@ class ScenarioContext:
         return self._accounts[name]
 
     def compile_hook(self, source: str, label: str = "hook") -> bytes:
-        """Compile C or WAT source to WASM bytecode.
-
-        Uses cached compilation — same source returns cached result.
+        """Compile C or WAT source to WASM bytecode via hookz.
 
         Args:
             source: C or WAT hook source code.
@@ -885,11 +883,23 @@ class ScenarioContext:
         Returns:
             Compiled WASM bytecode.
         """
-        if self._compiler is None:
-            from xahaud_scripts.hooks import WasmCompiler
+        import shutil
+        import subprocess
 
-            self._compiler = WasmCompiler()
-        return self._compiler.compile(source, label)
+        if not self._compiler_checked:
+            if not shutil.which("hookz"):
+                raise RuntimeError(
+                    "hookz not found in PATH. Install with: uv tool install hookz"
+                )
+            self._compiler_checked = True
+
+        result = subprocess.run(
+            ["hookz", "build", "-", "-o", "/dev/stdout"],
+            input=source.encode("utf-8"),
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
 
     # -- Transaction submission --------------------------------------------
 
