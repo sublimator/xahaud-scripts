@@ -97,6 +97,7 @@ def build_rippled(
     unity: bool = False,
     build_dir: str | None = None,
     tee_file: Path | None = None,
+    jobs: int | None = None,
 ) -> bool:
     """Build the rippled executable.
 
@@ -179,6 +180,7 @@ def build_rippled(
         build_dir,
         target=target,
         verbose=verbose,
+        parallel=jobs,
         dry_run=dry_run,
         ccache=use_ccache,
         ccache_basedir=ccache_basedir,
@@ -460,6 +462,13 @@ def run_rippled(
     help="Build directory name (default: build-debug for Debug, build for Release).",
 )
 @click.option(
+    "-j",
+    "--jobs",
+    type=int,
+    default=None,
+    help="Parallel build jobs (default: CPU count).",
+)
+@click.option(
     "--keep-gcda/--no-keep-gcda",
     is_flag=True,
     default=False,
@@ -515,6 +524,7 @@ def main(
     log_line_numbers,
     build_type,
     build_dir,
+    jobs,
     keep_gcda,
     diff_cover,
     diff_cover_since,
@@ -726,6 +736,7 @@ def main(
                     unity=unity,
                     build_dir=build_dir,
                     tee_file=tee_file,
+                    jobs=jobs,
                 )
                 recorder.build_finished(build_successful)
 
