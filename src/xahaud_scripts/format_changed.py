@@ -241,11 +241,15 @@ def _resolve_tool_paths() -> str:
 
     # ruff (python)
     ruff_path = venv_bin / "ruff"
-    tools.append(("ruff (python)", str(ruff_path) if ruff_path.exists() else "not found"))
+    tools.append(
+        ("ruff (python)", str(ruff_path) if ruff_path.exists() else "not found")
+    )
 
     # cmake-format (cmake)
     cmf_path = venv_bin / "cmake-format"
-    tools.append(("cmake-format (cmake)", str(cmf_path) if cmf_path.exists() else "not found"))
+    tools.append(
+        ("cmake-format (cmake)", str(cmf_path) if cmf_path.exists() else "not found")
+    )
 
     width = max(len(name) for name, _ in tools)
     lines = [f"  {name:<{width}}  {path}" for name, path in tools]
