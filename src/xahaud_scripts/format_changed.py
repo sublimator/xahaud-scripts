@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -217,9 +218,46 @@ def format_cmake_file(file_path: Path, root_dir: Path) -> bool:
         return False
 
 
+def _resolve_tool_paths() -> str:
+    """Resolve formatter binary paths for --help display."""
+    venv_bin = Path(sys.executable).parent
+
+    tools: list[tuple[str, str]] = []
+
+    # clang-format (C++) — via mise or bare
+    if shutil.which("mise"):
+        result = subprocess.run(
+            ["mise", "which", "clang-format"],
+            capture_output=True,
+            text=True,
+        )
+        cf_path = result.stdout.strip() if result.returncode == 0 else None
+    else:
+        cf_path = shutil.which("clang-format")
+    tools.append(("clang-format (C++)", cf_path or "not found"))
+
+    # shfmt (shell)
+    tools.append(("shfmt (shell)", shutil.which("shfmt") or "not found"))
+
+    # ruff (python)
+    ruff_path = venv_bin / "ruff"
+    tools.append(("ruff (python)", str(ruff_path) if ruff_path.exists() else "not found"))
+
+    # cmake-format (cmake)
+    cmf_path = venv_bin / "cmake-format"
+    tools.append(("cmake-format (cmake)", str(cmf_path) if cmf_path.exists() else "not found"))
+
+    width = max(len(name) for name, _ in tools)
+    lines = [f"  {name:<{width}}  {path}" for name, path in tools]
+    return "formatters:\n" + "\n".join(lines)
+
+
 def main() -> None:
     """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description="Format C++, shell, and Python files")
+    parser = argparse.ArgumentParser(
+        description=_resolve_tool_paths(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--all", action="store_true", help="Format all files")
     parser.add_argument(
         "--since",
