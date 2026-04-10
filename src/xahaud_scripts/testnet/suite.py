@@ -475,6 +475,7 @@ def run_suite(
     stop_on_fail: bool = True,
     snapshot_on_fail: bool = True,
     test_filter: list[str] | None = None,
+    test_n: int = 1,
     params_override: dict[str, Any] | None = None,
     env_override: dict[str, str] | None = None,
     dry_run: bool = False,
@@ -491,6 +492,7 @@ def run_suite(
         test_filter: If set, only run tests matching these names.
             Supports ``name[label]`` for exact match, or ``name``
             to match all variants.
+        test_n: Run each test this many times (default 1).
         params_override: If set, override all variant/params with these
             values (from ``--params-json``).
         env_override: If set, merge these env vars into every test config
@@ -522,7 +524,10 @@ def run_suite(
     if dry_run:
         console = Console(stderr=True)
         console.print(f"\n[bold]Suite:[/bold] {suite_path}")
-        console.print(f"[bold]Tests:[/bold] {len(tests)}")
+        tests_label = str(len(tests))
+        if test_n > 1:
+            tests_label += f" x {test_n} runs each"
+        console.print(f"[bold]Tests:[/bold] {tests_label}")
         for i, test in enumerate(tests, 1):
             config = suite.effective_network(test)
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
@@ -549,38 +554,64 @@ def run_suite(
     _rotate_log(combined_log)
 
     results: list[TestResult] = []
+    total_runs = len(tests) * test_n
+    run_label = (
+        f"{len(tests)} test(s)"
+        if test_n == 1
+        else f"{len(tests)} test(s) x {test_n} run(s) = {total_runs} run(s)"
+    )
 
-    logger.info(f"Running suite: {suite_path} ({len(tests)} test(s))")
+    logger.info(f"Running suite: {suite_path} ({run_label})")
     logger.info(f"  tail -F {combined_log}")
 
-    for i, test in enumerate(tests, 1):
+    run_num = 0
+    stopped = False
+    for test in tests:
         name = test["name"]
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"Test {i}/{len(tests)}: {name}")
-        logger.info(f"{'=' * 60}")
+        for attempt in range(1, test_n + 1):
+            run_num += 1
+            run_suffix = f" (run {attempt}/{test_n})" if test_n > 1 else ""
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"Test {run_num}/{total_runs}: {name}{run_suffix}")
+            logger.info(f"{'=' * 60}")
 
-        try:
-            result = _run_one_test(
-                xahaud_root,
-                suite,
-                test,
-                combined_log=combined_log,
-                snapshot_on_fail=snapshot_on_fail,
-                env_override=env_override,
-                py_log_specs=py_log_specs,
-                fast_bootstrap=fast_bootstrap,
+            try:
+                result = _run_one_test(
+                    xahaud_root,
+                    suite,
+                    test,
+                    combined_log=combined_log,
+                    snapshot_on_fail=snapshot_on_fail,
+                    env_override=env_override,
+                    py_log_specs=py_log_specs,
+                    fast_bootstrap=fast_bootstrap,
+                )
+            except KeyboardInterrupt:
+                logger.info("Suite interrupted — network left in place for inspection")
+                stopped = True
+                break
+
+            result_name = f"{name}{run_suffix}" if test_n > 1 else name
+            result = TestResult(
+                name=result_name,
+                passed=result.passed,
+                duration=result.duration,
+                error=result.error,
+                snapshot_dir=result.snapshot_dir,
             )
-        except KeyboardInterrupt:
-            logger.info("Suite interrupted — network left in place for inspection")
-            break
+            results.append(result)
 
-        results.append(result)
+            status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
+            Console(stderr=True).print(
+                f"  {result_name}: {status} ({result.duration:.1f}s)"
+            )
 
-        status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
-        Console(stderr=True).print(f"  {name}: {status} ({result.duration:.1f}s)")
+            if not result.passed and stop_on_fail:
+                logger.info("Stopping suite (--stop-on-fail)")
+                stopped = True
+                break
 
-        if not result.passed and stop_on_fail:
-            logger.info("Stopping suite (--stop-on-fail)")
+        if stopped:
             break
 
     return results

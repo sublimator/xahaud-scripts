@@ -2246,6 +2246,14 @@ def scenario_test_guide() -> None:
     multiple=True,
     help="Run only named test(s). Can be repeated.",
 )
+@click.option(
+    "--test-n",
+    "test_n",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Run each test N times (useful for catching flaky tests).",
+)
 @click.option("--dry-run", is_flag=True, help="Print suite plan without executing.")
 @click.option("--list-tests", is_flag=True, help="List test names and exit.")
 @click.option(
@@ -2281,6 +2289,7 @@ def suite(
     stop_on_fail: bool,
     snapshot_on_fail: bool,
     test_filter: tuple[str, ...],
+    test_n: int,
     dry_run: bool,
     list_tests: bool,
     params_json: str | None,
@@ -2352,6 +2361,7 @@ def suite(
         stop_on_fail=stop_on_fail,
         snapshot_on_fail=snapshot_on_fail,
         test_filter=list(test_filter) if test_filter else None,
+        test_n=test_n,
         params_override=params_override,
         env_override=env_override,
         dry_run=dry_run,
