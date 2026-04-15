@@ -499,6 +499,20 @@ def main(
         console.rule("[bold blue]Conan Install")
         run_cmd(["conan", "--version"])
 
+        # Ensure default profile exists (fresh machines have no profile)
+        profile_result = subprocess.run(
+            ["conan", "profile", "list", "--format=json"],
+            capture_output=True,
+            text=True,
+        )
+        profiles = json.loads(profile_result.stdout or "[]")
+        if "default" not in profiles:
+            console.print(
+                "[yellow]No default conan profile — "
+                "running `conan profile detect`...[/yellow]"
+            )
+            run_cmd(["conan", "profile", "detect"])
+
         # Check xrplf remote state (add if missing, enable for install, restore after)
         remotes_result = subprocess.run(
             ["conan", "remote", "list", "--format=json"],
