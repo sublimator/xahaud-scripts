@@ -397,6 +397,11 @@ def run_cmd(
     help="Test pattern (repeatable, e.g. --test xrpl.rpc.RPCSub).",
 )
 @click.option(
+    "--all-tests",
+    is_flag=True,
+    help="Run full beast unittest suite (default: no tests unless --test or --all-tests).",
+)
+@click.option(
     "--cover-file",
     multiple=True,
     help="Filter coverage to specific source files (can repeat).",
@@ -442,12 +447,19 @@ def run_cmd(
     default=True,
     help="Apply bundled patches before build (default: enabled).",
 )
+@click.option(
+    "--linker",
+    type=click.Choice(["auto", "mold", "lld", "default"]),
+    default="auto",
+    help="Linker: auto (prefer mold, then lld on Linux), mold, lld, or default.",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
 def main(
     coverage: bool,
     is_debug: bool,
     ccache: bool,
     test_patterns: tuple[str, ...],
+    all_tests: bool,
     cover_file: tuple[str, ...],
     cover_diff: str | None,
     uncovered_diff: bool,
@@ -459,6 +471,7 @@ def main(
     jobs: int,
     build_dir: str,
     patches: bool,
+    linker: str,
     verbose: bool,
 ) -> None:
     """Build xrpld with optional coverage support."""
@@ -610,6 +623,33 @@ def main(
             "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         ]
 
+    # Linker selection: auto prefers mold, then lld, on Linux only
+    selected_linker: str | None = None
+    if linker == "auto":
+        if sys.platform == "linux":
+            if shutil.which("mold"):
+                selected_linker = "mold"
+            elif shutil.which("ld.lld") or shutil.which("lld"):
+                selected_linker = "lld"
+    elif linker == "mold":
+        if not shutil.which("mold"):
+            console.print("[bold red]mold not found on PATH[/bold red]")
+            sys.exit(1)
+        selected_linker = "mold"
+    elif linker == "lld":
+        if not (shutil.which("ld.lld") or shutil.which("lld")):
+            console.print("[bold red]lld not found on PATH[/bold red]")
+            sys.exit(1)
+        selected_linker = "lld"
+
+    if selected_linker:
+        console.print(f"[green]Using linker: {selected_linker}[/green]")
+        cmake_args += [
+            f"-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld={selected_linker}",
+            f"-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld={selected_linker}",
+            f"-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld={selected_linker}",
+        ]
+
     # Use cmake presets when available (conan generates these and they handle
     # all the toolchain/path wiring correctly regardless of cmake_layout nesting)
     preset_name = f"conan-{build_type.lower()}"
@@ -694,8 +734,17 @@ def main(
         else:
             beast_patterns.append(pat)
 
-    needs_beast = not test_patterns or beast_patterns
+    # Tests only run when explicitly requested (--test or --all-tests)
+    run_all_beast = all_tests
+    needs_beast = run_all_beast or bool(beast_patterns)
+    has_any_tests = needs_beast or bool(gtest_targets)
     needs_xrpld = (not skip_test and needs_beast) or coverage
+
+    if coverage and not skip_test and not has_any_tests:
+        console.print(
+            "[yellow]--coverage with no tests (--all-tests or --test) "
+            "will produce empty coverage data[/yellow]"
+        )
 
     # Find the xrpld binary (may be nested when conan cmake_layout is used)
     xrpld_binary = None
@@ -725,31 +774,28 @@ def main(
             sys.exit(1)
 
     # ── Test ──
-    if not skip_test:
+    if not skip_test and has_any_tests:
         console.rule("[bold blue]Tests")
 
         # Run beast-style tests
-        if needs_beast:
-            if beast_patterns:
-                for i, pat in enumerate(beast_patterns):
-                    console.print(
-                        f"[bold]Run {i + 1}/{len(beast_patterns)}:[/bold] {pat}"
-                    )
-                    run_cmd(
-                        [
-                            str(xrpld_binary),
-                            "--unittest",
-                            pat,
-                            "--unittest-jobs",
-                            str(jobs),
-                        ],
-                        cwd=root,
-                    )
-            else:
+        if run_all_beast:
+            run_cmd(
+                [
+                    str(xrpld_binary),
+                    "--unittest",
+                    "--unittest-jobs",
+                    str(jobs),
+                ],
+                cwd=root,
+            )
+        elif beast_patterns:
+            for i, pat in enumerate(beast_patterns):
+                console.print(f"[bold]Run {i + 1}/{len(beast_patterns)}:[/bold] {pat}")
                 run_cmd(
                     [
                         str(xrpld_binary),
                         "--unittest",
+                        pat,
                         "--unittest-jobs",
                         str(jobs),
                     ],
