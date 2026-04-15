@@ -498,11 +498,37 @@ def main(
     if conan:
         console.rule("[bold blue]Conan Install")
         run_cmd(["conan", "--version"])
-        # Enable xrplf remote (may be disabled), restore state after install
-        subprocess.run(
-            ["conan", "remote", "enable", "xrplf"],
+
+        # Check xrplf remote state (add if missing, enable for install, restore after)
+        remotes_result = subprocess.run(
+            ["conan", "remote", "list", "--format=json"],
             capture_output=True,
+            text=True,
         )
+        xrplf_entry = next(
+            (
+                r
+                for r in json.loads(remotes_result.stdout or "[]")
+                if r.get("name") == "xrplf"
+            ),
+            None,
+        )
+        xrplf_existed = xrplf_entry is not None
+        xrplf_was_enabled = bool(xrplf_entry and xrplf_entry.get("enabled"))
+
+        if not xrplf_existed:
+            console.print(
+                "[yellow]Adding xrplf remote (https://conan.ripplex.io)...[/yellow]"
+            )
+            run_cmd(
+                ["conan", "remote", "add", "xrplf", "https://conan.ripplex.io"],
+            )
+        if not xrplf_was_enabled:
+            subprocess.run(
+                ["conan", "remote", "enable", "xrplf"],
+                capture_output=True,
+            )
+
         try:
             run_cmd(
                 [
@@ -531,10 +557,17 @@ def main(
                 env={"CONAN_CPU_COUNT": "4"},
             )
         finally:
-            subprocess.run(
-                ["conan", "remote", "disable", "xrplf"],
-                capture_output=True,
-            )
+            # Restore prior remote state
+            if not xrplf_existed:
+                subprocess.run(
+                    ["conan", "remote", "remove", "xrplf"],
+                    capture_output=True,
+                )
+            elif not xrplf_was_enabled:
+                subprocess.run(
+                    ["conan", "remote", "disable", "xrplf"],
+                    capture_output=True,
+                )
 
     # ── Apply Patches ──
     if patches:
