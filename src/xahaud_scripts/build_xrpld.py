@@ -453,6 +453,17 @@ def run_cmd(
     default="auto",
     help="Linker: auto (prefer mold, then lld on Linux), mold, lld, or default.",
 )
+@click.option(
+    "--build-tests/--no-build-tests",
+    default=True,
+    help="Compile tests into xrpld / build gtest binaries (default: enabled).",
+)
+@click.option(
+    "--target",
+    "cmake_targets",
+    multiple=True,
+    help="CMake build target (repeatable, e.g. --target xrpld --target rippled).",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
 def main(
     coverage: bool,
@@ -472,11 +483,20 @@ def main(
     build_dir: str,
     patches: bool,
     linker: str,
+    build_tests: bool,
+    cmake_targets: tuple[str, ...],
     verbose: bool,
 ) -> None:
     """Build xrpld with optional coverage support."""
     global VERBOSE  # noqa: PLW0603
     VERBOSE = verbose
+
+    if not build_tests and (all_tests or test_patterns):
+        console.print(
+            "[bold red]--no-build-tests is incompatible with "
+            "--all-tests or --test[/bold red]"
+        )
+        sys.exit(1)
 
     # Expose venv bin dir to subprocesses so tools like gcovr are found
     # (uv tool install runs us in a venv but subprocesses don't inherit it)
@@ -570,7 +590,7 @@ def main(
                     "-r",
                     "xrplf",
                     "--options:host",
-                    "&:tests=True",
+                    f"&:tests={'True' if build_tests else 'False'}",
                     "--options:host",
                     "&:xrpld=True",
                     "--settings:all",
@@ -605,7 +625,7 @@ def main(
     cmake_args = [
         "-Dassert=TRUE",
         "-Dwerr=TRUE",
-        "-Dtests=TRUE",
+        f"-Dtests={'TRUE' if build_tests else 'FALSE'}",
         "-Dxrpld=TRUE",
     ]
 
@@ -707,6 +727,8 @@ def main(
         build_cmd += [str(build_path), "--config", build_type]
     if clean_build:
         build_cmd += ["--clean-first"]
+    for t in cmake_targets:
+        build_cmd += ["--target", t]
     build_cmd += ["--parallel", str(jobs)]
     run_cmd(build_cmd, cwd=root)
 
