@@ -505,6 +505,11 @@ def run_cmd(
     metavar="KEY=VALUE",
     help="Extra cmake define (repeatable, e.g. -D xrpl_tagged_pointer_no_pool=ON).",
 )
+@click.option(
+    "--jemalloc",
+    is_flag=True,
+    help="Link jemalloc: conan -o &:jemalloc=True and cmake -Djemalloc=ON.",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
 def main(
     coverage: bool,
@@ -527,6 +532,7 @@ def main(
     build_tests: bool,
     cmake_targets: tuple[str, ...],
     cmake_defines: tuple[str, ...],
+    jemalloc: bool,
     verbose: bool,
 ) -> None:
     """Build xrpld with optional coverage support."""
@@ -618,30 +624,34 @@ def main(
                 capture_output=True,
             )
 
+        conan_install_args = [
+            "conan",
+            "install",
+            "--output-folder",
+            ".",
+            "--build",
+            "missing",
+            "-r",
+            "conancenter",
+            "-r",
+            "xrplf",
+            "--options:host",
+            f"&:tests={'True' if build_tests else 'False'}",
+            "--options:host",
+            "&:xrpld=True",
+        ]
+        if jemalloc:
+            conan_install_args += ["--options:host", "&:jemalloc=True"]
+        conan_install_args += [
+            "--settings:all",
+            f"build_type={build_type}",
+            "--conf",
+            "tools.build:cxxflags=['-Wno-missing-template-arg-list-after-template-kw']",
+            "..",
+        ]
         try:
             run_cmd(
-                [
-                    "conan",
-                    "install",
-                    "--output-folder",
-                    ".",
-                    "--build",
-                    "missing",
-                    "-r",
-                    "conancenter",
-                    "-r",
-                    "xrplf",
-                    "--options:host",
-                    f"&:tests={'True' if build_tests else 'False'}",
-                    "--options:host",
-                    "&:xrpld=True",
-                    "--settings:all",
-                    f"build_type={build_type}",
-                    "--conf",
-                    "tools.build:cxxflags="
-                    "['-Wno-missing-template-arg-list-after-template-kw']",
-                    "..",
-                ],
+                conan_install_args,
                 cwd=build_path,
                 env={"CONAN_CPU_COUNT": "4"},
             )
@@ -684,6 +694,9 @@ def main(
             "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
             "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         ]
+
+    if jemalloc:
+        cmake_args += ["-Djemalloc=ON"]
 
     # Linker selection: auto prefers mold, then lld, on Linux only
     selected_linker: str | None = None
