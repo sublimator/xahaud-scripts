@@ -341,6 +341,40 @@ def show_uncovered_diff(commitish: str, gcovr_json_path: Path, root: Path) -> No
             )
 
 
+def _check_stale_cmake_caches(build_path: Path, cmake_defines: tuple[str, ...]) -> None:
+    """Remove CMakeCache.txt files whose values are stale vs user-supplied -D.
+
+    cmake's `-D KEY=VALUE` normally overrides the cache, but stray cache
+    files in other build subdirs (or cache entries ignored by presets) can
+    silently keep old values. Walk every CMakeCache.txt under build_path and
+    delete any whose cached value for a user-supplied -D key differs.
+    """
+    if not cmake_defines:
+        return
+
+    desired: dict[str, str] = {}
+    for d in cmake_defines:
+        key, _, value = d.partition("=")
+        desired[key] = value
+
+    for cache_file in build_path.rglob("CMakeCache.txt"):
+        text = cache_file.read_text()
+        mismatches: list[str] = []
+        for key, want in desired.items():
+            m = re.search(
+                rf"^{re.escape(key)}:[A-Z]+=(.*)$", text, re.MULTILINE | re.IGNORECASE
+            )
+            if m and m.group(1).strip() != want:
+                mismatches.append(f"{key}={m.group(1).strip()} (want {want})")
+        if mismatches:
+            rel = cache_file.relative_to(build_path)
+            console.print(
+                f"[yellow]Stale cmake cache {rel}: "
+                f"{', '.join(mismatches)} — removing to force reconfigure[/yellow]"
+            )
+            cache_file.unlink()
+
+
 def _find_gtest_binary(build_path: Path, target: str, build_type: str) -> Path:
     """Find a gtest binary in the build tree.
 
@@ -464,6 +498,13 @@ def run_cmd(
     multiple=True,
     help="CMake build target (repeatable, e.g. --target xrpld --target rippled).",
 )
+@click.option(
+    "-D",
+    "cmake_defines",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Extra cmake define (repeatable, e.g. -D xrpl_tagged_pointer_no_pool=ON).",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose/debug logging.")
 def main(
     coverage: bool,
@@ -485,6 +526,7 @@ def main(
     linker: str,
     build_tests: bool,
     cmake_targets: tuple[str, ...],
+    cmake_defines: tuple[str, ...],
     verbose: bool,
 ) -> None:
     """Build xrpld with optional coverage support."""
@@ -669,6 +711,18 @@ def main(
             f"-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld={selected_linker}",
             f"-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld={selected_linker}",
         ]
+
+    # User-supplied -D defines (last so they win over built-in defaults)
+    for define in cmake_defines:
+        if "=" not in define:
+            console.print(
+                f"[bold red]Invalid -D value '{define}' (expected KEY=VALUE)[/bold red]"
+            )
+            sys.exit(1)
+        cmake_args.append(f"-D{define}")
+
+    # Remove any CMakeCache.txt whose cached values for user -D keys are stale
+    _check_stale_cmake_caches(build_path, cmake_defines)
 
     # Use cmake presets when available (conan generates these and they handle
     # all the toolchain/path wiring correctly regardless of cmake_layout nesting)
