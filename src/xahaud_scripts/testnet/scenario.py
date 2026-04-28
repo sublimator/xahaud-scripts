@@ -883,6 +883,7 @@ class ScenarioContext:
         Returns:
             Compiled WASM bytecode.
         """
+        import os
         import shutil
         import subprocess
 
@@ -893,12 +894,31 @@ class ScenarioContext:
                 )
             self._compiler_checked = True
 
-        result = subprocess.run(
-            ["hookz", "build", "-", "-o", "/dev/stdout"],
-            input=source.encode("utf-8"),
-            capture_output=True,
-            check=True,
+        xahaud_root = (
+            self._network.launch_config.xahaud_root
+            if self._network.launch_config is not None
+            else self._network.base_dir.parent
         )
+
+        env = os.environ.copy()
+        env["HOOKZ_XAHAUD"] = str(xahaud_root)
+        env["HOOKZ_XAHAUD_ROOT"] = str(xahaud_root)
+
+        try:
+            result = subprocess.run(
+                ["hookz", "build", "-", "-o", "/dev/stdout"],
+                input=source.encode("utf-8"),
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+        except subprocess.CalledProcessError as e:
+            stdout = e.stdout.decode("utf-8", "replace") if e.stdout else ""
+            stderr = e.stderr.decode("utf-8", "replace") if e.stderr else ""
+            raise RuntimeError(
+                f"hookz failed compiling {label} with xahaud root {xahaud_root}:\n"
+                f"{stdout}{stderr}"
+            ) from e
         return result.stdout
 
     # -- Transaction submission --------------------------------------------

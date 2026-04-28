@@ -73,6 +73,7 @@ class TestNetwork:
         self._rc_specs: list[str] = []
         self._launch_state: dict[str, Any] = {}
         self._start_time: float | None = None
+        self._launch_config: LaunchConfig | None = None
 
     @property
     def nodes(self) -> list[NodeInfo]:
@@ -103,6 +104,11 @@ class TestNetwork:
     def start_time(self) -> float | None:
         """Get network launch timestamp (epoch seconds)."""
         return self._start_time
+
+    @property
+    def launch_config(self) -> LaunchConfig | None:
+        """Get the launch config used for the current network, if launched."""
+        return self._launch_config
 
     def generate(
         self,
@@ -177,6 +183,8 @@ class TestNetwork:
         Args:
             launch_config: Launch configuration with paths and flags
         """
+        self._launch_config = launch_config
+
         # Load network info if not already loaded
         if not self._nodes:
             self._load_network_info()
