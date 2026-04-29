@@ -1,7 +1,6 @@
 """Build configuration detection and utilities."""
 
 import os
-import time
 from dataclasses import dataclass
 
 from xahaud_scripts.utils.logging import make_logger
@@ -87,16 +86,6 @@ def detect_previous_build_config(build_dir: str) -> dict:
         logger.warning(f"Could not analyze previous build configuration: {e}")
 
     return config
-
-
-def generate_coverage_prefix() -> str:
-    """Generate a prefix for coverage files to identify specific test runs.
-
-    Returns:
-        A string like 'coverage_run_1234567890123' with millisecond timestamp
-    """
-    timestamp_ms = int(time.time() * 1000)
-    return "coverage_run_" + str(timestamp_ms)
 
 
 def check_config_mismatch(

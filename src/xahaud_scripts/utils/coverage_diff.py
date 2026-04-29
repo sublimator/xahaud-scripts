@@ -1,6 +1,6 @@
 """Diff coverage analysis and visualization.
 
-Cross-references git diff hunks with LLVM coverage data to show
+Cross-references git diff hunks with gcovr coverage data to show
 which changed lines are not covered by tests. Uses Rich for
 syntax-highlighted output of uncovered code regions.
 """
@@ -20,12 +20,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from xahaud_scripts.utils.coverage import (
-    check_coverage_build,
-    find_and_merge_profdata,
-    find_binary,
-    get_llvm_tools,
-)
 from xahaud_scripts.utils.logging import make_logger
 from xahaud_scripts.utils.paths import get_xahaud_root
 
@@ -165,101 +159,6 @@ def parse_diff_hunks(
                     )
 
     return hunks
-
-
-def export_llvm_coverage(
-    profdata_path: str,
-    binary_path: str,
-    tool_commands: dict[str, list[str]],
-    source_files: list[str] | None = None,
-) -> dict | None:
-    """Run llvm-cov export and return parsed JSON.
-
-    Args:
-        profdata_path: Path to merged .profdata file.
-        binary_path: Path to the instrumented binary.
-        tool_commands: Dict from get_llvm_tools().
-        source_files: If provided, restrict export to these files
-            (absolute paths) to limit JSON size.
-
-    Returns:
-        Parsed JSON dict, or None on failure.
-    """
-    cmd = tool_commands["llvm-cov"] + [
-        "export",
-        binary_path,
-        f"-instr-profile={profdata_path}",
-        "-skip-functions",
-    ]
-
-    if source_files:
-        cmd.extend(source_files)
-
-    logger.info(f"Running llvm-cov export ({len(source_files or [])} files)...")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return json.loads(result.stdout)
-    except subprocess.CalledProcessError as e:
-        logger.error(f"llvm-cov export failed: {e.stderr[:500]}")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse llvm-cov export JSON: {e}")
-        return None
-
-
-def parse_line_coverage(
-    export_data: dict,
-) -> dict[str, dict[int, int]]:
-    """Extract per-line execution counts from llvm-cov export JSON.
-
-    Converts the segment-based coverage data into a simple
-    ``{filepath: {line_number: execution_count}}`` mapping.
-
-    The segment format is ``[line, col, count, hasCount, isRegionEntry, isGapRegion]``.
-    Segments define boundaries where coverage changes. Between consecutive
-    segments, the execution count is the count from the most recent segment.
-
-    Args:
-        export_data: Parsed JSON from llvm-cov export.
-
-    Returns:
-        Dict mapping absolute filepath to ``{line_number: count}``.
-    """
-    file_coverage: dict[str, dict[int, int]] = {}
-
-    for data_entry in export_data.get("data", []):
-        for file_data in data_entry.get("files", []):
-            filepath = file_data["filename"]
-            segments = file_data.get("segments", [])
-            line_counts: dict[int, int] = {}
-
-            for i, seg in enumerate(segments):
-                seg_line = seg[0]
-                seg_count = seg[2]
-                has_count = seg[3]
-
-                if not has_count:
-                    continue
-
-                # Determine end line from next segment
-                if i + 1 < len(segments):
-                    next_line = segments[i + 1][0]
-                    next_col = segments[i + 1][1]
-                    # If next segment starts at col 1, it owns that line
-                    end_line = next_line - 1 if next_col == 1 else next_line
-                else:
-                    end_line = seg_line
-
-                for line_no in range(seg_line, end_line + 1):
-                    # Max-count: line is "covered" if any region on it executed
-                    if line_no in line_counts:
-                        line_counts[line_no] = max(line_counts[line_no], seg_count)
-                    else:
-                        line_counts[line_no] = seg_count
-
-            file_coverage[filepath] = line_counts
-
-    return file_coverage
 
 
 def compute_diff_coverage(
@@ -475,82 +374,6 @@ def display_diff_coverage(
                     expand=False,
                 )
             )
-
-
-def do_diff_coverage_report(
-    build_dir: str,
-    commitish: str,
-    prefix: str | None = None,
-    context_lines: int = 3,
-) -> bool:
-    """Generate and display a diff coverage report.
-
-    Orchestrates the full flow: parse diff, export coverage, cross-reference,
-    and display results.
-
-    Args:
-        build_dir: Build directory with profraw/profdata and binary.
-        commitish: Git ref to diff against (e.g. "origin/dev").
-        prefix: Coverage file prefix filter.
-        context_lines: Context lines for display.
-
-    Returns:
-        True if successful.
-    """
-    if not check_coverage_build(build_dir):
-        return False
-
-    tool_commands = get_llvm_tools()
-    if tool_commands is None:
-        return False
-
-    profdata = find_and_merge_profdata(build_dir, tool_commands, prefix)
-    if profdata is None:
-        return False
-
-    binary = find_binary(build_dir)
-    if binary is None:
-        return False
-
-    repo_root = get_xahaud_root()
-
-    # Parse diff
-    diff_hunks = parse_diff_hunks(commitish, repo_root)
-    if not diff_hunks:
-        logger.info(f"No changes found since {commitish}")
-        return True
-
-    source_hunks = {
-        k: v
-        for k, v in diff_hunks.items()
-        if k.endswith(SOURCE_EXTENSIONS)
-        and not any(k.startswith(p) for p in SKIP_PREFIXES)
-    }
-    logger.info(f"Found changes in {len(source_hunks)} source files since {commitish}")
-
-    if not source_hunks:
-        logger.info("No source file changes to analyze")
-        return True
-
-    # Export coverage (restricted to changed files for performance)
-    abs_source_files = [os.path.join(repo_root, f) for f in source_hunks]
-    export_data = export_llvm_coverage(
-        str(profdata), str(binary), tool_commands, abs_source_files
-    )
-    if export_data is None:
-        return False
-
-    # Parse and cross-reference
-    line_coverage = parse_line_coverage(export_data)
-    summary = compute_diff_coverage(diff_hunks, line_coverage, repo_root)
-
-    # Display
-    display_diff_coverage(summary, repo_root, context_lines)
-
-    return True
-
-
-# ── v2 (gcovr) support ──────────────────────────────────────────────
 
 
 def _detect_gcov_tool() -> str:

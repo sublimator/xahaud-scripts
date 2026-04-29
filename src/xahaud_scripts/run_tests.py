@@ -25,12 +25,10 @@ from xahaud_scripts.build import (
     cmake_build,
     cmake_configure,
     conan_install,
-    generate_coverage_prefix,
 )
 from xahaud_scripts.build import (
     ccache_show_config as _ccache_show_config,
 )
-from xahaud_scripts.utils.coverage import do_generate_coverage_report
 from xahaud_scripts.utils.lldb import create_lldb_script
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
@@ -52,22 +50,6 @@ def get_build_output_path(xahaud_root: str, build_type: str) -> Path:
     return OUTPUTS_DIR / f"{slug}.txt"
 
 
-def detect_coverage_version(xahaud_root: str) -> str:
-    """Auto-detect coverage version from CMake files in the worktree.
-
-    Returns 'v2' if CodeCoverage.cmake exists (PR #661 gcovr-based),
-    otherwise 'v1' (llvm-cov based, origin/dev).
-    """
-    code_coverage_cmake = os.path.join(
-        xahaud_root, "Builds", "CMake", "CodeCoverage.cmake"
-    )
-    if os.path.exists(code_coverage_cmake):
-        logger.info("Auto-detected coverage v2 (CodeCoverage.cmake found)")
-        return "v2"
-    logger.info("Auto-detected coverage v1 (no CodeCoverage.cmake)")
-    return "v1"
-
-
 def do_build_jshooks_header(tee_file: Path | None = None) -> None:
     """Build the JS hooks header."""
     logger.info("Building JS hooks header...")
@@ -83,7 +65,6 @@ def do_build_jshooks_header(tee_file: Path | None = None) -> None:
 def build_rippled(
     reconfigure_build: bool = False,
     coverage: bool = False,
-    coverage_version: str = "v1",
     use_conan: bool = True,
     verbose: bool = False,
     use_ccache: bool = False,
@@ -162,7 +143,6 @@ def build_rippled(
         options = CMakeOptions(
             build_type=build_type,
             coverage=coverage,
-            coverage_version=coverage_version,
             verbose=verbose,
             ccache=use_ccache,
             ccache_basedir=ccache_basedir,
@@ -367,13 +347,7 @@ def run_rippled(
     "--coverage/--no-coverage",
     is_flag=True,
     default=False,
-    help="Build with code coverage support",
-)
-@click.option(
-    "--coverage-version",
-    type=click.Choice(["v1", "v2", "auto"], case_sensitive=False),
-    default="auto",
-    help="Coverage system: 'v1' for llvm-cov (origin/dev), 'v2' for gcovr (PR #661), 'auto' to detect from worktree. Default: auto.",
+    help="Build with code coverage support (gcov/gcovr).",
 )
 @click.option(
     "--conan/--no-conan",
@@ -392,17 +366,6 @@ def run_rippled(
     is_flag=True,
     default=False,
     help="Enable unity builds (faster clean builds, slower incremental; default: off)",
-)
-@click.option(
-    "--generate-coverage-report/--no-generate-coverage-report",
-    is_flag=True,
-    default=False,
-    help="Deprecated: reports are now generated automatically when coverage is enabled.",
-)
-@click.option(
-    "--coverage-file",
-    default=None,
-    help="Generate coverage report for a specific source file",
 )
 @click.option(
     "--ccache/--no-ccache",
@@ -508,12 +471,9 @@ def main(
     reconfigure_build,
     dry_run,
     coverage,
-    coverage_version,
     conan,
     verbose,
     unity,
-    generate_coverage_report,
-    coverage_file,
     ccache,
     ccache_basedir,
     ccache_sloppy,
@@ -532,41 +492,56 @@ def main(
 ):
     """Build and run rippled tests with support for debugging and coverage analysis.
 
-    Use -- to separate run-tests options from rippled arguments.
+    The trailing positional arg(s) are passed straight to rippled as the
+    --unittest filter. Multiple suites can be combined CSV-style — rippled
+    parses one comma-separated string into multiple suites in a single run.
+
+    The leading `--` is conventional but optional; anything after the known
+    options is forwarded as rippled args.
+
+    Suite-spec examples:
+        # Single suite
+        x-run-tests -- ripple.rpc.Catalogue
+
+        # Multiple suites in one run (CSV — rippled native)
+        x-run-tests -- ripple.core.Config,ripple.rdb.RelationalDatabase,ripple.rpc.Catalogue
+
+        # Same, no leading `--`
+        x-run-tests ripple.core.Config,ripple.rdb.RelationalDatabase
 
     Examples:
         # Run a basic unit test
-        run-tests -- unit_test_hook
+        x-run-tests -- unit_test_hook
 
         # Build with coverage (auto-generates report)
-        run-tests --build-type Coverage --reconfigure-build -- unit_test_hook
+        x-run-tests --build-type Coverage --reconfigure-build -- unit_test_hook
 
         # Coverage with diff-cover against origin/dev
-        run-tests --build-type Coverage --diff-cover -- unit_test_hook
+        x-run-tests --build-type Coverage --diff-cover -- unit_test_hook
 
         # Explicit coverage flags (equivalent to --build-type Coverage)
-        run-tests --coverage --reconfigure-build -- unit_test_hook
+        x-run-tests --coverage --reconfigure-build -- unit_test_hook
 
         # Run with debugger
-        run-tests --lldb -- unit_test_hook
+        x-run-tests --lldb -- unit_test_hook
 
         # Build with ccache (cache sharing between worktrees enabled by default)
-        run-tests --ccache --reconfigure-build -- unit_test_hook
+        x-run-tests --ccache --reconfigure-build -- unit_test_hook
 
         # Run multiple times
-        run-tests --times 5 --no-stop-on-fail -- unit_test_hook
+        x-run-tests --times 5 --no-stop-on-fail -- unit_test_hook
 
         # Build xrpld target instead of rippled
-        run-tests --target xrpld -- unit_test_hook
+        x-run-tests --target xrpld -- unit_test_hook
 
         # Build with Release build type
-        run-tests --build-type Release -- unit_test_hook
+        x-run-tests --build-type Release -- unit_test_hook
 
         # Dry run - show all commands without executing
-        run-tests --dry-run --reconfigure-build -- unit_test_hook
+        x-run-tests --dry-run --reconfigure-build -- unit_test_hook
 
         # Just build, no tests
-        run-tests --times=0 --build-type Release --reconfigure-build
+        x-run-tests --times=0 --build-type Release --reconfigure-build
     """
     # Set up logging first
     setup_logging(log_level, logger)
@@ -585,15 +560,6 @@ def main(
             "--diff-cover implies --coverage, enabling coverage instrumentation"
         )
         coverage = True
-
-    # Resolve coverage version (auto-detect if needed)
-    if coverage and coverage_version == "auto":
-        try:
-            xahaud_root = get_xahaud_root()
-            coverage_version = detect_coverage_version(xahaud_root)
-        except Exception:
-            logger.warning("Could not auto-detect coverage version, falling back to v1")
-            coverage_version = "v1"
 
     # Coverage forces Debug in cmake (RippledSettings.cmake), and conan
     # generator expressions are config-specific ($<$<CONFIG:Release>:...>)
@@ -722,7 +688,6 @@ def main(
                 build_successful = build_rippled(
                     reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
-                    coverage_version=coverage_version,
                     use_conan=conan,
                     verbose=verbose,
                     use_ccache=ccache,
@@ -759,7 +724,7 @@ def main(
                 logger.info("Skipping build as requested")
 
             # Clear stale .gcda files before test runs for clean coverage
-            if coverage and coverage_version == "v2" and not keep_gcda:
+            if coverage and not keep_gcda:
                 from pathlib import Path as _Path
 
                 gcda_files = list(_Path(build_dir).rglob("*.gcda"))
@@ -788,15 +753,6 @@ def main(
             # Run rippled with the appropriate arguments
             logger.info(f"Running rippled with args: {' '.join(rippled_args)}")
             env = os.environ.copy()
-            coverage_prefix = None
-            if coverage and coverage_version == "v1":
-                # v1: Generate a random prefix for llvm-cov profraw files
-                coverage_prefix = generate_coverage_prefix()
-                logger.info(f"Using coverage file prefix: {coverage_prefix}")
-
-                # Set LLVM_PROFILE_FILE environment variable to handle process forking
-                env["LLVM_PROFILE_FILE"] = f"{coverage_prefix}.%p.profraw"
-                logger.debug(f"Set LLVM_PROFILE_FILE={env['LLVM_PROFILE_FILE']}")
 
             # Determine which lldb mode to use
             use_lldb = lldb or lldb_all_threads
@@ -818,54 +774,35 @@ def main(
                 recorder.test_finished(exit_code)
 
             # Generate coverage report automatically when coverage is enabled
-            if coverage:
-                if coverage_version == "v2":
-                    # v2: run gcovr directly on .gcda files
-                    from xahaud_scripts.utils.coverage_diff import (
-                        do_generate_coverage_report_v2,
-                    )
+            # (skip if no tests ran — nothing new to report on).
+            if coverage and times > 0:
+                from xahaud_scripts.utils.coverage_diff import (
+                    do_generate_coverage_report_v2,
+                )
 
-                    do_generate_coverage_report_v2(
-                        build_dir=build_dir,
-                    )
-                else:
-                    # v1: use llvm-cov
-                    logger.info("Generating coverage report (v1/llvm-cov)...")
-                    do_generate_coverage_report(
-                        build_dir=build_dir,
-                        specific_file=coverage_file,
-                        prefix=coverage_prefix,
-                    )
+                do_generate_coverage_report_v2(build_dir=build_dir)
 
             # Generate diff coverage report if requested
-            if diff_cover and coverage:
-                if coverage_version == "v2":
-                    from xahaud_scripts.utils.coverage_diff import (
-                        do_diff_coverage_report_v2,
-                    )
+            if diff_cover and coverage and times > 0:
+                from xahaud_scripts.utils.coverage_diff import (
+                    do_diff_coverage_report_v2,
+                )
 
-                    logger.info(
-                        f"Generating diff coverage report via gcovr (since {diff_cover_since})..."
-                    )
-                    do_diff_coverage_report_v2(
-                        build_dir=build_dir,
-                        commitish=diff_cover_since,
-                        context_lines=diff_cover_context,
-                    )
-                else:
-                    from xahaud_scripts.utils.coverage_diff import (
-                        do_diff_coverage_report,
-                    )
-
-                    logger.info(
-                        f"Generating diff coverage report (since {diff_cover_since})..."
-                    )
-                    do_diff_coverage_report(
-                        build_dir=build_dir,
-                        commitish=diff_cover_since,
-                        prefix=coverage_prefix,
-                        context_lines=diff_cover_context,
-                    )
+                logger.info(
+                    f"Generating diff coverage report via gcovr "
+                    f"(since {diff_cover_since})..."
+                )
+                do_diff_coverage_report_v2(
+                    build_dir=build_dir,
+                    commitish=diff_cover_since,
+                    context_lines=diff_cover_context,
+                )
+            elif coverage and times == 0:
+                logger.info(
+                    "Skipping coverage report (--times=0, no tests run). "
+                    "Use x-coverage-report / x-coverage-diff against existing "
+                    ".gcda data when ready."
+                )
 
             # Return the exit code from the last process
             logger.info(f"Exiting with code {exit_code}")
@@ -918,6 +855,184 @@ def tail_build(build_type: str) -> None:
     tee_file = get_build_output_path(xahaud_root, build_type)
     click.echo(f"Following {tee_file}  (Ctrl+C to stop)", err=True)
     os.execvp("tail", ["tail", "-F", str(tee_file)])
+
+
+def _resolve_build_dir(xahaud_root: str, build_type: str, build_dir: str | None) -> str:
+    """Resolve the build dir (default: build-debug for Debug, build for Release)."""
+    if build_dir is None:
+        dir_name = "build-debug" if build_type.lower() == "debug" else "build"
+        return os.path.join(xahaud_root, dir_name)
+    return os.path.join(xahaud_root, build_dir)
+
+
+def _has_gcda(build_dir: str) -> bool:
+    """True if any .gcda exists under build_dir (short-circuits via find -quit)."""
+    if not os.path.isdir(build_dir):
+        return False
+    result = subprocess.run(
+        ["find", build_dir, "-name", "*.gcda", "-print", "-quit"],
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+@click.command("coverage-diff")
+@click.option(
+    "--since",
+    default="origin/dev",
+    help="Commitish to diff against (default: origin/dev).",
+)
+@click.option(
+    "--build-type",
+    type=click.Choice(["Debug", "Release", "Coverage"], case_sensitive=False),
+    default="Debug",
+    help="Build type used (default: Debug). Coverage maps to Debug.",
+)
+@click.option(
+    "--build-dir",
+    default=None,
+    help="Build directory (default: build-debug for Debug, build for Release).",
+)
+@click.option(
+    "--context-lines",
+    type=int,
+    default=3,
+    help="Source context lines around uncovered ranges (default: 3).",
+)
+@click.option(
+    "--from-json",
+    "from_json",
+    default=None,
+    help=(
+        "Reuse an existing gcovr coverage.json instead of re-running gcovr "
+        "(fast). Defaults to <build-dir>/coverage/coverage.json when present."
+    ),
+)
+@click.option(
+    "--regenerate",
+    is_flag=True,
+    help="Force regeneration (ignore any cached coverage.json).",
+)
+def coverage_diff(
+    since: str,
+    build_type: str,
+    build_dir: str | None,
+    context_lines: int,
+    from_json: str | None,
+    regenerate: bool,
+) -> None:
+    """Show diff coverage from accumulated .gcda data — no build, no test run.
+
+    Uses gcovr against rippled's native coverage build (-Dcoverage=ON).
+    """
+    if build_type.lower() == "coverage":
+        build_type = "Debug"
+    try:
+        xahaud_root = get_xahaud_root()
+    except Exception as e:
+        raise click.ClickException(f"Could not find xahaud root: {e}") from e
+
+    build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
+
+    # Fast path: reuse an existing coverage.json instead of re-running gcovr
+    # (gcovr on a rippled debug tree invokes gcov on thousands of .gcda files
+    # and can take minutes — reusing a prior JSON is near-instant).
+    cached_json = (
+        Path(from_json) if from_json else Path(build_dir) / "coverage" / "coverage.json"
+    )
+    if not regenerate and cached_json.exists():
+        from xahaud_scripts.utils.coverage_diff import (
+            _parse_gcovr_line_coverage,
+            compute_diff_coverage,
+            display_diff_coverage,
+            parse_diff_hunks,
+        )
+
+        logger.info(f"Reusing cached coverage data: {cached_json}")
+        logger.info("(use --regenerate to force a fresh gcovr run)")
+        diff_hunks = parse_diff_hunks(since, xahaud_root)
+        if not diff_hunks:
+            logger.info(f"No changes since {since}")
+            return
+        line_coverage = _parse_gcovr_line_coverage(cached_json)
+        summary = compute_diff_coverage(diff_hunks, line_coverage, xahaud_root)
+        display_diff_coverage(summary, xahaud_root, context_lines)
+        return
+
+    if not _has_gcda(build_dir):
+        raise click.ClickException(
+            f"No .gcda files under {build_dir}. "
+            "Run an instrumented test run first (--coverage)."
+        )
+
+    from xahaud_scripts.utils.coverage_diff import do_diff_coverage_report_v2
+
+    logger.info(f"Diff coverage via gcovr since {since} on {build_dir}")
+    logger.info(
+        "Note: gcovr will invoke gcov on every .gcda in the tree — "
+        "this can take minutes on a debug build."
+    )
+    do_diff_coverage_report_v2(
+        build_dir=build_dir,
+        commitish=since,
+        context_lines=context_lines,
+    )
+
+
+@click.command("coverage-report")
+@click.option(
+    "--build-type",
+    type=click.Choice(["Debug", "Release", "Coverage"], case_sensitive=False),
+    default="Debug",
+    help="Build type used (default: Debug). Coverage maps to Debug.",
+)
+@click.option(
+    "--build-dir",
+    default=None,
+    help="Build directory (default: build-debug for Debug, build for Release).",
+)
+@click.option(
+    "--regenerate",
+    is_flag=True,
+    help=(
+        "Force a fresh run even if <build-dir>/coverage/coverage.json already exists."
+    ),
+)
+def coverage_report(
+    build_type: str,
+    build_dir: str | None,
+    regenerate: bool,
+) -> None:
+    """Generate full coverage report from existing .gcda data — no build, no run.
+
+    Runs gcovr and writes <build-dir>/coverage/coverage.json (+HTML).
+    """
+    if build_type.lower() == "coverage":
+        build_type = "Debug"
+    try:
+        xahaud_root = get_xahaud_root()
+    except Exception as e:
+        raise click.ClickException(f"Could not find xahaud root: {e}") from e
+
+    build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
+
+    existing_json = Path(build_dir) / "coverage" / "coverage.json"
+    if existing_json.exists() and not regenerate:
+        logger.info(f"Coverage report already exists: {existing_json}")
+        logger.info("(use --regenerate to force a fresh gcovr run)")
+        return
+
+    if not _has_gcda(build_dir):
+        raise click.ClickException(
+            f"No .gcda files under {build_dir}. "
+            "Run an instrumented test run first (--coverage)."
+        )
+
+    from xahaud_scripts.utils.coverage_diff import do_generate_coverage_report_v2
+
+    logger.info(f"Generating coverage report (gcovr) for {build_dir}")
+    do_generate_coverage_report_v2(build_dir=build_dir)
 
 
 if __name__ == "__main__":

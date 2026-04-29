@@ -21,12 +21,10 @@ from xahaud_scripts.build.config import (
     BuildConfig,
     check_config_mismatch,
     detect_previous_build_config,
-    generate_coverage_prefix,
 )
 
 __all__ = [
     "detect_previous_build_config",
-    "generate_coverage_prefix",
     "check_config_mismatch",
     "BuildConfig",
     "conan_install",
