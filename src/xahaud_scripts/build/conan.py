@@ -25,14 +25,33 @@ def check_conan_available() -> bool:
     return True
 
 
-def conan_toolchain_present(build_dir: str) -> bool:
-    """Return True if the conan-generated toolchain exists in build_dir.
+def find_conan_toolchain(build_dir: str) -> Path | None:
+    """Locate ``conan_toolchain.cmake`` anywhere under ``build_dir``.
 
-    Looks for ``<build_dir>/generators/conan_toolchain.cmake`` (the path the
-    cmake configure step expects). When this is missing, ``cmake --preset`` /
-    ``-DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake`` will fail.
+    Conan's exact write location depends on the ``cmake_layout`` settings
+    in conanfile.py and the ``--output-folder`` we pass — common layouts:
+
+      * ``<build_dir>/generators/conan_toolchain.cmake`` (legacy: no
+        ``--output-folder``, build_dir matched conan's default ``build/``)
+      * ``<build_dir>/build/generators/conan_toolchain.cmake``
+        (``--output-folder .`` from build_dir, when the project sets
+        ``self.folders.generators = 'build/generators'``)
+      * ``<build_dir>/build/<Config>/generators/conan_toolchain.cmake``
+        (multi-config layouts)
+
+    Rather than hard-code one path, find whichever the current install
+    actually produced. Prefers the shallowest match.
     """
-    return (Path(build_dir) / "generators" / "conan_toolchain.cmake").is_file()
+    bp = Path(build_dir)
+    if not bp.is_dir():
+        return None
+    matches = sorted(bp.rglob("conan_toolchain.cmake"), key=lambda p: len(p.parts))
+    return matches[0] if matches else None
+
+
+def conan_toolchain_present(build_dir: str) -> bool:
+    """Return True if a conan-generated toolchain exists somewhere under build_dir."""
+    return find_conan_toolchain(build_dir) is not None
 
 
 def conan_install(
