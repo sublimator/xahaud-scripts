@@ -40,6 +40,13 @@ class CMakeOptions:
 
     build_type: str = "Debug"
     coverage: bool = False
+    # Coverage implementation: "gcov" (project-native -Dcoverage=ON) or
+    # "llvm-injected" (no -Dcoverage=ON; only CMAKE_CXX_FLAGS gets the
+    # LLVM source-based instrumentation). Named "-injected" because LLVM
+    # is not yet the project's native coverage option — we're stuffing
+    # the flags into a non-coverage build. If/when upstream adds a
+    # native LLVM path, that gets a separate name (e.g. "llvm-native").
+    coverage_impl: str = "gcov"
     verbose: bool = False
     ccache: bool = False
     ccache_basedir: str | None = None  # Absolute path for cache sharing
@@ -118,10 +125,31 @@ def cmake_configure(
                     "ccache requested but not found in PATH, continuing without it"
                 )
 
-        # Coverage: rely on rippled's native cmake (gcov via gcovr).
+        # Coverage:
+        #   gcov           → -Dcoverage=ON (rippled's native gcov path → gcovr)
+        #   llvm-injected  → CMAKE_CXX_FLAGS only; do NOT set -Dcoverage=ON
+        #                    (else clang accepts both --coverage and
+        #                    -fprofile-instr-generate, producing .gcda AND
+        #                    .profraw simultaneously). Build dir should be
+        #                    separate from the gcov build to avoid mixing.
         if options.coverage:
-            logger.info("Configuring build with coverage instrumentation (gcov/gcovr)")
-            cmake_cmd.append("-Dcoverage=ON")
+            if options.coverage_impl == "llvm-injected":
+                logger.info(
+                    "Configuring build with LLVM source-based coverage "
+                    "(injected via CMAKE_CXX_FLAGS; no -Dcoverage=ON)"
+                )
+                llvm_flags = "-O0 -fcoverage-mapping -fprofile-instr-generate"
+                cmake_cmd.extend(
+                    [
+                        f"-DCMAKE_CXX_FLAGS={llvm_flags}",
+                        f"-DCMAKE_C_FLAGS={llvm_flags}",
+                    ]
+                )
+            else:
+                logger.info(
+                    "Configuring build with coverage instrumentation (gcov/gcovr)"
+                )
+                cmake_cmd.append("-Dcoverage=ON")
         else:
             logger.info(f"Configuring standard {options.build_type} build")
 

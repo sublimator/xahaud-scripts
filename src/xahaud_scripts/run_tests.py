@@ -25,6 +25,7 @@ from xahaud_scripts.build import (
     cmake_build,
     cmake_configure,
     conan_install,
+    conan_toolchain_present,
 )
 from xahaud_scripts.build import (
     ccache_show_config as _ccache_show_config,
@@ -65,6 +66,7 @@ def do_build_jshooks_header(tee_file: Path | None = None) -> None:
 def build_rippled(
     reconfigure_build: bool = False,
     coverage: bool = False,
+    coverage_impl: str = "gcov",
     use_conan: bool = True,
     verbose: bool = False,
     use_ccache: bool = False,
@@ -110,8 +112,18 @@ def build_rippled(
     # Check if build directory exists
     build_dir_exists = os.path.exists(build_dir)
 
-    # Determine if we need to configure
+    # Determine if we need to configure.
     need_configure = not build_dir_exists or reconfigure_build
+
+    # If the build dir exists but the conan toolchain isn't there
+    # (e.g. a fresh build-debug-llvm/ created by a previous failed run,
+    # or the user wiped generators/), force a conan install + reconfigure.
+    if use_conan and not need_configure and not conan_toolchain_present(build_dir):
+        logger.warning(
+            f"{build_dir} exists but generators/conan_toolchain.cmake is missing — "
+            "forcing conan install + cmake reconfigure."
+        )
+        need_configure = True
 
     # Check for configuration mismatch if not reconfiguring
     if build_dir_exists and not need_configure:
@@ -133,6 +145,7 @@ def build_rippled(
         success = conan_install(
             xahaud_root=xahaud_root,
             build_type=build_type,
+            build_dir=build_dir,
             dry_run=dry_run,
         )
         if not success:
@@ -143,6 +156,7 @@ def build_rippled(
         options = CMakeOptions(
             build_type=build_type,
             coverage=coverage,
+            coverage_impl=coverage_impl,
             verbose=verbose,
             ccache=use_ccache,
             ccache_basedir=ccache_basedir,
@@ -350,6 +364,19 @@ def run_rippled(
     help="Build with code coverage support (gcov/gcovr).",
 )
 @click.option(
+    "--coverage-impl",
+    type=click.Choice(["gcov", "llvm-injected"], case_sensitive=False),
+    default="gcov",
+    help=(
+        "Coverage implementation. 'gcov' (default) sets -Dcoverage=ON and "
+        "uses rippled's native gcov path → gcovr. 'llvm-injected' bypasses "
+        "the project's coverage option and injects LLVM source-based "
+        "instrumentation via CMAKE_CXX_FLAGS only — useful for off-project "
+        "comparison. Uses a segregated build dir to keep .profraw and "
+        ".gcda artifacts from cross-contaminating."
+    ),
+)
+@click.option(
     "--conan/--no-conan",
     is_flag=True,
     default=True,
@@ -471,6 +498,7 @@ def main(
     reconfigure_build,
     dry_run,
     coverage,
+    coverage_impl,
     conan,
     verbose,
     unity,
@@ -637,6 +665,11 @@ def main(
         xahaud_root = get_xahaud_root()
         if build_dir is None:
             dir_name = "build-debug" if build_type.lower() == "debug" else "build"
+            # Segregate llvm-injected coverage builds so .profraw artifacts
+            # don't mix with .gcda from the gcov build (different
+            # instrumentation, different layouts, different reporting tools).
+            if coverage and coverage_impl == "llvm-injected":
+                dir_name = f"{dir_name}-llvm"
             build_dir = os.path.join(xahaud_root, dir_name)
         else:
             build_dir = os.path.join(xahaud_root, build_dir)
@@ -688,6 +721,7 @@ def main(
                 build_successful = build_rippled(
                     reconfigure_build=reconfigure_build or dry_run,
                     coverage=coverage,
+                    coverage_impl=coverage_impl,
                     use_conan=conan,
                     verbose=verbose,
                     use_ccache=ccache,
@@ -723,16 +757,21 @@ def main(
             else:
                 logger.info("Skipping build as requested")
 
-            # Clear stale .gcda files before test runs for clean coverage
+            # Clear stale .gcda / .profraw before test runs for clean coverage
             if coverage and not keep_gcda:
                 from pathlib import Path as _Path
 
-                gcda_files = list(_Path(build_dir).rglob("*.gcda"))
-                if gcda_files:
+                if coverage_impl == "llvm-injected":
+                    stale = list(_Path(build_dir).rglob("*.profraw"))
+                    label = ".profraw"
+                else:
+                    stale = list(_Path(build_dir).rglob("*.gcda"))
+                    label = ".gcda"
+                if stale:
                     logger.info(
-                        f"Clearing {len(gcda_files)} .gcda files from previous runs..."
+                        f"Clearing {len(stale)} {label} files from previous runs..."
                     )
-                    for f in gcda_files:
+                    for f in stale:
                         f.unlink()
 
             # Strip accidental --unittest / -u from rippled args (already added by run_rippled)
@@ -753,6 +792,13 @@ def main(
             # Run rippled with the appropriate arguments
             logger.info(f"Running rippled with args: {' '.join(rippled_args)}")
             env = os.environ.copy()
+            if coverage and coverage_impl == "llvm-injected":
+                # Each child process writes a uniquely-named .profraw so
+                # forks/sub-processes don't clobber each other.
+                env["LLVM_PROFILE_FILE"] = os.path.join(
+                    build_dir, "rippled-%p-%m.profraw"
+                )
+                logger.debug(f"LLVM_PROFILE_FILE={env['LLVM_PROFILE_FILE']}")
 
             # Determine which lldb mode to use
             use_lldb = lldb or lldb_all_threads
@@ -776,32 +822,54 @@ def main(
             # Generate coverage report automatically when coverage is enabled
             # (skip if no tests ran — nothing new to report on).
             if coverage and times > 0:
-                from xahaud_scripts.utils.coverage_diff import (
-                    do_generate_coverage_report_v2,
-                )
+                if coverage_impl == "llvm-injected":
+                    from xahaud_scripts.utils.coverage_llvm import (
+                        do_generate_coverage_report_llvm,
+                    )
 
-                do_generate_coverage_report_v2(build_dir=build_dir)
+                    do_generate_coverage_report_llvm(build_dir=build_dir)
+                else:
+                    from xahaud_scripts.utils.coverage_diff import (
+                        do_generate_coverage_report_v2,
+                    )
+
+                    do_generate_coverage_report_v2(build_dir=build_dir)
 
             # Generate diff coverage report if requested
             if diff_cover and coverage and times > 0:
-                from xahaud_scripts.utils.coverage_diff import (
-                    do_diff_coverage_report_v2,
-                )
+                if coverage_impl == "llvm-injected":
+                    from xahaud_scripts.utils.coverage_llvm import (
+                        do_diff_coverage_report_llvm,
+                    )
 
-                logger.info(
-                    f"Generating diff coverage report via gcovr "
-                    f"(since {diff_cover_since})..."
-                )
-                do_diff_coverage_report_v2(
-                    build_dir=build_dir,
-                    commitish=diff_cover_since,
-                    context_lines=diff_cover_context,
-                )
+                    logger.info(
+                        f"Generating diff coverage report via llvm-cov "
+                        f"(since {diff_cover_since})..."
+                    )
+                    do_diff_coverage_report_llvm(
+                        build_dir=build_dir,
+                        commitish=diff_cover_since,
+                        context_lines=diff_cover_context,
+                    )
+                else:
+                    from xahaud_scripts.utils.coverage_diff import (
+                        do_diff_coverage_report_v2,
+                    )
+
+                    logger.info(
+                        f"Generating diff coverage report via gcovr "
+                        f"(since {diff_cover_since})..."
+                    )
+                    do_diff_coverage_report_v2(
+                        build_dir=build_dir,
+                        commitish=diff_cover_since,
+                        context_lines=diff_cover_context,
+                    )
             elif coverage and times == 0:
                 logger.info(
                     "Skipping coverage report (--times=0, no tests run). "
                     "Use x-coverage-report / x-coverage-diff against existing "
-                    ".gcda data when ready."
+                    "coverage data when ready."
                 )
 
             # Return the exit code from the last process
@@ -892,7 +960,17 @@ def _has_gcda(build_dir: str) -> bool:
 @click.option(
     "--build-dir",
     default=None,
-    help="Build directory (default: build-debug for Debug, build for Release).",
+    help="Build directory (default: build-debug[-llvm] for Debug, build for Release).",
+)
+@click.option(
+    "--coverage-impl",
+    type=click.Choice(["gcov", "llvm-injected"], case_sensitive=False),
+    default="gcov",
+    help=(
+        "Which artifacts to consume. 'gcov' (default) processes .gcda via "
+        "gcovr. 'llvm-injected' merges .profraw via llvm-profdata and runs "
+        "llvm-cov export."
+    ),
 )
 @click.option(
     "--context-lines",
@@ -906,7 +984,8 @@ def _has_gcda(build_dir: str) -> bool:
     default=None,
     help=(
         "Reuse an existing gcovr coverage.json instead of re-running gcovr "
-        "(fast). Defaults to <build-dir>/coverage/coverage.json when present."
+        "(fast). Defaults to <build-dir>/coverage/coverage.json when present. "
+        "gcov path only."
     ),
 )
 @click.option(
@@ -918,13 +997,15 @@ def coverage_diff(
     since: str,
     build_type: str,
     build_dir: str | None,
+    coverage_impl: str,
     context_lines: int,
     from_json: str | None,
     regenerate: bool,
 ) -> None:
-    """Show diff coverage from accumulated .gcda data — no build, no test run.
+    """Show diff coverage from accumulated coverage data — no build, no test run.
 
-    Uses gcovr against rippled's native coverage build (-Dcoverage=ON).
+    'gcov' (default): runs gcovr against .gcda. 'llvm-injected': merges
+    .profraw + llvm-cov export against the segregated build-debug-llvm/.
     """
     if build_type.lower() == "coverage":
         build_type = "Debug"
@@ -933,7 +1014,24 @@ def coverage_diff(
     except Exception as e:
         raise click.ClickException(f"Could not find xahaud root: {e}") from e
 
-    build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
+    if build_dir is None and coverage_impl == "llvm-injected":
+        dir_name = "build-debug-llvm" if build_type.lower() == "debug" else "build-llvm"
+        build_dir = os.path.join(xahaud_root, dir_name)
+    else:
+        build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
+
+    if coverage_impl == "llvm-injected":
+        from xahaud_scripts.utils.coverage_llvm import do_diff_coverage_report_llvm
+
+        logger.info(f"Diff coverage via llvm-cov since {since} on {build_dir}")
+        ok = do_diff_coverage_report_llvm(
+            build_dir=build_dir,
+            commitish=since,
+            context_lines=context_lines,
+        )
+        if not ok:
+            raise click.ClickException("LLVM diff coverage failed.")
+        return
 
     # Fast path: reuse an existing coverage.json instead of re-running gcovr
     # (gcovr on a rippled debug tree invokes gcov on thousands of .gcda files
@@ -990,7 +1088,17 @@ def coverage_diff(
 @click.option(
     "--build-dir",
     default=None,
-    help="Build directory (default: build-debug for Debug, build for Release).",
+    help="Build directory (default: build-debug[-llvm] for Debug, build for Release).",
+)
+@click.option(
+    "--coverage-impl",
+    type=click.Choice(["gcov", "llvm-injected"], case_sensitive=False),
+    default="gcov",
+    help=(
+        "Which artifacts to consume. 'gcov' (default) processes .gcda via "
+        "gcovr. 'llvm-injected' merges .profraw via llvm-profdata and runs "
+        "llvm-cov export."
+    ),
 )
 @click.option(
     "--regenerate",
@@ -1002,11 +1110,15 @@ def coverage_diff(
 def coverage_report(
     build_type: str,
     build_dir: str | None,
+    coverage_impl: str,
     regenerate: bool,
 ) -> None:
-    """Generate full coverage report from existing .gcda data — no build, no run.
+    """Generate full coverage report from existing artifacts — no build, no run.
 
-    Runs gcovr and writes <build-dir>/coverage/coverage.json (+HTML).
+    'gcov' (default): runs gcovr, writes <build-dir>/coverage/coverage.json
+    (+HTML). 'llvm-injected': llvm-profdata merge + llvm-cov export →
+    coverage.json, coverage.lcov, coverage-summary.txt under
+    <build-dir>/coverage/.
     """
     if build_type.lower() == "coverage":
         build_type = "Debug"
@@ -1015,12 +1127,27 @@ def coverage_report(
     except Exception as e:
         raise click.ClickException(f"Could not find xahaud root: {e}") from e
 
-    build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
+    if build_dir is None and coverage_impl == "llvm-injected":
+        # Match the segregated dir x-run-tests creates for llvm-injected
+        # builds so the report defaults Just Work.
+        dir_name = "build-debug-llvm" if build_type.lower() == "debug" else "build-llvm"
+        build_dir = os.path.join(xahaud_root, dir_name)
+    else:
+        build_dir = _resolve_build_dir(xahaud_root, build_type, build_dir)
 
     existing_json = Path(build_dir) / "coverage" / "coverage.json"
     if existing_json.exists() and not regenerate:
         logger.info(f"Coverage report already exists: {existing_json}")
-        logger.info("(use --regenerate to force a fresh gcovr run)")
+        logger.info("(use --regenerate to force a fresh run)")
+        return
+
+    if coverage_impl == "llvm-injected":
+        from xahaud_scripts.utils.coverage_llvm import (
+            do_generate_coverage_report_llvm,
+        )
+
+        logger.info(f"Generating coverage report (llvm-cov) for {build_dir}")
+        do_generate_coverage_report_llvm(build_dir=build_dir)
         return
 
     if not _has_gcda(build_dir):

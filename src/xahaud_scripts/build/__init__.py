@@ -16,7 +16,7 @@ from xahaud_scripts.build.cmake import (
     cmake_build,
     cmake_configure,
 )
-from xahaud_scripts.build.conan import conan_install
+from xahaud_scripts.build.conan import conan_install, conan_toolchain_present
 from xahaud_scripts.build.config import (
     BuildConfig,
     check_config_mismatch,
@@ -28,6 +28,7 @@ __all__ = [
     "check_config_mismatch",
     "BuildConfig",
     "conan_install",
+    "conan_toolchain_present",
     "cmake_configure",
     "cmake_build",
     "CMakeOptions",
