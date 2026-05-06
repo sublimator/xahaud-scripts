@@ -73,6 +73,22 @@ class DiffCoverageResult:
     covered_lines: set[int] = field(default_factory=set)
     uncovered_lines: set[int] = field(default_factory=set)
     no_coverage_data: bool = False
+    # Branch coverage on changed lines (llvm-cov path only; gcovr path
+    # leaves these zero). branches_taken counts branch sides that fired
+    # at least once; branches_total counts all branch sides (2 per branch).
+    branches_taken: int = 0
+    branches_total: int = 0
+    # Lines whose own line counter is non-zero but where a branch on that
+    # line is only partially taken (e.g. an `if` whose true side fired but
+    # not its false side). These look "covered" by line metric but
+    # under-tested by branch metric.
+    partial_branch_lines: set[int] = field(default_factory=set)
+    # Per-line per-branch detail: {line: [(col, true_count, false_count), …]}.
+    # Only populated for lines in the diff. Used for inline annotations like
+    # "Branch (812:13): [True: 0, False: 24]" — mirrors llvm-cov show output.
+    branches_per_line: dict[int, list[tuple[int, int, int]]] = field(
+        default_factory=dict
+    )
 
     @property
     def total_changed(self) -> int:
@@ -87,6 +103,13 @@ class DiffCoverageResult:
         if not self.changed_lines:
             return 100.0
         return (len(self.covered_lines) / len(self.changed_lines)) * 100
+
+    @property
+    def branch_pct(self) -> float | None:
+        """None when there's no branch data (e.g. gcovr path), else %."""
+        if self.branches_total == 0:
+            return None
+        return (self.branches_taken / self.branches_total) * 100
 
 
 @dataclass
@@ -112,6 +135,20 @@ class DiffCoverageSummary:
     @property
     def files_with_uncovered(self) -> list[DiffCoverageResult]:
         return [r for r in self.file_results if r.uncovered_lines]
+
+    @property
+    def total_branches_taken(self) -> int:
+        return sum(r.branches_taken for r in self.file_results)
+
+    @property
+    def total_branches(self) -> int:
+        return sum(r.branches_total for r in self.file_results)
+
+    @property
+    def branch_coverage_pct(self) -> float | None:
+        if self.total_branches == 0:
+            return None
+        return (self.total_branches_taken / self.total_branches) * 100
 
 
 def parse_diff_hunks(
@@ -165,6 +202,7 @@ def compute_diff_coverage(
     diff_hunks: dict[str, list[tuple[int, int]]],
     line_coverage: dict[str, dict[int, int]],
     repo_root: str,
+    branch_coverage: (dict[str, dict[int, list[tuple[int, int, int]]]] | None) = None,
 ) -> DiffCoverageSummary:
     """Cross-reference diff hunks with coverage data.
 
@@ -175,6 +213,12 @@ def compute_diff_coverage(
         diff_hunks: From parse_diff_hunks(), relative paths to line ranges.
         line_coverage: From parse_line_coverage(), absolute paths to line counts.
         repo_root: To convert between relative and absolute paths.
+        branch_coverage: Optional per-branch detail, llvm-cov path only.
+            Shape: ``{abspath: {line: [(col, true_count, false_count), ...]}}``.
+            When present, per-line branch sides are summed across changed
+            lines (each branch contributes 2 to the total — one per side)
+            and lines whose own line counter > 0 but at least one branch
+            side never fired are flagged as partial-branch.
 
     Returns:
         DiffCoverageSummary with per-file results.
@@ -185,6 +229,11 @@ def compute_diff_coverage(
     cov_by_realpath: dict[str, dict[int, int]] = {}
     for abs_path, counts in line_coverage.items():
         cov_by_realpath[os.path.realpath(abs_path)] = counts
+
+    branch_by_realpath: dict[str, dict[int, list[tuple[int, int, int]]]] = {}
+    if branch_coverage:
+        for abs_path, branches in branch_coverage.items():
+            branch_by_realpath[os.path.realpath(abs_path)] = branches
 
     for rel_path, ranges in sorted(diff_hunks.items()):
         # Filter to source files
@@ -233,12 +282,41 @@ def compute_diff_coverage(
                     uncovered.add(line)
             # Lines not in file_cov are non-executable — don't count them
 
+        # Branch coverage on the changed lines (when llvm-cov branch data
+        # is available). Sum branch sides per line and flag partial-branch
+        # lines (line covered but at least one branch side never fired).
+        file_branches = branch_by_realpath.get(real_path, {})
+        branches_taken = 0
+        branches_total = 0
+        partial_branch_lines: set[int] = set()
+        branches_per_line_filtered: dict[int, list[tuple[int, int, int]]] = {}
+        for line in all_changed:
+            entries = file_branches.get(line)
+            if not entries:
+                continue
+            branches_per_line_filtered[line] = entries
+            line_taken = 0
+            line_total = 0
+            for _col, true_count, false_count in entries:
+                line_taken += (1 if true_count > 0 else 0) + (
+                    1 if false_count > 0 else 0
+                )
+                line_total += 2
+            branches_taken += line_taken
+            branches_total += line_total
+            if line in covered and line_taken < line_total:
+                partial_branch_lines.add(line)
+
         results.append(
             DiffCoverageResult(
                 filepath=rel_path,
                 changed_lines=covered | uncovered,
                 covered_lines=covered,
                 uncovered_lines=uncovered,
+                branches_taken=branches_taken,
+                branches_total=branches_total,
+                partial_branch_lines=partial_branch_lines,
+                branches_per_line=branches_per_line_filtered,
             )
         )
 
@@ -295,26 +373,56 @@ def display_diff_coverage(
     # Overall summary
     pct = summary.patch_coverage_pct
     color = "green" if pct >= 80 else "yellow" if pct >= 50 else "red"
+    branch_summary_line = ""
+    branch_pct = summary.branch_coverage_pct
+    if branch_pct is not None:
+        bcol = "green" if branch_pct >= 80 else "yellow" if branch_pct >= 50 else "red"
+        branch_summary_line = (
+            f"\nBranch Coverage: [{bcol}]{branch_pct:.1f}%[/{bcol}] "
+            f"({summary.total_branches_taken}/{summary.total_branches} sides)"
+        )
     console.print(
         Panel(
             f"Patch Coverage: [{color}]{pct:.1f}%[/{color}] "
-            f"({summary.total_covered}/{summary.total_changed} lines)",
+            f"({summary.total_covered}/{summary.total_changed} lines)"
+            f"{branch_summary_line}",
             title="Diff Coverage Report",
             border_style=color,
         )
     )
+
+    def _fmt_branch_suffix(result: DiffCoverageResult) -> str:
+        if result.branch_pct is None:
+            return ""
+        bcol = (
+            "green"
+            if result.branch_pct >= 80
+            else "yellow"
+            if result.branch_pct >= 50
+            else "red"
+        )
+        partial_note = ""
+        if result.partial_branch_lines:
+            partial_note = f" [dim]({len(result.partial_branch_lines)} partial)[/dim]"
+        return (
+            f" / branches [{bcol}]{result.branch_pct:.0f}%[/{bcol}] "
+            f"({result.branches_taken}/{result.branches_total}){partial_note}"
+        )
 
     for result in summary.file_results:
         if result.no_coverage_data:
             console.print(f"\n[dim]{result.filepath} - no coverage data[/dim]")
             continue
 
-        if not result.uncovered_lines:
+        branch_suffix = _fmt_branch_suffix(result)
+
+        if not result.uncovered_lines and not result.partial_branch_lines:
             # Fully covered — brief one-liner
             console.print(
                 f"\n[bold]{result.filepath}[/bold] "
                 f"[green]{result.coverage_pct:.0f}%[/green] "
                 f"({result.total_covered}/{result.total_changed})"
+                f"{branch_suffix}"
             )
             continue
 
@@ -323,6 +431,7 @@ def display_diff_coverage(
             f"\n[bold]{result.filepath}[/bold] "
             f"[{file_color}]{result.coverage_pct:.0f}%[/{file_color}] "
             f"({result.total_covered}/{result.total_changed})"
+            f"{branch_suffix}"
         )
 
         # Read source file
@@ -334,9 +443,12 @@ def display_diff_coverage(
             console.print("  [dim]Could not read source file[/dim]")
             continue
 
-        # Group uncovered lines into regions with context
+        # Group uncovered + partial-branch lines into regions with context.
+        # Both are interesting to show; uncovered lines are highlighted in
+        # red, partial-branch lines in yellow.
+        focus_lines = sorted(result.uncovered_lines | result.partial_branch_lines)
         regions = _group_lines_with_context(
-            sorted(result.uncovered_lines),
+            focus_lines,
             context_lines,
             len(source_lines),
         )
@@ -349,31 +461,76 @@ def display_diff_coverage(
                 ext, "text"
             )
 
+            uncovered_in_region = {
+                line
+                for line in result.uncovered_lines
+                if region_start <= line <= region_end
+            }
+            partial_in_region = {
+                line
+                for line in result.partial_branch_lines
+                if region_start <= line <= region_end
+            } - uncovered_in_region
+
+            # Rich's Syntax only takes one highlight set; mark uncovered
+            # lines in red. Partial-branch lines are listed below the
+            # snippet so they're not lost (yellow markers in inline source
+            # would require a custom renderer).
             syntax = Syntax(
                 snippet,
                 lang,
                 line_numbers=True,
                 start_line=region_start,
-                highlight_lines={
-                    line
-                    for line in result.uncovered_lines
-                    if region_start <= line <= region_end
-                },
+                highlight_lines=uncovered_in_region,
                 theme="monokai",
             )
-            label = (
+            range_label = (
                 f"L{region_start}"
                 if region_start == region_end
                 else f"L{region_start}-{region_end}"
             )
+            counts: list[str] = []
+            if uncovered_in_region:
+                counts.append(f"{len(uncovered_in_region)} uncovered")
+            if partial_in_region:
+                counts.append(f"{len(partial_in_region)} partial-branch")
+            if counts:
+                color_tag = "red" if uncovered_in_region else "yellow"
+                title = (
+                    f"[{color_tag}]{range_label} ({', '.join(counts)})[/{color_tag}]"
+                )
+            else:
+                title = range_label
+            border = "red" if uncovered_in_region else "yellow"
             console.print(
                 Panel(
                     syntax,
-                    title=f"[red]{label}[/red]",
-                    border_style="red",
+                    title=title,
+                    border_style=border,
                     expand=False,
                 )
             )
+            # Inline branch annotations for the region. Mirrors
+            # llvm-cov show --show-branches=count format:
+            #   Branch (line:col): [True: N, False: M]
+            # All lines in the region with branch data are shown; partial
+            # branches are highlighted in yellow, fully-taken in green,
+            # and untaken (both sides 0) in red.
+            for line in range(region_start, region_end + 1):
+                entries = result.branches_per_line.get(line)
+                if not entries:
+                    continue
+                for col, true_count, false_count in entries:
+                    if true_count > 0 and false_count > 0:
+                        marker = "[green]✓[/green]"
+                    elif true_count == 0 and false_count == 0:
+                        marker = "[red]✗[/red]"
+                    else:
+                        marker = "[yellow]~[/yellow]"
+                    console.print(
+                        f"    {marker} Branch ({line}:{col}): "
+                        f"[T:{true_count}, F:{false_count}]"
+                    )
 
 
 def _detect_gcov_tool() -> str:

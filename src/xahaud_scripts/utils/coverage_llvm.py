@@ -164,12 +164,26 @@ def _ensure_profdata(build_dir: str) -> Path | None:
     return profdata
 
 
-def _llvm_cov_export_lines(binary: Path, profdata: Path) -> dict[str, dict[int, int]]:
-    """Run llvm-cov export and flatten to {filepath: {line: hits}}.
+def _llvm_cov_export_data(
+    binary: Path, profdata: Path
+) -> tuple[
+    dict[str, dict[int, int]],
+    dict[str, dict[int, list[tuple[int, int, int]]]],
+]:
+    """Run llvm-cov export and return (line_coverage, branch_coverage).
 
-    llvm-cov segments are [line, col, count, has_count, is_region_entry,
-    is_gap_region]. Each segment marks a region boundary; lines inherit
-    the most-recent segment's count until the next one.
+    line_coverage: {filepath: {line: hits}} — derived from segments. llvm-cov
+        segments are [line, col, count, has_count, is_region_entry,
+        is_gap_region]. Each segment marks a region boundary; lines inherit
+        the most-recent segment's count until the next one.
+
+    branch_coverage: {filepath: {line: [(col, true_count, false_count), ...]}}
+        — per-branch detail keyed by start line. Each branch entry from
+        llvm-cov is [start_line, start_col, end_line, end_col, true_count,
+        false_count, file_id, expanded_id, region_kind]. We keep one tuple
+        per branch (preserving column for inline annotation like
+        ``Branch (812:13): [T:24, F:0]``); aggregation to (taken, total) is
+        derived on demand by the consumer.
     """
     cov_cmd = get_llvm_tool_command("llvm-cov")
     proc = subprocess.run(
@@ -187,7 +201,8 @@ def _llvm_cov_export_lines(binary: Path, profdata: Path) -> dict[str, dict[int, 
     )
     data = json.loads(proc.stdout)
 
-    out: dict[str, dict[int, int]] = {}
+    line_out: dict[str, dict[int, int]] = {}
+    branch_out: dict[str, dict[int, list[tuple[int, int, int]]]] = {}
     for entry in data.get("data", []):
         for f in entry.get("files", []):
             path = f.get("filename")
@@ -210,8 +225,27 @@ def _llvm_cov_export_lines(binary: Path, profdata: Path) -> dict[str, dict[int, 
                         line_hits[ln] = max(line_hits[ln], count)
                     else:
                         line_hits[ln] = count
-            out[path] = line_hits
-    return out
+            line_out[path] = line_hits
+
+            line_branches: dict[int, list[tuple[int, int, int]]] = {}
+            for br in f.get("branches") or []:
+                if len(br) < 6:
+                    continue
+                start_line = br[0]
+                start_col = br[1]
+                true_count = br[4]
+                false_count = br[5]
+                line_branches.setdefault(start_line, []).append(
+                    (start_col, true_count, false_count)
+                )
+            branch_out[path] = line_branches
+    return line_out, branch_out
+
+
+def _llvm_cov_export_lines(binary: Path, profdata: Path) -> dict[str, dict[int, int]]:
+    """Backwards-compatible wrapper returning only line coverage."""
+    lines, _ = _llvm_cov_export_data(binary, profdata)
+    return lines
 
 
 def do_diff_coverage_report_llvm(
@@ -242,13 +276,15 @@ def do_diff_coverage_report_llvm(
         logger.error(f"Could not find rippled binary under {build_dir}")
         return False
 
-    logger.info("Exporting llvm-cov line coverage...")
+    logger.info("Exporting llvm-cov line + branch coverage...")
     try:
-        line_coverage = _llvm_cov_export_lines(binary, profdata)
+        line_coverage, branch_coverage = _llvm_cov_export_data(binary, profdata)
     except subprocess.CalledProcessError as e:
         logger.error(f"llvm-cov export failed: rc={e.returncode}")
         return False
 
-    summary = compute_diff_coverage(diff_hunks, line_coverage, repo_root)
+    summary = compute_diff_coverage(
+        diff_hunks, line_coverage, repo_root, branch_coverage=branch_coverage
+    )
     display_diff_coverage(summary, repo_root, context_lines)
     return True
