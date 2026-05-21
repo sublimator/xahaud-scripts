@@ -1,0 +1,348 @@
+"""Tests for testnet configuration helpers (testnet/config.py)."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import struct
+from pathlib import Path
+
+import pytest
+
+from xahaud_scripts.testnet.config import (
+    DEFAULT_BASE_PORT_PEER,
+    DEFAULT_BASE_PORT_RPC,
+    DEFAULT_BASE_PORT_WS,
+    DEFAULT_NODE_COUNT,
+    ConfigBuilder,
+    LaunchConfig,
+    NetworkConfig,
+    NodeInfo,
+    _generate_synthetic_hashes,
+    _get_or_create_amendments_entry,
+    _make_short_skiplist_entry,
+    _resolve_feature_hash,
+    _short_skip_index,
+    feature_name_to_hash,
+    get_bundled_genesis_file,
+    prepare_genesis_file,
+    resolve_feature_name,
+)
+
+
+def _name_to_hash(name: str) -> str:
+    return hashlib.sha512(name.encode()).digest()[:32].hex().upper()
+
+
+# --- feature_name_to_hash ---
+
+
+def test_feature_name_to_hash_shape():
+    h = feature_name_to_hash("RNG")
+    assert len(h) == 64
+    assert h == h.upper()
+    assert set(h) <= set("0123456789ABCDEF")  # uppercase hex only
+
+
+def test_feature_name_to_hash_matches_sha512_half():
+    assert feature_name_to_hash("RNG") == _name_to_hash("RNG")
+
+
+def test_feature_name_to_hash_deterministic():
+    assert feature_name_to_hash("Hooks") == feature_name_to_hash("Hooks")
+
+
+# --- _resolve_feature_hash ---
+
+
+def test_resolve_feature_hash_at_prefix():
+    assert _resolve_feature_hash("@RNG") == _name_to_hash("RNG")
+
+
+def test_resolve_feature_hash_raw_hex_uppercased():
+    raw = "ab" * 32  # 64 hex chars
+    assert _resolve_feature_hash(raw) == raw.upper()
+
+
+def test_resolve_feature_hash_strips_feature_keeps_fix():
+    assert _resolve_feature_hash("featureExport") == _name_to_hash("Export")
+    assert _resolve_feature_hash("fixXahauV2") == _name_to_hash("fixXahauV2")
+
+
+# --- resolve_feature_name ---
+
+
+def test_resolve_feature_name_strips_at():
+    assert resolve_feature_name("@RNG") == "RNG"
+    assert resolve_feature_name("RNG") == "RNG"
+
+
+# --- _short_skip_index ---
+
+
+def test_short_skip_index_matches_keylet_formula():
+    expected = hashlib.sha512(struct.pack(">H", ord("s"))).digest()[:32].hex().upper()
+    assert _short_skip_index() == expected
+
+
+# --- _generate_synthetic_hashes ---
+
+
+def test_generate_synthetic_hashes_count_and_shape():
+    hashes = _generate_synthetic_hashes(4)
+    assert len(hashes) == 4
+    for h in hashes:
+        assert len(h) == 64
+        assert h == h.upper()
+    assert len(set(hashes)) == 4  # all distinct
+
+
+def test_generate_synthetic_hashes_zero():
+    assert _generate_synthetic_hashes(0) == []
+
+
+def test_generate_synthetic_hashes_deterministic():
+    assert _generate_synthetic_hashes(3) == _generate_synthetic_hashes(3)
+
+
+# --- _make_short_skiplist_entry ---
+
+
+def test_make_short_skiplist_entry_first_ledger_is_none():
+    assert _make_short_skiplist_entry(1, []) is None
+
+
+def test_make_short_skiplist_entry_wrong_hash_count_raises():
+    with pytest.raises(ValueError, match="needs 2 prior hashes"):
+        _make_short_skiplist_entry(3, ["deadbeef"])
+
+
+def test_make_short_skiplist_entry_builds_sle():
+    prior = _generate_synthetic_hashes(2)
+    entry = _make_short_skiplist_entry(3, prior)
+    assert entry is not None
+    assert entry["LedgerEntryType"] == "LedgerHashes"
+    assert entry["LastLedgerSequence"] == 2
+    assert entry["Hashes"] == [h.upper() for h in prior]
+    assert entry["index"] == _short_skip_index()
+
+
+def test_make_short_skiplist_entry_uppercases_hashes():
+    entry = _make_short_skiplist_entry(2, ["abc123"])
+    assert entry is not None
+    assert entry["Hashes"] == ["ABC123"]
+
+
+# --- _get_or_create_amendments_entry ---
+
+
+def test_get_amendments_entry_found():
+    state = [{"LedgerEntryType": "AccountRoot"}, {"LedgerEntryType": "Amendments"}]
+    assert _get_or_create_amendments_entry(state)["LedgerEntryType"] == "Amendments"
+
+
+def test_get_amendments_entry_missing_raises():
+    with pytest.raises(ValueError, match="No Amendments entry"):
+        _get_or_create_amendments_entry([{"LedgerEntryType": "AccountRoot"}])
+
+
+# --- get_bundled_genesis_file ---
+
+
+def test_bundled_genesis_file_exists_and_parses():
+    path = get_bundled_genesis_file()
+    assert path.exists()
+    assert path.name == "genesis.json"
+    genesis = json.loads(path.read_text())
+    assert "accountState" in genesis["ledger"]
+
+
+# --- prepare_genesis_file ---
+
+
+def test_prepare_genesis_no_changes_returns_base():
+    base = get_bundled_genesis_file()
+    assert prepare_genesis_file(base, features=[]) is base
+
+
+def test_prepare_genesis_adds_feature():
+    base = get_bundled_genesis_file()
+    new_hash = _name_to_hash("SomeBrandNewAmendment")
+    out = prepare_genesis_file(base, features=["@SomeBrandNewAmendment"])
+    try:
+        assert out != base
+        genesis = json.loads(out.read_text())
+        amendments = _get_or_create_amendments_entry(genesis["ledger"]["accountState"])
+        assert new_hash in amendments["Amendments"]
+        # Amendment list is kept sorted.
+        assert amendments["Amendments"] == sorted(amendments["Amendments"])
+    finally:
+        out.unlink()
+
+
+def test_prepare_genesis_removes_feature():
+    base = get_bundled_genesis_file()
+    genesis = json.loads(base.read_text())
+    existing = _get_or_create_amendments_entry(genesis["ledger"]["accountState"])[
+        "Amendments"
+    ][0]
+
+    out = prepare_genesis_file(base, features=[f"-{existing}"])
+    try:
+        result = json.loads(out.read_text())
+        amendments = _get_or_create_amendments_entry(result["ledger"]["accountState"])
+        assert existing not in amendments["Amendments"]
+    finally:
+        out.unlink()
+
+
+def test_prepare_genesis_start_ledger_injects_skiplist():
+    base = get_bundled_genesis_file()
+    out = prepare_genesis_file(base, features=[], start_ledger=5)
+    try:
+        genesis = json.loads(out.read_text())
+        assert genesis["ledger"]["seqNum"] == "5"
+        assert genesis["ledger"]["ledger_index"] == "5"
+        skiplists = [
+            e
+            for e in genesis["ledger"]["accountState"]
+            if e.get("LedgerEntryType") == "LedgerHashes"
+        ]
+        assert len(skiplists) == 1
+        assert skiplists[0]["LastLedgerSequence"] == 4
+        assert len(skiplists[0]["Hashes"]) == 4
+    finally:
+        out.unlink()
+
+
+def test_prepare_genesis_start_ledger_one_no_skiplist():
+    base = get_bundled_genesis_file()
+    out = prepare_genesis_file(base, features=[], start_ledger=1)
+    try:
+        genesis = json.loads(out.read_text())
+        assert genesis["ledger"]["seqNum"] == "1"
+        skiplists = [
+            e
+            for e in genesis["ledger"]["accountState"]
+            if e.get("LedgerEntryType") == "LedgerHashes"
+        ]
+        assert skiplists == []
+    finally:
+        out.unlink()
+
+
+def test_prepare_genesis_seeds_majorities():
+    base = get_bundled_genesis_file()
+    out = prepare_genesis_file(
+        base, features=[], majority_features=["@PendingAmendment"]
+    )
+    try:
+        genesis = json.loads(out.read_text())
+        amendments = _get_or_create_amendments_entry(genesis["ledger"]["accountState"])
+        seeded = {m["Majority"]["Amendment"] for m in amendments["Majorities"]}
+        assert _name_to_hash("PendingAmendment") in seeded
+        for m in amendments["Majorities"]:
+            if m["Majority"]["Amendment"] == _name_to_hash("PendingAmendment"):
+                assert m["Majority"]["CloseTime"] == 0
+    finally:
+        out.unlink()
+
+
+# --- NetworkConfig ---
+
+
+def test_network_config_validator_count_defaults_to_node_count():
+    assert NetworkConfig(node_count=7).validator_count == 7
+
+
+def test_network_config_validator_count_explicit():
+    assert NetworkConfig(node_count=7, validators=3).validator_count == 3
+
+
+def test_network_config_ports_offset_by_node_id():
+    cfg = NetworkConfig()
+    assert cfg.port_peer(0) == DEFAULT_BASE_PORT_PEER
+    assert cfg.port_rpc(2) == DEFAULT_BASE_PORT_RPC + 2
+    assert cfg.port_ws(4) == DEFAULT_BASE_PORT_WS + 4
+
+
+# --- NodeInfo ---
+
+
+def test_node_info_node_dir_is_config_parent(tmp_path: Path):
+    cfg_path = tmp_path / "n0" / "xahaud.cfg"
+    node = NodeInfo(
+        id=0,
+        public_key="pk",
+        token="tok",
+        config_path=cfg_path,
+        port_peer=1,
+        port_rpc=2,
+        port_ws=3,
+    )
+    assert node.node_dir == tmp_path / "n0"
+
+
+# --- LaunchConfig ---
+
+
+def test_launch_config_rippled_path_default(tmp_path: Path):
+    cfg = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+    )
+    assert cfg.get_rippled_path(0) == tmp_path / "rippled"
+
+
+def test_launch_config_rippled_path_node_override(tmp_path: Path):
+    cfg = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+        node_rippled_paths={1: tmp_path / "special-rippled"},
+    )
+    assert cfg.get_rippled_path(0) == tmp_path / "rippled"
+    assert cfg.get_rippled_path(1) == tmp_path / "special-rippled"
+
+
+# --- ConfigBuilder ---
+
+
+def test_config_builder_defaults(tmp_path: Path):
+    network, launch = ConfigBuilder().xahaud_root(tmp_path).build()
+    assert network.node_count == DEFAULT_NODE_COUNT
+    assert launch.xahaud_root == tmp_path
+    assert launch.rippled_path == tmp_path / "build" / "rippled"
+    assert launch.genesis_file == get_bundled_genesis_file()
+
+
+def test_config_builder_fluent_overrides(tmp_path: Path):
+    network, launch = (
+        ConfigBuilder()
+        .xahaud_root(tmp_path)
+        .node_count(3)
+        .network_id(42)
+        .ports(peer=30000, rpc=31000, ws=32000)
+        .quorum(2)
+        .slave_delay(2.5)
+        .extra_args(["--foo"])
+        .build()
+    )
+    assert network.node_count == 3
+    assert network.network_id == 42
+    assert network.base_port_peer == 30000
+    assert network.port_rpc(1) == 31001
+    assert launch.quorum == 2
+    assert launch.slave_delay == 2.5
+    assert launch.extra_args == ["--foo"]
+
+
+def test_config_builder_base_dir_path_explicit(tmp_path: Path):
+    builder = ConfigBuilder().xahaud_root(tmp_path).base_dir(tmp_path / "custom")
+    assert builder.base_dir_path == tmp_path / "custom"
+
+
+def test_config_builder_base_dir_path_defaults_to_root(tmp_path: Path):
+    builder = ConfigBuilder().xahaud_root(tmp_path)
+    assert builder.base_dir_path == tmp_path / "testnet"
