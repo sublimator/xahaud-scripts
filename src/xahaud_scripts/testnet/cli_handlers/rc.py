@@ -32,12 +32,54 @@ console = Console()
 # Valid message type names (must match C++ side)
 VALID_MSG_TYPES = frozenset(
     {
+        "base",
+        "cluster",
+        "overlay",
         "proposal",
         "validation",
         "transaction",
         "manifests",
+        "validator_list",
+        "validatorlist",
+        "have_set",
+        "set_get",
+        "set_share",
+        "candidate_set_fetch",
+        "candidate_set_request",
+        "candidate_set_reply",
         "ledger_data",
+        "ledger_data_tsc_get",
+        "ledger_data_tsc_share",
+        "ledger_data_txn_get",
+        "ledger_data_txn_share",
+        "ledger_data_asn_get",
+        "ledger_data_asn_share",
+        "ledger_data_get",
+        "ledger_data_share",
         "get_ledger",
+        "get_ledger_tsc_get",
+        "get_ledger_tsc_share",
+        "get_ledger_txn_get",
+        "get_ledger_txn_share",
+        "get_ledger_asn_get",
+        "get_ledger_asn_share",
+        "get_ledger_get",
+        "get_ledger_share",
+        "get_object",
+        "get_object_fetch_pack",
+        "get_object_fetch_pack_get",
+        "get_object_fetch_pack_share",
+        "get_object_get",
+        "get_object_share",
+        "get_object_transactions",
+        "proof_path",
+        "proof_path_request",
+        "proof_path_response",
+        "replay_delta",
+        "replay_delta_request",
+        "replay_delta_response",
+        "have_transactions",
+        "requested_transactions",
     }
 )
 
@@ -145,10 +187,11 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
         elif key == "msg":
             types = value.split("+")
             for t in types:
-                if t not in VALID_MSG_TYPES:
+                if t not in VALID_MSG_TYPES and not t.isdigit():
                     raise click.BadParameter(
                         f"Unknown message type: {t!r}. "
-                        f"Valid: {', '.join(sorted(VALID_MSG_TYPES))}"
+                        f"Valid: {', '.join(sorted(VALID_MSG_TYPES))}, "
+                        "or a numeric TrafficCount category"
                     )
             result.msg = types
         else:

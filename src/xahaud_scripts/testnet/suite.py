@@ -28,6 +28,7 @@ from rich.table import Table
 from xahaud_scripts.testnet.config import (
     LaunchConfig,
     NetworkConfig,
+    NodeInfo,
     get_bundled_genesis_file,
     prepare_genesis_file,
 )
@@ -292,6 +293,8 @@ def _create_network(
 def _build_launch_config(
     xahaud_root: Path,
     config: dict[str, Any],
+    *,
+    nodes: list[NodeInfo] | None = None,
 ) -> LaunchConfig:
     """Build a LaunchConfig from effective config dict."""
     rippled_path = xahaud_root / "build" / "rippled"
@@ -310,6 +313,25 @@ def _build_launch_config(
     node_env: dict[int, dict[str, str]] = {}
     for node_id_str, env_dict in config.get("node_env", {}).items():
         node_env[int(node_id_str)] = {k: str(v) for k, v in env_dict.items()}
+
+    # Suite-level rc specs use the same startup env path as `x-testnet run
+    # --rc`, so delayed/dropped links are active from node launch.
+    rc_specs = config.get("rc") or []
+    if rc_specs:
+        if nodes is None:
+            raise ValueError("network rc requires generated node metadata")
+
+        from xahaud_scripts.testnet.cli_handlers.rc import (
+            build_runtime_config_envs,
+            parse_rc_spec,
+        )
+
+        rc_envs = build_runtime_config_envs(
+            [parse_rc_spec(spec) for spec in rc_specs],
+            nodes,
+        )
+        for node_id, json_val in rc_envs.items():
+            node_env.setdefault(node_id, {})["XAHAU_RUNTIME_CONFIG"] = json_val
 
     return LaunchConfig(
         xahaud_root=xahaud_root,
@@ -389,7 +411,7 @@ def _run_one_test(
         )
 
         # 3. Build launch config and run
-        launch_config = _build_launch_config(xahaud_root, config)
+        launch_config = _build_launch_config(xahaud_root, config, nodes=network.nodes)
         network.run(launch_config)
 
         # 4. Set up dual file logging for scenario + txn_generator etc.
@@ -542,6 +564,9 @@ def run_suite(
             env = config.get("env", {})
             if env:
                 console.print(f"     env: {env}")
+            rc = config.get("rc", [])
+            if rc:
+                console.print(f"     rc: {rc}")
             log_levels = config.get("log_levels", {})
             if log_levels:
                 console.print(f"     log_levels: {log_levels}")
