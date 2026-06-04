@@ -143,6 +143,7 @@ class TestNetwork:
             process_manager=self._process_mgr,
             find_ports=find_ports,
         )
+        self._sync_rpc_client_ports()
 
         # Store runtime config specs
         self._rc_specs = rc_specs or []
@@ -157,6 +158,19 @@ class TestNetwork:
             f"rpc={self._config.base_port_rpc}+, "
             f"ws={self._config.base_port_ws}+"
         )
+
+    def _sync_rpc_client_ports(self) -> None:
+        """Point the RPC client at generated ports and fail on mismatches."""
+        self._rpc.base_port_rpc = self._config.base_port_rpc
+
+        for node in self._nodes:
+            expected = self._config.base_port_rpc + node.id
+            if node.port_rpc != expected:
+                raise RuntimeError(
+                    "Generated RPC ports are not compatible with the RPC "
+                    f"client's base+node addressing: node {node.id} has "
+                    f"port {node.port_rpc}, expected {expected}"
+                )
 
     def check_ports(self) -> dict[int, list[dict[str, str]]]:
         """Check if any required ports are in use.
@@ -576,8 +590,7 @@ class TestNetwork:
                 base_port_rpc=network_info["base_port_rpc"],
                 base_port_ws=network_info["base_port_ws"],
             )
-            # Update RPC client to use the correct ports
-            self._rpc.base_port_rpc = network_info["base_port_rpc"]
+            self._sync_rpc_client_ports()
 
         # Load runtime config specs if present
         self._rc_specs = network_info.get("runtime_config", [])
