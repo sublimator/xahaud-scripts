@@ -14,15 +14,20 @@ from xahaud_scripts.testnet.config import (
     DEFAULT_BASE_PORT_RPC,
     DEFAULT_BASE_PORT_WS,
     DEFAULT_NODE_COUNT,
+    SKIP_LIST_INTERVAL,
     ConfigBuilder,
     LaunchConfig,
     NetworkConfig,
     NodeInfo,
     _generate_synthetic_hashes,
     _get_or_create_amendments_entry,
+    _long_skip_index,
+    _make_long_skiplist_entries,
     _make_short_skiplist_entry,
     _resolve_feature_hash,
     _short_skip_index,
+    _synthetic_hash,
+    _unl_report_index,
     feature_name_to_hash,
     get_bundled_genesis_file,
     prepare_genesis_file,
@@ -85,6 +90,11 @@ def test_short_skip_index_matches_keylet_formula():
     assert _short_skip_index() == expected
 
 
+def test_unl_report_index_matches_keylet_formula():
+    expected = hashlib.sha512(struct.pack(">H", ord("R"))).digest()[:32].hex().upper()
+    assert _unl_report_index() == expected
+
+
 # --- _generate_synthetic_hashes ---
 
 
@@ -131,6 +141,70 @@ def test_make_short_skiplist_entry_uppercases_hashes():
     entry = _make_short_skiplist_entry(2, ["abc123"])
     assert entry is not None
     assert entry["Hashes"] == ["ABC123"]
+
+
+def test_make_short_skiplist_entry_caps_at_interval():
+    # A start past one flag interval supplies exactly SKIP_LIST_INTERVAL hashes.
+    capped = _generate_synthetic_hashes(SKIP_LIST_INTERVAL)
+    entry = _make_short_skiplist_entry(1000, capped)
+    assert entry is not None
+    assert len(entry["Hashes"]) == SKIP_LIST_INTERVAL
+    assert entry["LastLedgerSequence"] == 999
+
+
+# --- _long_skip_index / _make_long_skiplist_entries ---
+
+
+def test_long_skip_index_matches_keylet_formula():
+    # keylet::skip(ledger) = sha512Half(uint16_be('s'), uint32_be(ledger >> 16))
+    expected = (
+        hashlib.sha512(struct.pack(">H", ord("s")) + struct.pack(">I", 0))
+        .digest()[:32]
+        .hex()
+        .upper()
+    )
+    assert _long_skip_index(0) == expected
+    # Distinct windows give distinct indexes.
+    assert _long_skip_index(1) != _long_skip_index(0)
+
+
+def test_long_skiplist_empty_before_first_interval():
+    assert _make_long_skiplist_entries(SKIP_LIST_INTERVAL) == []  # start=256
+    assert _make_long_skiplist_entries(100) == []
+
+
+def test_long_skiplist_records_aged_multiples():
+    # Genesis at 600: chain would have recorded hashes of 256 and 512.
+    entries = _make_long_skiplist_entries(600)
+    assert len(entries) == 1  # single 65536-window bucket
+    entry = entries[0]
+    assert entry["index"] == _long_skip_index(0)
+    assert entry["Hashes"] == [_synthetic_hash(256), _synthetic_hash(512)]
+    assert entry["LastLedgerSequence"] == 512
+
+
+def test_prepare_genesis_start_ledger_past_interval_caps_and_buckets():
+    base = get_bundled_genesis_file()
+    out = prepare_genesis_file(base, features=[], start_ledger=600)
+    try:
+        genesis = json.loads(out.read_text())
+        skiplists = [
+            e
+            for e in genesis["ledger"]["accountState"]
+            if e.get("LedgerEntryType") == "LedgerHashes"
+        ]
+        short = [e for e in skiplists if e["index"] == _short_skip_index()]
+        longs = [e for e in skiplists if e["index"] == _long_skip_index(0)]
+        assert len(short) == 1
+        assert len(short[0]["Hashes"]) == SKIP_LIST_INTERVAL  # capped, not 599
+        assert short[0]["LastLedgerSequence"] == 599
+        # Newest short-list hash is the immediate parent (599); oldest is 344.
+        assert short[0]["Hashes"][-1] == _synthetic_hash(599)
+        assert short[0]["Hashes"][0] == _synthetic_hash(600 - SKIP_LIST_INTERVAL)
+        assert len(longs) == 1
+        assert longs[0]["Hashes"] == [_synthetic_hash(256), _synthetic_hash(512)]
+    finally:
+        out.unlink()
 
 
 # --- _get_or_create_amendments_entry ---
@@ -227,6 +301,29 @@ def test_prepare_genesis_start_ledger_one_no_skiplist():
             if e.get("LedgerEntryType") == "LedgerHashes"
         ]
         assert skiplists == []
+    finally:
+        out.unlink()
+
+
+def test_prepare_genesis_seeds_unl_report():
+    base = get_bundled_genesis_file()
+    active_key = "02" + ("AB" * 32)
+    out = prepare_genesis_file(base, features=[], unl_report_keys=[active_key])
+    try:
+        genesis = json.loads(out.read_text())
+        reports = [
+            e
+            for e in genesis["ledger"]["accountState"]
+            if e.get("LedgerEntryType") == "UNLReport"
+        ]
+        assert len(reports) == 1
+        report = reports[0]
+        assert report["index"] == _unl_report_index()
+        assert report["PreviousTxnID"] == "0" * 64
+        assert report["PreviousTxnLgrSeq"] == 0
+        assert report["ActiveValidators"] == [
+            {"ActiveValidator": {"PublicKey": active_key}}
+        ]
     finally:
         out.unlink()
 

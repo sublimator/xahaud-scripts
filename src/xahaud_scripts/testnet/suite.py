@@ -299,10 +299,26 @@ def _build_launch_config(
     """Build a LaunchConfig from effective config dict."""
     rippled_path = xahaud_root / "build" / "rippled"
 
-    # Genesis file with features
+    # Genesis file with feature/start-ledger modifications. Mirrors the
+    # lower-level `x-testnet run` knobs so suites can exercise flag-ledger
+    # activation paths instead of only genesis-enabled features.
     base_genesis = get_bundled_genesis_file()
     features = config.get("features", [])
-    effective_genesis = prepare_genesis_file(base_genesis, features)
+    unl_report_keys = None
+    if config.get("unl_report"):
+        if nodes is None:
+            raise ValueError("network unl_report requires generated node metadata")
+        validator_count = config.get("validators")
+        if validator_count is None:
+            validator_count = config.get("node_count", len(nodes))
+        unl_report_keys = [node.public_key for node in nodes[: int(validator_count)]]
+    effective_genesis = prepare_genesis_file(
+        base_genesis,
+        features,
+        start_ledger=config.get("start_ledger"),
+        majority_features=config.get("majority_features"),
+        unl_report_keys=unl_report_keys,
+    )
 
     # Environment variables (simple key=value, no node-specific parsing needed)
     extra_env: dict[str, str] = {}

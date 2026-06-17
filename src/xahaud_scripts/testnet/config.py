@@ -29,6 +29,10 @@ DEFAULT_NETWORK_ID = 99999
 DEFAULT_NODE_COUNT = 5
 MAX_NODE_COUNT = 20
 
+# FLAG_LEDGER_INTERVAL in xahaud: both skip-list SLEs hold at most this many
+# hashes, and the long skip list records the hash of every Nth ledger.
+SKIP_LIST_INTERVAL = 256
+
 
 def get_bundled_genesis_file() -> Path:
     """Get the path to the bundled genesis.json file.
@@ -68,19 +72,97 @@ def _short_skip_index() -> str:
     return hashlib.sha512(struct.pack(">H", ord("s"))).digest()[:32].hex().upper()
 
 
+def _long_skip_index(window: int) -> str:
+    """Compute the keylet::skip(ledger) index for a long LedgerHashes SLE.
+
+    This is sha512Half(uint16_be('s'), uint32_be(window)) where
+    ``window = ledger >> 16``. The long skip list buckets the hash of every
+    256th ledger into one SLE per 65536-ledger window.
+    """
+    key = struct.pack(">H", ord("s")) + struct.pack(">I", window)
+    return hashlib.sha512(key).digest()[:32].hex().upper()
+
+
+def _unl_report_index() -> str:
+    """Compute the keylet::UNLReport() index.
+
+    This is sha512Half(uint16_be('R')).
+    """
+    return hashlib.sha512(struct.pack(">H", ord("R"))).digest()[:32].hex().upper()
+
+
+_XRPL_BASE58_ALPHABET = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz"
+_XRPL_BASE58_REVERSE = {c: i for i, c in enumerate(_XRPL_BASE58_ALPHABET)}
+_NODE_PUBLIC_TOKEN_TYPE = 28
+
+
+def _decode_node_public_key(value: str) -> str:
+    """Decode a node-public token to the hex bytes used by ledger JSON."""
+    if len(value) in (66, 68) and all(c in "0123456789abcdefABCDEF" for c in value):
+        return value.upper()
+
+    n = 0
+    for char in value:
+        try:
+            digit = _XRPL_BASE58_REVERSE[char]
+        except KeyError as exc:
+            raise ValueError(f"Invalid XRPL base58 character in {value!r}") from exc
+        n = n * 58 + digit
+
+    decoded = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    leading_zeroes = len(value) - len(value.lstrip(_XRPL_BASE58_ALPHABET[0]))
+    decoded = (b"\x00" * leading_zeroes) + decoded
+    if len(decoded) < 6:
+        raise ValueError(f"Invalid node public key token {value!r}")
+
+    payload = decoded[:-4]
+    checksum = decoded[-4:]
+    expected = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    if checksum != expected:
+        raise ValueError(f"Invalid node public key checksum for {value!r}")
+    if payload[0] != _NODE_PUBLIC_TOKEN_TYPE:
+        raise ValueError(f"Unexpected token type for node public key {value!r}")
+
+    return payload[1:].hex().upper()
+
+
+def _make_unl_report_entry(active_keys: list[str]) -> dict:
+    """Build a test-bootstrap UNLReport SLE from validator public keys.
+
+    The real voting path canonicalizes and enriches this SLE. The seed only
+    carries the active validator keys needed by consumers that read the
+    ledger-anchored active validator view before the first flag-ledger cycle.
+    """
+    return {
+        "Flags": 0,
+        "LedgerEntryType": "UNLReport",
+        "PreviousTxnID": "0" * 64,
+        "PreviousTxnLgrSeq": 0,
+        "ActiveValidators": [
+            {"ActiveValidator": {"PublicKey": _decode_node_public_key(key)}}
+            for key in active_keys
+        ],
+        "index": _unl_report_index(),
+    }
+
+
 def _make_short_skiplist_entry(
     ledger_index: int, prior_hashes: list[str]
 ) -> dict | None:
-    """Build the short LedgerHashes SLE for a synthetic ledger in 1..256.
+    """Build the short LedgerHashes SLE (keylet::skip()) for a synthetic start.
+
+    The short list holds at most the last ``SKIP_LIST_INTERVAL`` (256) ledger
+    hashes, oldest to newest, mirroring how xahaud evicts the front once full.
 
     Args:
-        ledger_index: The starting ledger index (1-256).
-        prior_hashes: Hashes of ledgers 1..ledger_index-1, oldest to newest.
+        ledger_index: The starting ledger index (>= 1).
+        prior_hashes: Hashes of ledgers ending at ledger_index-1, oldest to
+            newest, already capped to the last SKIP_LIST_INTERVAL entries.
 
     Returns:
         The LedgerHashes entry dict, or None if ledger_index is 1 (no prior hashes).
     """
-    expected = ledger_index - 1
+    expected = min(ledger_index - 1, SKIP_LIST_INTERVAL)
     if expected == 0:
         return None
 
@@ -99,25 +181,55 @@ def _make_short_skiplist_entry(
     }
 
 
-def _generate_synthetic_hashes(count: int) -> list[str]:
-    """Generate fake prior ledger hashes to satisfy short skip-list lookups.
+def _synthetic_hash(seq: int) -> str:
+    """Deterministic fake hash for a synthetic pre-genesis ledger.
 
-    These are deliberately fake prehistory — they only exist so that
-    hashOfSeq() returns *something* for synthetic starts <= 256.
-    This is NOT real ledger history and will not satisfy anything that
-    needs actual ancestor ledger data.
-
-    Args:
-        count: Number of hashes to generate (for ledgers 1..count).
-
-    Returns:
-        List of 64-char hex hash strings.
+    Keyed by absolute sequence so the short and long skip lists agree on the
+    hash of any given ledger. This is deliberately fake prehistory — it only
+    exists so hashOfSeq() returns *something*; it is NOT real ancestor data.
     """
-    hashes = []
-    for i in range(1, count + 1):
-        h = hashlib.sha512(b"synthetic-ledger-" + str(i).encode()).digest()[:32]
-        hashes.append(h.hex().upper())
-    return hashes
+    h = hashlib.sha512(b"synthetic-ledger-" + str(seq).encode()).digest()[:32]
+    return h.hex().upper()
+
+
+def _generate_synthetic_hashes(count: int) -> list[str]:
+    """Generate fake ledger hashes for ledgers 1..count, oldest to newest.
+
+    See _synthetic_hash() for the caveat: this is fake prehistory, not real
+    ancestor data.
+    """
+    return [_synthetic_hash(i) for i in range(1, count + 1)]
+
+
+def _make_long_skiplist_entries(start_ledger: int) -> list[dict]:
+    """Build long LedgerHashes SLEs (keylet::skip(seq)) for a synthetic start.
+
+    A real chain records the hash of every 256th ledger, bucketed into one SLE
+    per 65536-ledger window (keylet::skip keys on seq >> 16). Reproduce those
+    buckets so hashOfSeq() resolves multiple-of-256 ancestors that have aged
+    out of the short (last-256) list. The hash of ledger 0 is intentionally
+    omitted: it is meaningless and never queried.
+    """
+    # Largest multiple of 256 a chain at `start_ledger` would already have
+    # recorded (recorded when building the *next* ledger, hence start_ledger-1).
+    last_recorded = (start_ledger - 1) // SKIP_LIST_INTERVAL * SKIP_LIST_INTERVAL
+    if last_recorded < SKIP_LIST_INTERVAL:
+        return []  # nothing has aged into the long list yet
+
+    buckets: dict[int, list[int]] = {}
+    for m in range(SKIP_LIST_INTERVAL, last_recorded + 1, SKIP_LIST_INTERVAL):
+        buckets.setdefault(m >> 16, []).append(m)
+
+    return [
+        {
+            "Flags": 0,
+            "LedgerEntryType": "LedgerHashes",
+            "Hashes": [_synthetic_hash(s) for s in seqs],  # ascending
+            "LastLedgerSequence": seqs[-1],
+            "index": _long_skip_index(window),
+        }
+        for window, seqs in sorted(buckets.items())
+    ]
 
 
 def _resolve_feature_hash(spec: str) -> str:
@@ -168,6 +280,7 @@ def prepare_genesis_file(
     features: list[str],
     start_ledger: int | None = None,
     majority_features: list[str] | None = None,
+    unl_report_keys: list[str] | None = None,
 ) -> Path:
     """Create a modified genesis.json with custom amendments and/or start ledger.
 
@@ -175,18 +288,27 @@ def prepare_genesis_file(
         base_genesis: Path to the base genesis.json file
         features: List of amendment hashes or @names. Prefix with '-' to remove.
                   Use @Name syntax to compute hash from name (e.g., @RNG).
-        start_ledger: Optional starting ledger sequence number (1-256).
+        start_ledger: Optional starting ledger sequence number. Synthetic short
+                      and long skip lists are injected so hashOfSeq() resolves
+                      for arbitrary starts (this is fake prehistory, not real
+                      ancestor data).
         majority_features: Optional list of feature names/@hashes to pre-seed
                           in sfMajorities of the Amendments SLE. Uses CloseTime=0
                           so the hold time is already satisfied. Nodes must still
                           vote yes (feature accept) before the voting ledger, or
                           the seeded majority will be cleared via tfLostMajority.
+        unl_report_keys: Optional validator public keys to seed into UNLReport.
 
     Returns:
         Path to the (possibly modified) genesis file.
         If no modifications needed, returns base_genesis unchanged.
     """
-    if not features and start_ledger is None and not majority_features:
+    if (
+        not features
+        and start_ledger is None
+        and not majority_features
+        and not unl_report_keys
+    ):
         return base_genesis
 
     # Load base genesis
@@ -237,14 +359,32 @@ def prepare_genesis_file(
 
         amendments_entry["Majorities"] = existing_majorities
 
+    # Testnet-only bootstrap: seed the ledger-anchored active validator view
+    # directly. The normal NegativeUNL reporting path needs a full flag-ledger
+    # validation history window, so start-ledger shortcuts cannot create this
+    # SLE faithfully.
+    if unl_report_keys:
+        account_state[:] = [
+            e
+            for e in account_state
+            if not (isinstance(e, dict) and e.get("LedgerEntryType") == "UNLReport")
+        ]
+        account_state.append(_make_unl_report_entry(unl_report_keys))
+
     # Modify start ledger if requested
     if start_ledger is not None:
         genesis["ledger"]["seqNum"] = str(start_ledger)
         genesis["ledger"]["ledger_index"] = str(start_ledger)
 
-        # Inject fake short skip list so hashOfSeq() works for starts <= 256.
+        # Inject fake skip lists so hashOfSeq() resolves for arbitrary starts.
         # loadLedgerFromFile() rebuilds from ledger_index + accountState;
         # wrapper fields like hash/parent_hash are not trusted.
+        #
+        # The short list (keylet::skip()) holds the last <=256 ledger hashes;
+        # the long list (keylet::skip(seq)) holds every 256th hash for deeper
+        # ancestry. Both are needed once start_ledger > 256 — without capping
+        # the short list at 256 entries, the next ledger trips xahaud's
+        # "hashes.size() <= 256" assertion in updateSkipList().
         if start_ledger > 1:
             # Remove any existing LedgerHashes entries
             account_state[:] = [
@@ -254,10 +394,14 @@ def prepare_genesis_file(
                     isinstance(e, dict) and e.get("LedgerEntryType") == "LedgerHashes"
                 )
             ]
-            prior_hashes = _generate_synthetic_hashes(start_ledger - 1)
-            entry = _make_short_skiplist_entry(start_ledger, prior_hashes)
-            if entry is not None:
-                account_state.append(entry)
+            short_start = max(1, start_ledger - SKIP_LIST_INTERVAL)
+            short_hashes = [
+                _synthetic_hash(s) for s in range(short_start, start_ledger)
+            ]
+            short_entry = _make_short_skiplist_entry(start_ledger, short_hashes)
+            if short_entry is not None:
+                account_state.append(short_entry)
+            account_state.extend(_make_long_skiplist_entries(start_ledger))
 
     # Write to temp file
     fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="genesis_")
