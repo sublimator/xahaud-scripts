@@ -295,6 +295,7 @@ def _build_launch_config(
     config: dict[str, Any],
     *,
     nodes: list[NodeInfo] | None = None,
+    network_config: NetworkConfig | None = None,
 ) -> LaunchConfig:
     """Build a LaunchConfig from effective config dict."""
     rippled_path = xahaud_root / "build" / "rippled"
@@ -302,16 +303,25 @@ def _build_launch_config(
     # Genesis file with feature/start-ledger modifications. Mirrors the
     # lower-level `x-testnet run` knobs so suites can exercise flag-ledger
     # activation paths instead of only genesis-enabled features.
+    if network_config is None:
+        network_config = NetworkConfig(
+            node_count=config.get("node_count", 5),
+            validators=config.get("validators"),
+        )
+
     base_genesis = get_bundled_genesis_file()
     features = config.get("features", [])
     unl_report_keys = None
     if config.get("unl_report"):
         if nodes is None:
             raise ValueError("network unl_report requires generated node metadata")
-        validator_count = config.get("validators")
-        if validator_count is None:
-            validator_count = config.get("node_count", len(nodes))
-        unl_report_keys = [node.public_key for node in nodes[: int(validator_count)]]
+        validator_count = network_config.validator_count
+        if validator_count > len(nodes):
+            raise ValueError(
+                f"unl_report requires {validator_count} generated validator "
+                f"nodes, got {len(nodes)}"
+            )
+        unl_report_keys = [node.public_key for node in nodes[:validator_count]]
     effective_genesis = prepare_genesis_file(
         base_genesis,
         features,
@@ -427,7 +437,12 @@ def _run_one_test(
         )
 
         # 3. Build launch config and run
-        launch_config = _build_launch_config(xahaud_root, config, nodes=network.nodes)
+        launch_config = _build_launch_config(
+            xahaud_root,
+            config,
+            nodes=network.nodes,
+            network_config=network.config,
+        )
         network.run(launch_config)
 
         # 4. Set up dual file logging for scenario + txn_generator etc.

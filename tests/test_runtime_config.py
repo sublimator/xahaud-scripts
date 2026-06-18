@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from xahaud_scripts.testnet.cli_handlers.rc import (
     build_runtime_config_envs,
     parse_rc_spec,
 )
-from xahaud_scripts.testnet.config import NodeInfo
+from xahaud_scripts.testnet.config import NetworkConfig, NodeInfo
 from xahaud_scripts.testnet.suite import _build_launch_config
 
 
@@ -57,6 +59,55 @@ def test_build_runtime_config_envs_resolves_directed_peer() -> None:
             "message_types": ["candidate_set_fetch"],
         }
     }
+
+
+def test_suite_launch_config_uses_network_config_for_unl_report_seed(
+    tmp_path: Path,
+) -> None:
+    nodes = [
+        NodeInfo(
+            id=i,
+            public_key=f"02{i + 1:064X}",
+            token=f"token{i}",
+            config_path=tmp_path / f"n{i}" / "xahaud.cfg",
+            port_peer=5005 + i,
+            port_rpc=6005 + i,
+            port_ws=7005 + i,
+        )
+        for i in range(4)
+    ]
+
+    launch = _build_launch_config(
+        tmp_path,
+        {"node_count": 4, "unl_report": True},
+        nodes=nodes,
+        network_config=NetworkConfig(node_count=4, validators=2),
+    )
+
+    genesis = json.loads(launch.genesis_file.read_text())
+    reports = [
+        e
+        for e in genesis["ledger"]["accountState"]
+        if e.get("LedgerEntryType") == "UNLReport"
+    ]
+    assert len(reports) == 1
+    active_keys = [
+        entry["ActiveValidator"]["PublicKey"]
+        for entry in reports[0]["ActiveValidators"]
+    ]
+    assert active_keys == [nodes[0].public_key, nodes[1].public_key]
+
+
+def test_suite_launch_config_rejects_unl_report_validator_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="unl_report requires 3"):
+        _build_launch_config(
+            tmp_path,
+            {"node_count": 3, "unl_report": True},
+            nodes=_nodes(tmp_path),
+            network_config=NetworkConfig(node_count=3, validators=3),
+        )
 
 
 def test_suite_launch_config_applies_rc_specs(tmp_path: Path) -> None:
