@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 logger = make_logger(__name__)
 console = Console()
 
+RUNTIME_CONFIG_ENV = "XAHAUD_RUNTIME_TEST_CONFIG"
+
 # Valid message type names (must match C++ side)
 VALID_MSG_TYPES = frozenset(
     {
@@ -83,11 +85,13 @@ VALID_MSG_TYPES = frozenset(
     }
 )
 
-# DSL param names → RPC/env var key names
-PARAM_MAP = {
+# DSL param names -> RPC/env var key names
+PEER_PARAM_MAP = {
     "delay": "send_delay_ms",
     "jitter": "send_delay_jitter_ms",
     "drop": "send_drop_pct",
+}
+GLOBAL_PARAM_MAP = {
     "rngdrop": "rng_claim_drop_pct",
 }
 
@@ -97,26 +101,31 @@ class RuntimeConfigSpec:
     """Parsed runtime config specification."""
 
     node_id: int | None = None  # None = all nodes
-    peer_id: int | None = None  # None = target "*"
+    peer_id: int | None = None  # None = peer_defaults
     delay: int | None = None
     jitter: int | None = None
     drop: float | None = None
     rngdrop: float | None = None
     msg: list[str] = field(default_factory=list)
 
-    def to_rpc_config(self) -> dict[str, Any]:
-        """Convert to RPC config dict (send_delay_ms etc.)."""
+    def to_peer_config(self) -> dict[str, Any]:
+        """Convert peer-scoped fields to a runtime_config object."""
         cfg: dict[str, Any] = {}
         if self.delay is not None:
-            cfg["send_delay_ms"] = self.delay
+            cfg[PEER_PARAM_MAP["delay"]] = self.delay
         if self.jitter is not None:
-            cfg["send_delay_jitter_ms"] = self.jitter
+            cfg[PEER_PARAM_MAP["jitter"]] = self.jitter
         if self.drop is not None:
-            cfg["send_drop_pct"] = self.drop
-        if self.rngdrop is not None:
-            cfg["rng_claim_drop_pct"] = self.rngdrop
+            cfg[PEER_PARAM_MAP["drop"]] = self.drop
         if self.msg:
             cfg["message_types"] = self.msg
+        return cfg
+
+    def to_global_config(self) -> dict[str, Any]:
+        """Convert global consensus-test fields to a runtime_config object."""
+        cfg: dict[str, Any] = {}
+        if self.rngdrop is not None:
+            cfg[GLOBAL_PARAM_MAP["rngdrop"]] = self.rngdrop
         return cfg
 
 
@@ -181,6 +190,10 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             if not (0 <= result.drop <= 100):
                 raise click.BadParameter("drop must be 0-100")
         elif key == "rngdrop":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "rngdrop is node-scoped; use n0:rngdrop=... not n0@n1"
+                )
             result.rngdrop = _parse_float(value, "rngdrop")
             if not (0 <= result.rngdrop <= 100):
                 raise click.BadParameter("rngdrop must be 0-100")
@@ -244,11 +257,71 @@ def reverse_resolve_peer(address: str, nodes: list[NodeInfo]) -> str | None:
     return None
 
 
+def _target_configs_for_spec(
+    spec: RuntimeConfigSpec,
+    nodes: list[NodeInfo],
+) -> dict[str, dict[str, Any]]:
+    """Return flat runtime_config target objects for one parsed spec."""
+    configs: dict[str, dict[str, Any]] = {}
+
+    peer_cfg = spec.to_peer_config()
+    if peer_cfg:
+        target = (
+            f"peer:{resolve_peer_address(nodes, spec.peer_id)}"
+            if spec.peer_id is not None
+            else "peer_defaults"
+        )
+        configs[target] = peer_cfg
+
+    global_cfg = spec.to_global_config()
+    if global_cfg:
+        configs["global"] = global_cfg
+
+    return configs
+
+
+def runtime_config_env_value(targets: dict[str, dict[str, Any]]) -> str:
+    """Build the daemon's startup runtime-config env JSON."""
+    return json.dumps({"set": targets}, separators=(",", ":"))
+
+
+def merge_runtime_config_env(
+    env: dict[str, str],
+    updates: dict[str, dict[str, Any]],
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Merge target updates into XAHAUD_RUNTIME_TEST_CONFIG in an env dict."""
+    root: dict[str, Any] = {}
+    if existing := env.get(RUNTIME_CONFIG_ENV):
+        parsed = json.loads(existing)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{RUNTIME_CONFIG_ENV} must be a JSON object")
+        root = parsed
+
+    set_section = root.setdefault("set", {})
+    if not isinstance(set_section, dict):
+        raise ValueError(f"{RUNTIME_CONFIG_ENV}.set must be a JSON object")
+
+    for target, cfg in updates.items():
+        current = set_section.setdefault(target, {})
+        if not isinstance(current, dict):
+            if overwrite:
+                set_section[target] = dict(cfg)
+            continue
+
+        for key, value in cfg.items():
+            if overwrite or key not in current:
+                current[key] = value
+
+    env[RUNTIME_CONFIG_ENV] = json.dumps(root, separators=(",", ":"))
+
+
 def build_runtime_config_envs(
     specs: list[RuntimeConfigSpec],
     nodes: list[NodeInfo],
 ) -> dict[int, str]:
-    """Build XAHAU_RUNTIME_CONFIG JSON per node from specs.
+    """Build XAHAUD_RUNTIME_TEST_CONFIG JSON per node from specs.
 
     Groups specs by node, resolves peer addresses, and builds
     the JSON env var value for each node.
@@ -258,7 +331,7 @@ def build_runtime_config_envs(
         nodes: Node info list (for peer address resolution).
 
     Returns:
-        Dict mapping node_id -> JSON string for XAHAU_RUNTIME_CONFIG.
+        Dict mapping node_id -> JSON string for XAHAUD_RUNTIME_TEST_CONFIG.
     """
     node_ids = [n.id for n in nodes]
 
@@ -270,28 +343,25 @@ def build_runtime_config_envs(
     per_node: dict[int, dict[str, dict[str, Any]]] = {nid: {} for nid in node_ids}
 
     for spec in specs:
-        target_key = (
-            resolve_peer_address(nodes, spec.peer_id)
-            if spec.peer_id is not None
-            else "*"
-        )
-        cfg = spec.to_rpc_config()
+        configs = _target_configs_for_spec(spec, nodes)
 
         if spec.node_id is not None:
             # Specific node
             if spec.node_id not in per_node:
                 raise click.ClickException(f"Unknown node: n{spec.node_id}")
-            _merge_config(per_node[spec.node_id], target_key, cfg)
+            for target_key, cfg in configs.items():
+                _merge_config(per_node[spec.node_id], target_key, cfg)
         else:
             # All nodes
             for nid in node_ids:
-                _merge_config(per_node[nid], target_key, cfg)
+                for target_key, cfg in configs.items():
+                    _merge_config(per_node[nid], target_key, cfg)
 
     # Build JSON for nodes that have configs
     result: dict[int, str] = {}
     for nid, targets in per_node.items():
         if targets:
-            result[nid] = json.dumps(targets)
+            result[nid] = runtime_config_env_value(targets)
 
     return result
 
@@ -357,9 +427,14 @@ def rc_show_handler(
             peer_col = peer_label if first else ""
             first = False
 
-            # Reverse-resolve peer address to node name
-            if target == "*":
-                target_label = "*"
+            if target == "global":
+                target_label = "global"
+            elif target == "peer_defaults":
+                target_label = "peer_defaults"
+            elif target.startswith("peer:"):
+                peer_address = target.removeprefix("peer:")
+                node_name = reverse_resolve_peer(peer_address, nodes)
+                target_label = node_name if node_name else target
             else:
                 node_name = reverse_resolve_peer(target, nodes)
                 target_label = node_name if node_name else target
@@ -399,18 +474,14 @@ def rc_set_handler(
     rpc_calls: dict[int, dict[str, dict[str, Any]]] = {}
 
     for spec in specs:
-        target_key = (
-            resolve_peer_address(nodes, spec.peer_id)
-            if spec.peer_id is not None
-            else "*"
-        )
-        cfg = spec.to_rpc_config()
+        configs = _target_configs_for_spec(spec, nodes)
 
         targets = [spec.node_id] if spec.node_id is not None else node_ids
         for nid in targets:
             if nid not in rpc_calls:
                 rpc_calls[nid] = {}
-            _merge_config(rpc_calls[nid], target_key, cfg)
+            for target_key, cfg in configs.items():
+                _merge_config(rpc_calls[nid], target_key, cfg)
 
     # Send RPCs in parallel
     with ThreadPoolExecutor(max_workers=len(rpc_calls) or 1) as pool:
@@ -442,8 +513,10 @@ def rc_clear_handler(
         for nid in target_nids:
             if peer_ids is not None:
                 # Clear specific peer targets
-                targets = [resolve_peer_address(nodes, pid) for pid in peer_ids]
-                params: dict[str, Any] = {"clear": targets}
+                targets = [
+                    f"peer:{resolve_peer_address(nodes, pid)}" for pid in peer_ids
+                ]
+                params: dict[str, Any] = {"set": dict.fromkeys(targets)}
             else:
                 params = {"clear_all": True}
             futures[pool.submit(rpc_client.runtime_config, nid, params)] = nid

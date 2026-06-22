@@ -54,9 +54,28 @@ def test_build_runtime_config_envs_resolves_directed_peer() -> None:
 
     assert set(envs) == {0}
     assert json.loads(envs[0]) == {
-        "127.0.0.1:5006": {
-            "send_delay_ms": 700,
-            "message_types": ["candidate_set_fetch"],
+        "set": {
+            "peer:127.0.0.1:5006": {
+                "send_delay_ms": 700,
+                "message_types": ["candidate_set_fetch"],
+            }
+        }
+    }
+
+
+def test_build_runtime_config_envs_splits_peer_and_global_scopes() -> None:
+    specs = [parse_rc_spec("delay=700,rngdrop=25,msg=proposal")]
+
+    envs = build_runtime_config_envs(specs, _nodes(Path("/tmp/xahaud-test")))
+
+    assert set(envs) == {0, 1}
+    assert json.loads(envs[0]) == {
+        "set": {
+            "global": {"rng_claim_drop_pct": 25.0},
+            "peer_defaults": {
+                "send_delay_ms": 700,
+                "message_types": ["proposal"],
+            },
         }
     }
 
@@ -120,11 +139,40 @@ def test_suite_launch_config_applies_rc_specs(tmp_path: Path) -> None:
         nodes=_nodes(tmp_path),
     )
 
-    assert "XAHAU_RUNTIME_CONFIG" in launch.node_env[0]
-    assert json.loads(launch.node_env[0]["XAHAU_RUNTIME_CONFIG"]) == {
-        "127.0.0.1:5006": {
-            "send_delay_ms": 700,
-            "message_types": ["proposal"],
+    assert "XAHAUD_RUNTIME_TEST_CONFIG" in launch.node_env[0]
+    assert json.loads(launch.node_env[0]["XAHAUD_RUNTIME_TEST_CONFIG"]) == {
+        "set": {
+            "peer:127.0.0.1:5006": {
+                "send_delay_ms": 700,
+                "message_types": ["proposal"],
+            }
         }
     }
     assert launch.node_env[1]["EXISTING"] == "1"
+
+
+def test_suite_launch_config_merges_rc_with_existing_runtime_config(
+    tmp_path: Path,
+) -> None:
+    launch = _build_launch_config(
+        tmp_path,
+        {
+            "env": {
+                "XAHAUD_RUNTIME_TEST_CONFIG": (
+                    '{"set":{"global":{"bootstrap_fast_start":true}}}'
+                )
+            },
+            "rc": ["n0@n1:delay=700,msg=proposal"],
+        },
+        nodes=_nodes(tmp_path),
+    )
+
+    assert json.loads(launch.node_env[0]["XAHAUD_RUNTIME_TEST_CONFIG"]) == {
+        "set": {
+            "global": {"bootstrap_fast_start": True},
+            "peer:127.0.0.1:5006": {
+                "send_delay_ms": 700,
+                "message_types": ["proposal"],
+            },
+        }
+    }

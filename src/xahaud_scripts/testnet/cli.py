@@ -452,8 +452,8 @@ def generate(
     "--fast-bootstrap/--no-fast-bootstrap",
     "fast_bootstrap",
     default=True,
-    help="Set XAHAUD_BOOTSTRAP_FAST_START=1 unless explicitly overridden "
-    "via --env (default: enabled).",
+    help="Set runtime_config global.bootstrap_fast_start=true unless explicitly "
+    "overridden via --env (default: enabled).",
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -586,8 +586,14 @@ def run(
             for key, value in env_dict.items():
                 logger.info(f"  n{node_id}: {key}={value}")
 
-    if fast_bootstrap and "XAHAUD_BOOTSTRAP_FAST_START" not in extra_env:
-        extra_env["XAHAUD_BOOTSTRAP_FAST_START"] = "1"
+    if fast_bootstrap:
+        from xahaud_scripts.testnet.cli_handlers.rc import merge_runtime_config_env
+
+        merge_runtime_config_env(
+            extra_env,
+            {"global": {"bootstrap_fast_start": True}},
+            overwrite=False,
+        )
 
     # If --slave-delay was explicitly provided, enable delays
     from click.core import ParameterSource
@@ -605,7 +611,9 @@ def run(
 
     if not rc_clear and (network.rc_specs or rc_specs):
         from xahaud_scripts.testnet.cli_handlers.rc import (
+            RUNTIME_CONFIG_ENV,
             build_runtime_config_envs,
+            merge_runtime_config_env,
             parse_rc_spec,
         )
 
@@ -622,8 +630,16 @@ def run(
             for nid, json_val in rc_envs.items():
                 if nid not in node_env:
                     node_env[nid] = {}
-                node_env[nid]["XAHAU_RUNTIME_CONFIG"] = json_val
-                logger.info(f"  n{nid}: XAHAU_RUNTIME_CONFIG={json_val}")
+                if (
+                    RUNTIME_CONFIG_ENV in extra_env
+                    and RUNTIME_CONFIG_ENV not in node_env[nid]
+                ):
+                    node_env[nid][RUNTIME_CONFIG_ENV] = extra_env[RUNTIME_CONFIG_ENV]
+                merge_runtime_config_env(node_env[nid], json.loads(json_val)["set"])
+                logger.info(
+                    f"  n{nid}: {RUNTIME_CONFIG_ENV}="
+                    f"{node_env[nid][RUNTIME_CONFIG_ENV]}"
+                )
 
     # Parse --node-binary specs
     node_rippled_paths: dict[int, Path] = {}
@@ -1821,7 +1837,7 @@ def rc_raw(ctx: click.Context, node: str, json_params: str) -> None:
 
     \b
     Examples:
-        x-testnet rc raw n0 '{"set":{"*":{"send_delay_ms":200}}}'
+        x-testnet rc raw n0 '{"set":{"peer_defaults":{"send_delay_ms":200}}}'
         x-testnet rc raw n0 '{"clear_all":true}'
     """
     node_id = _parse_node_spec(node)
@@ -2279,8 +2295,8 @@ def scenario_test_guide() -> None:
     "--fast-bootstrap/--no-fast-bootstrap",
     "fast_bootstrap",
     default=True,
-    help="Set XAHAUD_BOOTSTRAP_FAST_START=1 unless explicitly overridden "
-    "in suite config or --env (default: enabled).",
+    help="Set runtime_config global.bootstrap_fast_start=true unless explicitly "
+    "overridden in suite config or --env (default: enabled).",
 )
 @click.pass_context
 def suite(

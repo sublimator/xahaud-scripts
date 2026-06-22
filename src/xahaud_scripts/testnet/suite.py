@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import json
 import re
 import shutil
 import time
@@ -348,7 +349,9 @@ def _build_launch_config(
             raise ValueError("network rc requires generated node metadata")
 
         from xahaud_scripts.testnet.cli_handlers.rc import (
+            RUNTIME_CONFIG_ENV,
             build_runtime_config_envs,
+            merge_runtime_config_env,
             parse_rc_spec,
         )
 
@@ -357,7 +360,16 @@ def _build_launch_config(
             nodes,
         )
         for node_id, json_val in rc_envs.items():
-            node_env.setdefault(node_id, {})["XAHAU_RUNTIME_CONFIG"] = json_val
+            node_env_for_id = node_env.setdefault(node_id, {})
+            if (
+                RUNTIME_CONFIG_ENV in extra_env
+                and RUNTIME_CONFIG_ENV not in node_env_for_id
+            ):
+                node_env_for_id[RUNTIME_CONFIG_ENV] = extra_env[RUNTIME_CONFIG_ENV]
+            merge_runtime_config_env(
+                node_env_for_id,
+                json.loads(json_val)["set"],
+            )
 
     return LaunchConfig(
         xahaud_root=xahaud_root,
@@ -405,11 +417,20 @@ def _run_one_test(
             **env_override,
         }
 
-    # --fast-bootstrap: inject XAHAUD_BOOTSTRAP_FAST_START=1 unless already set
+    # --fast-bootstrap: inject global.bootstrap_fast_start=true unless already
+    # set in XAHAUD_RUNTIME_TEST_CONFIG.
     if fast_bootstrap:
         env = config.setdefault("env", {})
-        if isinstance(env, dict) and "XAHAUD_BOOTSTRAP_FAST_START" not in env:
-            env["XAHAUD_BOOTSTRAP_FAST_START"] = "1"
+        if isinstance(env, dict):
+            from xahaud_scripts.testnet.cli_handlers.rc import (
+                merge_runtime_config_env,
+            )
+
+            merge_runtime_config_env(
+                env,
+                {"global": {"bootstrap_fast_start": True}},
+                overwrite=False,
+            )
 
     start = time.monotonic()
 
@@ -553,8 +574,9 @@ def run_suite(
         dry_run: Print plan without executing.
         py_log_specs: If set, enable extra Python loggers to file at
             requested levels (format: ``logger.name=LEVEL``).
-        fast_bootstrap: If True (default), inject XAHAUD_BOOTSTRAP_FAST_START=1
-            unless explicitly set in suite config or --env.
+        fast_bootstrap: If True (default), inject
+            XAHAUD_RUNTIME_TEST_CONFIG global.bootstrap_fast_start=true unless
+            explicitly set in suite config or --env.
 
     Returns:
         List of TestResult for all executed tests.
