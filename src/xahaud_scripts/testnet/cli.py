@@ -214,7 +214,7 @@ def testnet(
     "--rc",
     "rc_specs",
     multiple=True,
-    help="Runtime config spec. Format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. "
+    help="Runtime config spec. Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. "
     "Persisted in network.json, auto-applied on run. Can be repeated.",
 )
 @click.pass_context
@@ -382,7 +382,7 @@ def generate(
     "rc_specs",
     multiple=True,
     help="Runtime config spec (overrides/adds to generate-time specs). "
-    "Format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. Can be repeated.",
+    "Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. Can be repeated.",
 )
 @click.option(
     "--rc-clear",
@@ -1717,7 +1717,11 @@ def rc(ctx: click.Context) -> None:
     Controls the runtime_config RPC on running nodes to simulate
     network conditions for testing.
 
-    Spec format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+    Spec format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+
+    Directed NODE->PEER specs affect outbound sends from NODE to PEER only.
+    Quote specs containing ">" in the shell. The reverse direction is
+    unaffected unless specified separately.
 
     \b
     Params: delay (ms), jitter (ms), drop (0-100%), rngdrop (0-100%), msg (type names joined with +)
@@ -1727,7 +1731,7 @@ def rc(ctx: click.Context) -> None:
     Examples:
         x-testnet rc show
         x-testnet rc set delay=200,jitter=50
-        x-testnet rc set n0@n2:drop=100,msg=proposal
+        x-testnet rc set 'n0->n2:drop=100,msg=proposal'
         x-testnet rc clear
     """
     pass
@@ -1774,8 +1778,8 @@ def rc_set(ctx: click.Context, specs: tuple[str, ...]) -> None:
         x-testnet rc set delay=200
         x-testnet rc set delay=200,jitter=50
         x-testnet rc set n0:delay=500
-        x-testnet rc set n0@n2:drop=100,msg=proposal
-        x-testnet rc set n0@n2:drop=100 n2@n0:drop=100
+        x-testnet rc set 'n0->n2:drop=100,msg=proposal'
+        x-testnet rc set 'n0->n2:drop=100' 'n2->n0:drop=100'
     """
     from xahaud_scripts.testnet.cli_handlers.rc import (
         parse_rc_spec,
@@ -1798,13 +1802,13 @@ def rc_set(ctx: click.Context, specs: tuple[str, ...]) -> None:
 def rc_clear(ctx: click.Context, target: str | None) -> None:
     """Clear runtime config on running nodes.
 
-    TARGET is optional — clear a specific node or node@peer, or omit to clear all.
+    TARGET is optional — clear a specific node or node->peer, or omit to clear all.
 
     \b
     Examples:
         x-testnet rc clear                  # clear_all on all nodes
         x-testnet rc clear n0               # clear_all on n0
-        x-testnet rc clear n0@n2            # clear n2 target on n0
+        x-testnet rc clear 'n0->n2'         # clear n2 target on n0
     """
     from xahaud_scripts.testnet.cli_handlers.rc import rc_clear_handler
 
@@ -1818,8 +1822,8 @@ def rc_clear(ctx: click.Context, target: str | None) -> None:
     peer_ids = None
 
     if target is not None:
-        if "@" in target:
-            node_part, peer_part = target.split("@", 1)
+        if "->" in target:
+            node_part, peer_part = target.split("->", 1)
             node_ids = [_parse_node_spec(node_part)]
             peer_ids = [_parse_node_spec(peer_part)]
         else:

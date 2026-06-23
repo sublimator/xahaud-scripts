@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import click
 import pytest
 
 from xahaud_scripts.testnet.cli_handlers.rc import (
@@ -43,7 +44,7 @@ def _nodes(tmp_path: Path) -> list[NodeInfo]:
 
 
 def test_rc_parser_accepts_candidate_set_alias() -> None:
-    spec = parse_rc_spec("n0@n1:delay=700,msg=candidate_set_fetch")
+    spec = parse_rc_spec("n0->n1:delay=700,msg=candidate_set_fetch")
 
     assert spec.node_id == 0
     assert spec.peer_id == 1
@@ -51,8 +52,13 @@ def test_rc_parser_accepts_candidate_set_alias() -> None:
     assert spec.msg == ["candidate_set_fetch"]
 
 
+def test_rc_parser_rejects_old_at_directed_peer_syntax() -> None:
+    with pytest.raises(click.BadParameter, match="Use n0, n0->n2"):
+        parse_rc_spec("n0@n1:delay=700,msg=candidate_set_fetch")
+
+
 def test_build_runtime_config_envs_resolves_directed_peer() -> None:
-    specs = [parse_rc_spec("n0@n1:delay=700,msg=candidate_set_fetch")]
+    specs = [parse_rc_spec("n0->n1:delay=700,msg=candidate_set_fetch")]
 
     envs = build_runtime_config_envs(specs, _nodes(Path("/tmp/xahaud-test")))
 
@@ -160,7 +166,7 @@ def test_suite_launch_config_applies_rc_specs(tmp_path: Path) -> None:
     launch = _build_launch_config(
         tmp_path,
         {
-            "rc": ["n0@n1:delay=700,msg=proposal"],
+            "rc": ["n0->n1:delay=700,msg=proposal"],
             "node_env": {"1": {"EXISTING": "1"}},
         },
         nodes=_nodes(tmp_path),
@@ -189,7 +195,7 @@ def test_suite_launch_config_merges_rc_with_existing_runtime_config(
                     '{"set":{"global":{"bootstrap_fast_start":true}}}'
                 )
             },
-            "rc": ["n0@n1:delay=700,msg=proposal"],
+            "rc": ["n0->n1:delay=700,msg=proposal"],
         },
         nodes=_nodes(tmp_path),
     )

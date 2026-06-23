@@ -3,9 +3,9 @@
 Parses specs like:
     delay=200                           # all nodes, all peers
     n0:delay=500,jitter=50              # node 0 only
-    n0@n2:drop=100,msg=proposal         # node 0 → peer n2, proposals only
+    n0->n2:drop=100,msg=proposal        # node 0 outbound -> peer n2
 
-DSL format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+DSL format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
 """
 
 from __future__ import annotations
@@ -148,14 +148,19 @@ class RuntimeConfigSpec:
 def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
     """Parse a runtime config DSL spec string.
 
-    Format: [NODE[@PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+    Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
+
+    Directed NODE->PEER specs affect outbound sends from NODE to PEER only.
+    PEER is resolved to that node's listening peer port
+    (peer:127.0.0.1:<port>), matching xahaud outbound peer slots. The reverse
+    direction is unaffected unless specified separately.
 
     Examples:
         delay=200
         delay=200,jitter=50
         n0:delay=500
-        n0@n2:drop=100
-        n0@n2:drop=100,msg=proposal+validation
+        n0->n2:drop=100
+        n0->n2:drop=100,msg=proposal+validation
 
     Args:
         spec: The DSL spec string.
@@ -173,16 +178,18 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
         # Check if the colon separates target from params
         # (not just part of a value)
         prefix, params_str = spec.split(":", 1)
-        if re.match(r"^n\d+(@n\d+)?$", prefix):
-            # Parse target: n0 or n0@n2
-            if "@" in prefix:
-                node_part, peer_part = prefix.split("@", 1)
+        if re.match(r"^n\d+(->n\d+)?$", prefix):
+            # Parse target: n0 or n0->n2
+            if "->" in prefix:
+                node_part, peer_part = prefix.split("->", 1)
                 result.node_id = _parse_node_id(node_part)
                 result.peer_id = _parse_node_id(peer_part)
             else:
                 result.node_id = _parse_node_id(prefix)
         else:
-            raise click.BadParameter(f"Invalid target: {prefix!r}. Use n0, n0@n2, etc.")
+            raise click.BadParameter(
+                f"Invalid target: {prefix!r}. Use n0, n0->n2, etc."
+            )
     else:
         params_str = spec
 
@@ -208,7 +215,7 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
         elif key == "rngdrop":
             if result.peer_id is not None:
                 raise click.BadParameter(
-                    "rngdrop is node-scoped; use n0:rngdrop=... not n0@n1"
+                    "rngdrop is node-scoped; use n0:rngdrop=... not n0->n1"
                 )
             result.rngdrop = _parse_float(value, "rngdrop")
             if not (0 <= result.rngdrop <= 100):
@@ -216,27 +223,27 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
         elif key == "rng_poll_ms":
             if result.peer_id is not None:
                 raise click.BadParameter(
-                    "rng_poll_ms is node-scoped; use n0:rng_poll_ms=... not n0@n1"
+                    "rng_poll_ms is node-scoped; use n0:rng_poll_ms=... not n0->n1"
                 )
             result.rng_poll_ms = _parse_int(value, "rng_poll_ms")
         elif key == "bootstrap_fast_start":
             if result.peer_id is not None:
                 raise click.BadParameter(
                     "bootstrap_fast_start is node-scoped; use "
-                    "n0:bootstrap_fast_start=... not n0@n1"
+                    "n0:bootstrap_fast_start=... not n0->n1"
                 )
             result.bootstrap_fast_start = _parse_bool(value, "bootstrap_fast_start")
         elif key == "no_export_sig":
             if result.peer_id is not None:
                 raise click.BadParameter(
-                    "no_export_sig is node-scoped; use n0:no_export_sig=... not n0@n1"
+                    "no_export_sig is node-scoped; use n0:no_export_sig=... not n0->n1"
                 )
             result.no_export_sig = _parse_bool(value, "no_export_sig")
         elif key == "no_export_sig_hash":
             if result.peer_id is not None:
                 raise click.BadParameter(
                     "no_export_sig_hash is node-scoped; use "
-                    "n0:no_export_sig_hash=... not n0@n1"
+                    "n0:no_export_sig_hash=... not n0->n1"
                 )
             result.no_export_sig_hash = _parse_bool(value, "no_export_sig_hash")
         elif key == "msg":
