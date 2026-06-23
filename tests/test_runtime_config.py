@@ -84,6 +84,29 @@ def test_build_runtime_config_envs_splits_peer_and_global_scopes() -> None:
     }
 
 
+def test_build_runtime_config_envs_accepts_export_global_knobs() -> None:
+    specs = [
+        parse_rc_spec(
+            "n1:rng_poll_ms=333,bootstrap_fast_start=true,"
+            "no_export_sig=true,no_export_sig_hash=false"
+        )
+    ]
+
+    envs = build_runtime_config_envs(specs, _nodes(Path("/tmp/xahaud-test")))
+
+    assert set(envs) == {1}
+    assert json.loads(envs[1]) == {
+        "set": {
+            "global": {
+                "rng_poll_ms": 333,
+                "bootstrap_fast_start": True,
+                "no_export_sig": True,
+                "no_export_sig_hash": False,
+            }
+        }
+    }
+
+
 def test_suite_launch_config_uses_network_config_for_unl_report_seed(
     tmp_path: Path,
 ) -> None:

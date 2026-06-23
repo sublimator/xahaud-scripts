@@ -93,6 +93,10 @@ PEER_PARAM_MAP = {
 }
 GLOBAL_PARAM_MAP = {
     "rngdrop": "rng_claim_drop_pct",
+    "rng_poll_ms": "rng_poll_ms",
+    "bootstrap_fast_start": "bootstrap_fast_start",
+    "no_export_sig": "no_export_sig",
+    "no_export_sig_hash": "no_export_sig_hash",
 }
 
 
@@ -106,6 +110,10 @@ class RuntimeConfigSpec:
     jitter: int | None = None
     drop: float | None = None
     rngdrop: float | None = None
+    rng_poll_ms: int | None = None
+    bootstrap_fast_start: bool | None = None
+    no_export_sig: bool | None = None
+    no_export_sig_hash: bool | None = None
     msg: list[str] = field(default_factory=list)
 
     def to_peer_config(self) -> dict[str, Any]:
@@ -126,6 +134,14 @@ class RuntimeConfigSpec:
         cfg: dict[str, Any] = {}
         if self.rngdrop is not None:
             cfg[GLOBAL_PARAM_MAP["rngdrop"]] = self.rngdrop
+        if self.rng_poll_ms is not None:
+            cfg[GLOBAL_PARAM_MAP["rng_poll_ms"]] = self.rng_poll_ms
+        if self.bootstrap_fast_start is not None:
+            cfg[GLOBAL_PARAM_MAP["bootstrap_fast_start"]] = self.bootstrap_fast_start
+        if self.no_export_sig is not None:
+            cfg[GLOBAL_PARAM_MAP["no_export_sig"]] = self.no_export_sig
+        if self.no_export_sig_hash is not None:
+            cfg[GLOBAL_PARAM_MAP["no_export_sig_hash"]] = self.no_export_sig_hash
         return cfg
 
 
@@ -197,6 +213,32 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             result.rngdrop = _parse_float(value, "rngdrop")
             if not (0 <= result.rngdrop <= 100):
                 raise click.BadParameter("rngdrop must be 0-100")
+        elif key == "rng_poll_ms":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "rng_poll_ms is node-scoped; use n0:rng_poll_ms=... not n0@n1"
+                )
+            result.rng_poll_ms = _parse_int(value, "rng_poll_ms")
+        elif key == "bootstrap_fast_start":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "bootstrap_fast_start is node-scoped; use "
+                    "n0:bootstrap_fast_start=... not n0@n1"
+                )
+            result.bootstrap_fast_start = _parse_bool(value, "bootstrap_fast_start")
+        elif key == "no_export_sig":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "no_export_sig is node-scoped; use n0:no_export_sig=... not n0@n1"
+                )
+            result.no_export_sig = _parse_bool(value, "no_export_sig")
+        elif key == "no_export_sig_hash":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "no_export_sig_hash is node-scoped; use "
+                    "n0:no_export_sig_hash=... not n0@n1"
+                )
+            result.no_export_sig_hash = _parse_bool(value, "no_export_sig_hash")
         elif key == "msg":
             types = value.split("+")
             for t in types:
@@ -209,7 +251,9 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             result.msg = types
         else:
             raise click.BadParameter(
-                f"Unknown param: {key!r}. Valid: delay, jitter, drop, rngdrop, msg"
+                f"Unknown param: {key!r}. Valid: delay, jitter, drop, rngdrop, "
+                "rng_poll_ms, bootstrap_fast_start, no_export_sig, "
+                "no_export_sig_hash, msg"
             )
 
     return result
@@ -227,6 +271,15 @@ def _parse_int(s: str, name: str) -> int:
         return int(s)
     except ValueError:
         raise click.BadParameter(f"{name} must be an integer, got {s!r}") from None
+
+
+def _parse_bool(s: str, name: str) -> bool:
+    normalized = s.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise click.BadParameter(f"{name} must be a boolean, got {s!r}")
 
 
 def _parse_float(s: str, name: str) -> float:
