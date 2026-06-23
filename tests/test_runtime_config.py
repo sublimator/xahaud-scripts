@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,10 @@ from xahaud_scripts.testnet.cli_handlers.rc import (
     build_runtime_config_envs,
     parse_rc_spec,
 )
-from xahaud_scripts.testnet.config import NetworkConfig, NodeInfo
+from xahaud_scripts.testnet.config import LaunchConfig, NetworkConfig, NodeInfo
+from xahaud_scripts.testnet.launcher.iterm import ITermLauncher
+from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
+from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.suite import _build_launch_config
 
 
@@ -176,3 +180,36 @@ def test_suite_launch_config_merges_rc_with_existing_runtime_config(
             },
         }
     }
+
+
+@pytest.mark.parametrize(
+    "launcher_cls",
+    [TmuxLauncher, ITermLauncher, ITermPanesLauncher],
+)
+def test_launchers_shell_quote_json_env_values(tmp_path: Path, launcher_cls) -> None:
+    runtime_json = '{"set":{"global":{"rng_poll_ms":333}}}'
+    node_json = '{"set":{"global":{"no_export_sig_hash":true}}}'
+    node = _nodes(tmp_path)[0]
+    launch = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "build" / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+        extra_env={"XAHAUD_RUNTIME_TEST_CONFIG": runtime_json},
+        node_env={0: {"NODE_JSON": node_json}},
+    )
+
+    env_vars = launcher_cls()._build_env_vars(node, launch)
+    output = subprocess.check_output(
+        [
+            "sh",
+            "-c",
+            (
+                f"{env_vars} && "
+                'printf "%s\\n%s\\n" "$XAHAUD_RUNTIME_TEST_CONFIG" "$NODE_JSON"'
+            ),
+        ],
+        text=True,
+    ).splitlines()
+
+    assert json.loads(output[0]) == {"set": {"global": {"rng_poll_ms": 333}}}
+    assert json.loads(output[1]) == {"set": {"global": {"no_export_sig_hash": True}}}

@@ -6,6 +6,7 @@ iTerm2 window with appropriate environment variables and commands.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import sys
@@ -196,12 +197,12 @@ end tell
 
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
-            parts.append(f"export {key}={value}")
+            parts.append(f"export {key}={shlex.quote(value)}")
 
         # Node-specific environment variables (override global)
         if node.id in config.node_env:
             for key, value in config.node_env[node.id].items():
-                parts.append(f"export {key}={value}")
+                parts.append(f"export {key}={shlex.quote(value)}")
 
         return " && ".join(parts)
 
