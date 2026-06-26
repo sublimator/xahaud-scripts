@@ -16,6 +16,8 @@ class BuildConfig:
     conan: bool = True
     verbose: bool = False
     ccache: bool = False
+    ubsan: bool = False
+    stdlib_hardening: bool = False
     build_type: str = "Debug"
     target: str = "rippled"
     log_line_numbers: bool = True
@@ -29,13 +31,16 @@ def detect_previous_build_config(build_dir: str) -> dict:
         build_dir: Path to the build directory
 
     Returns:
-        dict with keys: coverage, conan, verbose, ccache, build_type
+        dict with keys: coverage, conan, verbose, ccache, ubsan,
+        stdlib_hardening, build_type
     """
     config = {
         "coverage": False,
         "conan": False,
         "verbose": False,
         "ccache": False,
+        "ubsan": False,
+        "stdlib_hardening": False,
         "build_type": "Debug",
     }
 
@@ -75,6 +80,16 @@ def detect_previous_build_config(build_dir: str) -> dict:
                 config["ccache"] = True
                 logger.debug("Detected previous build with ccache")
 
+            # Check for UBSan
+            if "-fsanitize=undefined" in cache_content:
+                config["ubsan"] = True
+                logger.debug("Detected previous build with UndefinedBehaviorSanitizer")
+
+            # Check for standard library hardening
+            if "_LIBCPP_HARDENING_MODE=" in cache_content:
+                config["stdlib_hardening"] = True
+                logger.debug("Detected previous build with standard library hardening")
+
             # Check for build type
             if "CMAKE_BUILD_TYPE:STRING=Release" in cache_content:
                 config["build_type"] = "Release"
@@ -94,6 +109,8 @@ def check_config_mismatch(
     use_conan: bool,
     verbose: bool,
     ccache: bool,
+    ubsan: bool,
+    stdlib_hardening: bool,
     build_type: str,
 ) -> bool:
     """Check if current config differs from previous build.
@@ -104,6 +121,8 @@ def check_config_mismatch(
         use_conan: Current conan setting (True if using any conan version)
         verbose: Current verbose setting
         ccache: Current ccache setting
+        ubsan: Current UBSan setting
+        stdlib_hardening: Current standard library hardening setting
         build_type: Current build type
 
     Returns:
@@ -115,6 +134,8 @@ def check_config_mismatch(
         or prev_config["conan"] != use_conan
         or prev_config["verbose"] != verbose
         or prev_config["ccache"] != ccache
+        or prev_config["ubsan"] != ubsan
+        or prev_config["stdlib_hardening"] != stdlib_hardening
         or prev_config["build_type"] != build_type
     )
 
@@ -126,11 +147,15 @@ def check_config_mismatch(
             + f"conan={prev_config['conan']}, "
             + f"verbose={prev_config['verbose']}, "
             + f"ccache={prev_config['ccache']}, "
+            + f"ubsan={prev_config['ubsan']}, "
+            + f"stdlib_hardening={prev_config['stdlib_hardening']}, "
             + f"build_type={prev_config['build_type']}"
         )
         logger.warning(
             f"Current request: coverage={coverage}, conan={use_conan}, "
-            f"verbose={verbose}, ccache={ccache}, build_type={build_type}"
+            f"verbose={verbose}, ccache={ccache}, ubsan={ubsan}, "
+            f"stdlib_hardening={stdlib_hardening}, "
+            f"build_type={build_type}"
         )
         logger.warning(
             "Consider using --reconfigure-build to ensure consistent configuration"

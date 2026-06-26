@@ -1,6 +1,7 @@
 """CMake configuration and build utilities."""
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,8 @@ class CMakeOptions:
     # native LLVM path, that gets a separate name (e.g. "llvm-native").
     coverage_impl: str = "gcov"
     verbose: bool = False
+    ubsan: bool = False
+    stdlib_hardening: bool = False
     ccache: bool = False
     ccache_basedir: str | None = None  # Absolute path for cache sharing
     ccache_sloppy: bool = False  # Ignore locale, __DATE__, __TIME__
@@ -76,7 +79,14 @@ def cmake_configure(
     """
     logger.info("Configuring CMake build...")
 
-    with change_directory(build_dir):
+    build_dir_exists = os.path.isdir(build_dir)
+    workdir = (
+        nullcontext()
+        if dry_run and not build_dir_exists
+        else change_directory(build_dir)
+    )
+
+    with workdir:
         # Get environment variables
         llvm_dir = os.environ.get("LLVM_DIR", "")
         llvm_library_dir = os.environ.get("LLVM_LIBRARY_DIR", "")
@@ -119,6 +129,9 @@ def cmake_configure(
                     "ccache requested but not found in PATH, continuing without it"
                 )
 
+        injected_compile_flags: list[str] = []
+        injected_link_flags: list[str] = []
+
         # Coverage:
         #   gcov           → -Dcoverage=ON (rippled's native gcov path → gcovr)
         #   llvm-injected  → CMAKE_CXX_FLAGS only; do NOT set -Dcoverage=ON
@@ -132,12 +145,8 @@ def cmake_configure(
                     "Configuring build with LLVM source-based coverage "
                     "(injected via CMAKE_CXX_FLAGS; no -Dcoverage=ON)"
                 )
-                llvm_flags = "-O0 -fcoverage-mapping -fprofile-instr-generate"
-                cmake_cmd.extend(
-                    [
-                        f"-DCMAKE_CXX_FLAGS={llvm_flags}",
-                        f"-DCMAKE_C_FLAGS={llvm_flags}",
-                    ]
+                injected_compile_flags.extend(
+                    ["-O0", "-fcoverage-mapping", "-fprofile-instr-generate"]
                 )
             else:
                 logger.info(
@@ -147,6 +156,41 @@ def cmake_configure(
         else:
             logger.info(f"Configuring standard {options.build_type} build")
 
+        if options.ubsan:
+            logger.info("Configuring build with UndefinedBehaviorSanitizer")
+            injected_compile_flags.extend(
+                [
+                    "-fsanitize=undefined",
+                    "-fno-omit-frame-pointer",
+                    "-fno-sanitize-recover=undefined",
+                ]
+            )
+            injected_link_flags.append("-fsanitize=undefined")
+
+        if options.stdlib_hardening:
+            logger.info("Configuring build with standard library hardening")
+            injected_compile_flags.append(
+                "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG"
+            )
+
+        if injected_compile_flags:
+            flags = " ".join(injected_compile_flags)
+            cmake_cmd.extend(
+                [
+                    f"-DCMAKE_CXX_FLAGS={flags}",
+                    f"-DCMAKE_C_FLAGS={flags}",
+                ]
+            )
+
+        if injected_link_flags:
+            flags = " ".join(injected_link_flags)
+            cmake_cmd.extend(
+                [
+                    f"-DCMAKE_EXE_LINKER_FLAGS={flags}",
+                    f"-DCMAKE_SHARED_LINKER_FLAGS={flags}",
+                ]
+            )
+
         # Add conan toolchain if using conan
         if options.use_conan:
             # Find the conan-generated toolchain wherever it actually landed.
@@ -155,15 +199,28 @@ def cmake_configure(
             # 'build/generators' puts it under <bd>/build/generators/).
             found = find_conan_toolchain(build_dir)
             if found is None:
-                logger.error(
-                    f"conan_toolchain.cmake not found anywhere under {build_dir}. "
-                    "Did `conan install` run successfully?"
-                )
-                return False
-            # Use an absolute path — the wrapper sits in build_dir, so a
-            # relative-via-CMAKE_CURRENT_LIST_DIR include is fragile across
-            # different layouts. Absolute is always correct.
-            conan_toolchain_abs = str(found.resolve())
+                if dry_run:
+                    conan_toolchain_abs = str(
+                        Path(build_dir)
+                        / "build"
+                        / "generators"
+                        / "conan_toolchain.cmake"
+                    )
+                    logger.debug(
+                        "Using expected dry-run Conan toolchain path: "
+                        f"{conan_toolchain_abs}"
+                    )
+                else:
+                    logger.error(
+                        f"conan_toolchain.cmake not found anywhere under {build_dir}. "
+                        "Did `conan install` run successfully?"
+                    )
+                    return False
+            else:
+                # Use an absolute path — the wrapper sits in build_dir, so a
+                # relative-via-CMAKE_CURRENT_LIST_DIR include is fragile across
+                # different layouts. Absolute is always correct.
+                conan_toolchain_abs = str(found.resolve())
 
             if use_ccache:
                 # Create a wrapper toolchain that includes Conan's toolchain
@@ -285,7 +342,14 @@ def cmake_build(
     if parallel is None:
         parallel = get_logical_cpu_count()
 
-    with change_directory(build_dir):
+    build_dir_exists = os.path.isdir(build_dir)
+    workdir = (
+        nullcontext()
+        if dry_run and not build_dir_exists
+        else change_directory(build_dir)
+    )
+
+    with workdir:
         build_cmd = ["cmake", "--build", "."]
 
         # Add target

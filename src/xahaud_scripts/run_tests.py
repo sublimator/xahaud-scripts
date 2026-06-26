@@ -68,6 +68,8 @@ def build_rippled(
     coverage: bool = False,
     coverage_impl: str = "gcov",
     use_conan: bool = True,
+    ubsan: bool = False,
+    stdlib_hardening: bool = False,
     verbose: bool = False,
     use_ccache: bool = False,
     ccache_basedir: str | None = None,
@@ -88,6 +90,8 @@ def build_rippled(
         reconfigure_build: If True, force CMake reconfiguration even if build directory exists
         coverage: If True, enable code coverage
         use_conan: If True, use Conan package manager for dependencies
+        ubsan: If True, enable UndefinedBehaviorSanitizer
+        stdlib_hardening: If True, enable standard library hardening checks
         verbose: If True, enable verbose output during build
         use_ccache: If True, use ccache to speed up compilation
         ccache_basedir: Base directory for ccache path normalization (cache sharing)
@@ -106,6 +110,10 @@ def build_rippled(
     xahaud_root = get_xahaud_root()
     if build_dir is None:
         dir_name = "build-debug" if build_type.lower() == "debug" else "build"
+        if ubsan:
+            dir_name = f"{dir_name}-ubsan"
+        if stdlib_hardening:
+            dir_name = f"{dir_name}-stdlib-hardening"
         build_dir = os.path.join(xahaud_root, dir_name)
     logger.info(f"Building {target} in {build_dir}")
 
@@ -133,6 +141,8 @@ def build_rippled(
             use_conan=use_conan,
             verbose=verbose,
             ccache=use_ccache,
+            ubsan=ubsan,
+            stdlib_hardening=stdlib_hardening,
             build_type=build_type,
         )
 
@@ -158,6 +168,8 @@ def build_rippled(
             coverage=coverage,
             coverage_impl=coverage_impl,
             verbose=verbose,
+            ubsan=ubsan,
+            stdlib_hardening=stdlib_hardening,
             ccache=use_ccache,
             ccache_basedir=ccache_basedir,
             ccache_sloppy=ccache_sloppy,
@@ -377,6 +389,25 @@ def run_rippled(
     ),
 )
 @click.option(
+    "--ubsan/--no-ubsan",
+    is_flag=True,
+    default=False,
+    help=(
+        "Build and run with UndefinedBehaviorSanitizer. Uses a segregated "
+        "default build dir; pair with --reconfigure-build when switching modes."
+    ),
+)
+@click.option(
+    "--stdlib-hardening/--no-stdlib-hardening",
+    is_flag=True,
+    default=False,
+    help=(
+        "Build and run with standard library hardening checks. On libc++ this "
+        "enables _LIBCPP_HARDENING_MODE_DEBUG and uses a segregated default "
+        "build dir."
+    ),
+)
+@click.option(
     "--conan/--no-conan",
     is_flag=True,
     default=True,
@@ -500,6 +531,8 @@ def main(
     coverage,
     coverage_impl,
     conan,
+    ubsan,
+    stdlib_hardening,
     verbose,
     unity,
     ccache,
@@ -549,6 +582,12 @@ def main(
 
         # Explicit coverage flags (equivalent to --build-type Coverage)
         x-run-tests --coverage --reconfigure-build -- unit_test_hook
+
+        # Build and run with UBSan in a separate build directory
+        x-run-tests --ubsan --build-type Debug --reconfigure-build -- unit_test_hook
+
+        # Build and run with standard library hardening checks
+        x-run-tests --stdlib-hardening --build-type Debug --reconfigure-build -- unit_test_hook
 
         # Run with debugger
         x-run-tests --lldb -- unit_test_hook
@@ -670,12 +709,24 @@ def main(
             # instrumentation, different layouts, different reporting tools).
             if coverage and coverage_impl == "llvm-injected":
                 dir_name = f"{dir_name}-llvm"
+            if ubsan:
+                dir_name = f"{dir_name}-ubsan"
+            if stdlib_hardening:
+                dir_name = f"{dir_name}-stdlib-hardening"
             build_dir = os.path.join(xahaud_root, dir_name)
         else:
             build_dir = os.path.join(xahaud_root, build_dir)
         logger.info(f"Using xahaud root directory: {xahaud_root}")
         logger.info(f"Build directory: {build_dir}")
-        tee_file = get_build_output_path(xahaud_root, build_type)
+        output_suffixes = []
+        if ubsan:
+            output_suffixes.append("ubsan")
+        if stdlib_hardening:
+            output_suffixes.append("stdlib-hardening")
+        output_build_type = (
+            "-".join([build_type, *output_suffixes]) if output_suffixes else build_type
+        )
+        tee_file = get_build_output_path(xahaud_root, output_build_type)
         tee_file.parent.mkdir(parents=True, exist_ok=True)
         tee_file.write_text("")  # truncate at session start
         logger.info(f"Output tee: {tee_file}")
@@ -723,6 +774,8 @@ def main(
                     coverage=coverage,
                     coverage_impl=coverage_impl,
                     use_conan=conan,
+                    ubsan=ubsan,
+                    stdlib_hardening=stdlib_hardening,
                     verbose=verbose,
                     use_ccache=ccache,
                     ccache_basedir=resolved_ccache_basedir,
@@ -799,6 +852,16 @@ def main(
                     build_dir, "rippled-%p-%m.profraw"
                 )
                 logger.debug(f"LLVM_PROFILE_FILE={env['LLVM_PROFILE_FILE']}")
+
+            if ubsan:
+                default_ubsan_options = "print_stacktrace=1:halt_on_error=1"
+                existing_ubsan_options = env.get("UBSAN_OPTIONS")
+                env["UBSAN_OPTIONS"] = (
+                    f"{default_ubsan_options}:{existing_ubsan_options}"
+                    if existing_ubsan_options
+                    else default_ubsan_options
+                )
+                logger.debug(f"UBSAN_OPTIONS={env['UBSAN_OPTIONS']}")
 
             # Determine which lldb mode to use
             use_lldb = lldb or lldb_all_threads
