@@ -130,6 +130,35 @@ x-testnet scenario-test-guide                    # show scenario script docs
 - `--scenario-script PATH` - Run scenario script instead of monitoring
 - `--teardown` - Kill nodes after scenario/txn-gen finishes
 
+### x-inspect-net
+
+Inspect live Xahau/XRPL networks without a local node. Two subcommands.
+
+```bash
+# Amendment status (public server_definitions RPC)
+x-inspect-net amendments                       # diff mainnet vs testnet
+x-inspect-net amendments --diff-only           # only amendments that differ
+x-inspect-net amendments --net mainnet          # single network, full table
+x-inspect-net amendments --net mainnet --pending  # only not-enabled
+x-inspect-net amendments --check NamedHooks     # highlight one amendment
+x-inspect-net amendments --url https://my.node  # custom JSON-RPC endpoint
+x-inspect-net amendments --json out.json
+
+# Overlay version composition (BFS crawl of /crawl peer endpoint)
+x-inspect-net crawl                            # crawl xahau mainnet
+x-inspect-net crawl --network xahau-testnet
+x-inspect-net crawl --network xrpl
+x-inspect-net crawl --seeds bacab.alloy.ee:21337   # custom seeds
+x-inspect-net crawl --max-nodes 500 --concurrency 64 --json nodes.json
+```
+
+Notes:
+- `amendments` relies on xahaud returning the full amendment table to anonymous
+  callers (rippled does not, so XRPL is crawl-only).
+- `crawl` unions peers by `public_key` (each node counted once), reports a
+  version histogram + by-release rollup. Uses `requests` + a thread pool; peer
+  ports use self-signed certs so TLS verification is disabled for `/crawl`.
+
 ### x-get-job
 
 Fetch GitHub Actions job details and logs (works without auth for public repos).
@@ -200,6 +229,12 @@ src/xahaud_scripts/
 │
 ├── patches/ ................... Bundled patch files
 │   └── coverage-cmake-clang-gcov.patch
+│
+├── inspect_net/ ............... Live network inspection (x-inspect-net)
+│   ├── cli.py ................. Click group: amendments + crawl (Rich output)
+│   ├── networks.py ........... Network presets (rpc_url, seed hubs, peer port)
+│   ├── amendments.py ......... server_definitions fetch/normalize/compare
+│   └── crawl.py .............. Overlay /crawl BFS crawler (thread pool)
 │
 ├── utils/ ..................... Shared utilities
 │   ├── logging.py ............. setup_logging(), make_logger()
