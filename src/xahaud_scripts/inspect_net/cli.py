@@ -40,6 +40,24 @@ def _status_text(status: str) -> Text:
     return Text(label, style=style)
 
 
+def _cell(a: amd.Amendment | None) -> Text:
+    """Compact, informative cell for the compare table.
+
+    Prefers a real number over the opaque status word: majority -> activation
+    date, active voting -> yes-votes/validators, else the status label.
+    """
+    if a is None:
+        return Text("—", style="dim")
+    status = a.status()
+    if status == amd.STATUS_MAJORITY:
+        eta = a.activation_eta()
+        return Text(f"→{eta:%b %d}" if eta else "majority", style="yellow")
+    if status == amd.STATUS_PENDING and a.vote_fraction:
+        passing = a.threshold is not None and (a.count or 0) >= a.threshold
+        return Text(f"{a.count}/{a.validations}", style="green" if passing else "cyan")
+    return _status_text(status)
+
+
 @click.group()
 def main() -> None:
     """Inspect live Xahau/XRPL networks: amendment status and version mix."""
@@ -192,10 +210,6 @@ def _render_compare(
     # An amendment whose veto/vote view was unstable on any sampled endpoint.
     varied = {n for data in fetched.values() for n in data.nodeview_varied}
 
-    def status_of(net: str, amendment: str) -> str:
-        a = by_net[net].get(amendment)
-        return a.status() if a else amd.STATUS_ABSENT
-
     # Canonical delta is on `enabled` (network truth), NOT the status label
     # (which folds in node-local veto/vote and can flap between backends).
     def differs(amendment: str) -> bool:
@@ -222,7 +236,7 @@ def _render_compare(
             name_text.stylize("bold reverse")
         elif differs(amendment):
             name_text.stylize("bold")
-        cells = [_status_text(status_of(n, amendment)) for n in nets]
+        cells = [_cell(by_net[n].get(amendment)) for n in nets]
         table.add_row(name_text, *cells)
 
     console.print(table)
@@ -232,8 +246,9 @@ def _render_compare(
         "(network truth)."
     )
     console.print(
-        "[dim]Status labels (majority/vetoed/pending) are the queried node's view; "
-        "only ENABLED is network-wide.[/dim]"
+        "[dim]Cells: ENABLED=live · →date=majority, activates then (2wk hold) · "
+        "N/M=yes-votes/validators · vetoed/pending are the queried node's view "
+        "(only ENABLED is network-wide).[/dim]"
     )
     if varied:
         console.print(

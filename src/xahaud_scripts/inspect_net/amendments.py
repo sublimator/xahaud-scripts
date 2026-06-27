@@ -20,9 +20,15 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
+
+# Ripple epoch (2000-01-01 UTC) in unix seconds; amendment majority close times
+# are expressed in it. An amendment activates ~2 weeks after reaching majority.
+RIPPLE_EPOCH = 946684800
+AMENDMENT_HOLD = timedelta(weeks=2)
 
 # Status buckets, ordered worst-to-best for stable rendering choices.
 STATUS_ENABLED = "enabled"
@@ -70,16 +76,37 @@ class Amendment:
             return STATUS_UNSUPPORTED
         return STATUS_PENDING
 
+    @property
+    def vote_fraction(self) -> str | None:
+        """'count/validations' (yes-votes / validators) if the node reports it."""
+        if self.count is None or self.validations is None:
+            return None
+        frac = f"{self.count}/{self.validations}"
+        return f"{frac} (need {self.threshold})" if self.threshold else frac
+
+    def activation_eta(self) -> datetime | None:
+        """When a majority amendment activates: majority close-time + 2wk hold.
+
+        Only meaningful while not yet enabled; returns None if no majority
+        timestamp is present (or it isn't a numeric close time).
+        """
+        if not isinstance(self.majority, int):
+            return None
+        reached = datetime.fromtimestamp(RIPPLE_EPOCH + self.majority, tz=UTC)
+        return reached + AMENDMENT_HOLD
+
     def vote_detail(self) -> str:
         """Human-readable vote/state annotation (without the status word)."""
         bits: list[str] = []
-        if self.count is not None and self.validations is not None:
-            tally = f"votes {self.count}/{self.validations}"
-            if self.threshold:
-                tally += f" need {self.threshold}"
-            bits.append(tally)
+        if self.vote_fraction:
+            bits.append(f"votes {self.vote_fraction}")
         if self.majority is not None:
-            bits.append("majority reached (2wk hold)")
+            eta = self.activation_eta()
+            bits.append(
+                f"majority → enables ~{eta:%Y-%m-%d}"
+                if eta
+                else "majority reached (2wk hold)"
+            )
         if not self.supported:
             bits.append("unsupported-by-node")
         return "  ".join(bits)

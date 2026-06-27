@@ -170,10 +170,30 @@ def test_obsolete_is_not_vetoed():
 
 def test_vote_detail_renders_tally_and_majority():
     recs = {r.name: r for r in amd.normalize(_features())}
-    assert recs["Pending"].vote_detail() == "votes 2/5 need 4"
-    assert "majority reached" in recs["Majority"].vote_detail()
+    assert recs["Pending"].vote_detail() == "votes 2/5 (need 4)"
+    # Majority with a numeric close time -> activation ETA, not bare "reached".
+    assert "enables ~" in recs["Majority"].vote_detail()
     assert "unsupported-by-node" in recs["Unknown"].vote_detail()
     assert recs["Live"].vote_detail() == ""
+
+
+def test_vote_fraction():
+    recs = {r.name: r for r in amd.normalize(_features())}
+    assert recs["Pending"].vote_fraction == "2/5 (need 4)"
+    assert recs["Live"].vote_fraction is None  # no tally reported
+
+
+def test_activation_eta_is_majority_plus_two_weeks():
+    a = amd.normalize({"H": {"name": "M", "enabled": False, "majority": 835701281}})[0]
+    eta = a.activation_eta()
+    assert eta is not None
+    # 835701281 (ripple epoch) reached 2026-06-25 11:14Z, +14d -> 2026-07-09.
+    assert eta.strftime("%Y-%m-%d") == "2026-07-09"
+
+
+def test_activation_eta_none_without_numeric_majority():
+    a = amd.normalize({"H": {"name": "M", "enabled": False}})[0]
+    assert a.activation_eta() is None
 
 
 def test_normalize_handles_unnamed_amendment():
