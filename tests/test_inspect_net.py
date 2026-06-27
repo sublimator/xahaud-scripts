@@ -179,3 +179,57 @@ def test_vote_detail_renders_tally_and_majority():
 def test_normalize_handles_unnamed_amendment():
     recs = amd.normalize({"DEADBEEF" + "0" * 56: {"enabled": True}})
     assert recs[0].name.startswith("(unknown DEADBEEF")
+
+
+# --- amendments: sample aggregation / cross-referencing ---
+
+
+def _sample(node, **flags):
+    """One backend reading: flags maps amendment name -> features dict."""
+    feats = {f"H_{n}": {"name": n, "supported": True, **v} for n, v in flags.items()}
+    return amd._Sample(amd.normalize(feats), node=node, build="b1", ledger_seq=100)
+
+
+def test_aggregate_single_sample_is_stable():
+    agg = amd._aggregate([_sample("n1", Foo={"enabled": True})])
+    assert agg.samples == 1
+    assert agg.nodes == ["n1"]
+    assert agg.enabled_unstable == set()
+    assert agg.nodeview_varied == set()
+    assert agg.enabled_of("Foo") is True
+
+
+def test_aggregate_flags_nodeview_variance_but_not_enabled():
+    # Same `enabled` on both reads, but veto/vote differs (node-local) -> ~ only.
+    agg = amd._aggregate(
+        [
+            _sample("n1", Foo={"enabled": False, "vetoed": True}),
+            _sample("n2", Foo={"enabled": False, "count": 1, "validations": 4}),
+        ]
+    )
+    assert agg.nodes == ["n1", "n2"]  # load-balanced across 2 backends
+    assert agg.nodeview_varied == {"Foo"}
+    assert agg.enabled_unstable == set()  # enabled agreed -> network truth intact
+    assert agg.enabled_of("Foo") is False
+
+
+def test_aggregate_flags_enabled_instability():
+    # A backend disagrees on `enabled` -> out-of-sync node; majority wins.
+    agg = amd._aggregate(
+        [
+            _sample("n1", Foo={"enabled": True}),
+            _sample("n2", Foo={"enabled": True}),
+            _sample("n3", Foo={"enabled": False}),  # stale/blocked backend
+        ]
+    )
+    assert agg.enabled_unstable == {"Foo"}
+    assert agg.enabled_of("Foo") is True  # most-common across samples
+
+
+def test_aggregate_dedupes_nodes_and_builds():
+    agg = amd._aggregate(
+        [_sample("n1", Foo={"enabled": True}), _sample("n1", Foo={"enabled": True})]
+    )
+    assert agg.nodes == ["n1"]
+    assert agg.builds == ["b1"]
+    assert agg.samples == 2

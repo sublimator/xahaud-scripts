@@ -18,7 +18,8 @@ table:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
@@ -86,13 +87,42 @@ class Amendment:
 
 @dataclass
 class NetworkAmendments:
-    """All amendments for one network, plus the ledger they were read at."""
+    """Amendment state for one network, aggregated across one or more samples.
+
+    Only ``enabled`` is network truth (a ledger property — every synced node
+    agrees). ``vetoed``/``count``/``majority`` are the queried node's view, so
+    on a load-balanced endpoint they can vary between samples. The two
+    ``*_varied`` / ``*_unstable`` sets capture that, surfaced from --samples.
+    """
 
     amendments: list[Amendment]
     ledger_seq: int | None
+    # Distinct backend nodes / builds seen across samples (load-balancing).
+    nodes: list[str] = field(default_factory=list)
+    builds: list[str] = field(default_factory=list)
+    samples: int = 1
+    # Amendment names whose `enabled` disagreed across samples — a real problem
+    # (an out-of-sync / amendment-blocked backend), not just node-local opinion.
+    enabled_unstable: set[str] = field(default_factory=set)
+    # Names whose veto/vote fields varied across samples — node-local noise.
+    nodeview_varied: set[str] = field(default_factory=set)
 
     def by_name(self) -> dict[str, Amendment]:
         return {a.name: a for a in self.amendments}
+
+    def enabled_of(self, name: str) -> bool | None:
+        a = self.by_name().get(name)
+        return a.enabled if a else None
+
+
+@dataclass
+class _Sample:
+    """One (server_definitions + server_info) reading from a backend node."""
+
+    amendments: list[Amendment]
+    node: str | None
+    build: str | None
+    ledger_seq: int | None
 
 
 def _rpc(url: str, method: str, timeout: float) -> dict[str, Any]:
@@ -125,16 +155,73 @@ def normalize(features: dict[str, Any]) -> list[Amendment]:
     return out
 
 
+def _node_identity(
+    url: str, timeout: float
+) -> tuple[str | None, str | None, int | None]:
+    """Return (pubkey_node, build_version, validated_seq) for the queried node."""
+    try:
+        info = _rpc(url, "server_info", timeout).get("info") or {}
+    except (requests.RequestException, ValueError):
+        return None, None, None
+    raw_seq = (info.get("validated_ledger") or {}).get("seq")
+    seq = int(raw_seq) if isinstance(raw_seq, int) else None
+    return info.get("pubkey_node"), info.get("build_version"), seq
+
+
+def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
+    """Fold N samples into one view, recording enabled/node-local variance.
+
+    The representative ``enabled`` per amendment is the most common across
+    samples; an amendment whose ``enabled`` was not unanimous is flagged in
+    ``enabled_unstable`` (an out-of-sync backend), and one whose veto/vote
+    fields varied is flagged in ``nodeview_varied`` (node-local noise).
+    """
+    enabled_vals: dict[str, list[bool]] = defaultdict(list)
+    nodeview_seen: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
+    rep: dict[str, Amendment] = {}
+    for sample in samples:
+        for a in sample.amendments:
+            rep.setdefault(a.name, a)
+            enabled_vals[a.name].append(a.enabled)
+            nodeview_seen[a.name].add(
+                (a.vetoed, a.count, a.validations, a.threshold, a.majority)
+            )
+
+    for name, a in rep.items():
+        a.enabled = Counter(enabled_vals[name]).most_common(1)[0][0]
+
+    return NetworkAmendments(
+        amendments=sorted(rep.values(), key=lambda a: a.name.lower()),
+        ledger_seq=samples[-1].ledger_seq,
+        nodes=list(dict.fromkeys(s.node for s in samples if s.node)),
+        builds=list(dict.fromkeys(s.build for s in samples if s.build)),
+        samples=len(samples),
+        enabled_unstable={n for n, v in enabled_vals.items() if len(set(v)) > 1},
+        nodeview_varied={n for n, v in nodeview_seen.items() if len(v) > 1},
+    )
+
+
+def fetch_sampled(
+    url: str, timeout: float, samples: int = 1, *, want_seq: bool = True
+) -> NetworkAmendments:
+    """Read amendments ``samples`` times, cross-referencing across backends.
+
+    With samples > 1 a load-balanced endpoint will route to different nodes;
+    aggregation then reveals which fields are network-truth vs node-local.
+    Node identity is collected when ``want_seq`` is set or samples > 1.
+    """
+    samples = max(1, samples)
+    readings: list[_Sample] = []
+    for _ in range(samples):
+        features = _rpc(url, "server_definitions", timeout).get("features") or {}
+        if want_seq or samples > 1:
+            node, build, seq = _node_identity(url, timeout)
+        else:
+            node, build, seq = None, None, None
+        readings.append(_Sample(normalize(features), node, build, seq))
+    return _aggregate(readings)
+
+
 def fetch(url: str, timeout: float, *, want_seq: bool = True) -> NetworkAmendments:
-    """Fetch amendments (and optionally the validated ledger seq) from ``url``."""
-    features = _rpc(url, "server_definitions", timeout).get("features") or {}
-    seq: int | None = None
-    if want_seq:
-        try:
-            info = _rpc(url, "server_info", timeout).get("info") or {}
-            validated = info.get("validated_ledger") or {}
-            raw_seq = validated.get("seq")
-            seq = int(raw_seq) if isinstance(raw_seq, int) else None
-        except (requests.RequestException, ValueError):
-            seq = None
-    return NetworkAmendments(amendments=normalize(features), ledger_seq=seq)
+    """Single-sample fetch (back-compat shim over fetch_sampled)."""
+    return fetch_sampled(url, timeout, samples=1, want_seq=want_seq)

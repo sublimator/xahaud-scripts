@@ -142,6 +142,7 @@ x-inspect-net amendments --net mainnet          # single network, full table
 x-inspect-net amendments --net mainnet --pending  # only not-enabled
 x-inspect-net amendments --check NamedHooks     # highlight one amendment
 x-inspect-net amendments --url https://my.node  # custom JSON-RPC endpoint
+x-inspect-net amendments --samples 5            # cross-ref load-balanced backends
 x-inspect-net amendments --json out.json
 
 # Overlay version composition (BFS crawl of /crawl peer endpoint)
@@ -155,6 +156,11 @@ x-inspect-net crawl --max-nodes 500 --concurrency 64 --json nodes.json
 Notes:
 - `amendments` relies on xahaud returning the full amendment table to anonymous
   callers (rippled does not, so XRPL is crawl-only).
+- The cross-network delta is computed from `enabled` (network truth — every
+  synced node agrees). Veto/vote tallies (`vetoed`/`count`/`majority`) are the
+  *queried node's* view; public endpoints are load-balanced, so `--samples N`
+  hits each endpoint N times to report distinct backends, mark node-local
+  fields with `~`, and warn (`⚠`) if `enabled` itself disagrees (a stale node).
 - `crawl` unions peers by `public_key` (each node counted once), reports a
   version histogram + by-release rollup. Uses `requests` + a thread pool; peer
   ports use self-signed certs so TLS verification is disabled for `/crawl`.

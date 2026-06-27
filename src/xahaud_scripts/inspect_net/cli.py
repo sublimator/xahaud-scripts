@@ -65,6 +65,14 @@ def main() -> None:
 @click.option(
     "--diff-only", is_flag=True, help="Compare view: show only amendments that differ."
 )
+@click.option(
+    "--samples",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Query each endpoint N times to cross-reference load-balanced backends "
+    "and flag node-local veto/vote fields.",
+)
 @click.option("--timeout", type=float, default=25.0, show_default=True)
 @click.option("--json", "json_path", metavar="PATH", help="Dump raw features to JSON.")
 def amendments(
@@ -73,10 +81,17 @@ def amendments(
     check: str | None,
     pending: bool,
     diff_only: bool,
+    samples: int,
     timeout: float,
     json_path: str | None,
 ) -> None:
-    """Show enabled/pending/vetoed amendments; diff mainnet vs testnet."""
+    """Show enabled/pending/vetoed amendments; diff mainnet vs testnet.
+
+    The cross-network delta is computed from ``enabled`` (network truth — every
+    synced node agrees). Veto/vote tallies are the queried node's view; on a
+    load-balanced public endpoint they can vary, so use --samples N to detect
+    that (distinct backends are reported and node-local fields get a ~ marker).
+    """
     if url:
         targets = {"custom": url}
     elif net:
@@ -87,7 +102,9 @@ def amendments(
     fetched: dict[str, amd.NetworkAmendments] = {}
     for name, endpoint in targets.items():
         try:
-            fetched[name] = amd.fetch(endpoint, timeout, want_seq=len(targets) == 1)
+            fetched[name] = amd.fetch_sampled(
+                endpoint, timeout, samples, want_seq=len(targets) == 1 or samples > 1
+            )
         except requests.RequestException as exc:
             err.print(f"[red]{name}[/red] ({endpoint}): request failed: {exc}")
 
@@ -105,6 +122,11 @@ def amendments(
             name: {
                 "url": targets[name],
                 "ledger_seq": data.ledger_seq,
+                "samples": data.samples,
+                "backend_nodes": data.nodes,
+                "builds": data.builds,
+                "enabled_unstable": sorted(data.enabled_unstable),
+                "nodeview_varied": sorted(data.nodeview_varied),
                 "amendments": [vars(a) for a in data.amendments],
             }
             for name, data in fetched.items()
@@ -131,6 +153,7 @@ def _render_single(
     if data.ledger_seq:
         head += f"\nvalidated ledger: {data.ledger_seq}"
     console.print(Panel(head, expand=False))
+    _print_backends({name: data})
 
     rows = not_enabled if pending_only else data.amendments
     table = Table(show_header=True, header_style="bold")
@@ -138,11 +161,17 @@ def _render_single(
     table.add_column("Status")
     table.add_column("Detail", style="dim")
     for a in rows:
-        name_text = Text(a.name)
+        label = a.name + (" ~" if a.name in data.nodeview_varied else "")
+        name_text = Text(label)
         if check and a.name.lower() == check.lower():
             name_text.stylize("bold reverse")
         table.add_row(name_text, _status_text(a.status()), a.vote_detail())
     console.print(table)
+    if data.nodeview_varied:
+        console.print(
+            f"[yellow]~[/yellow] [dim]{len(data.nodeview_varied)} amendment(s) had "
+            "veto/vote fields that varied across backends (node-local).[/dim]"
+        )
 
     if check:
         _print_check_focus({name: data}, check)
@@ -160,20 +189,23 @@ def _render_compare(
         {a.name for data in fetched.values() for a in data.amendments},
         key=str.lower,
     )
+    # An amendment whose veto/vote view was unstable on any sampled endpoint.
+    varied = {n for data in fetched.values() for n in data.nodeview_varied}
 
     def status_of(net: str, amendment: str) -> str:
         a = by_net[net].get(amendment)
         return a.status() if a else amd.STATUS_ABSENT
 
+    # Canonical delta is on `enabled` (network truth), NOT the status label
+    # (which folds in node-local veto/vote and can flap between backends).
     def differs(amendment: str) -> bool:
-        return len({status_of(n, amendment) for n in nets}) > 1
+        return len({fetched[n].enabled_of(amendment) for n in nets}) > 1
 
     console.print(
-        Panel(
-            "[bold]AMENDMENT STATUS[/bold]  " + " vs ".join(nets),
-            expand=False,
-        )
+        Panel("[bold]AMENDMENT STATUS[/bold]  " + " vs ".join(nets), expand=False)
     )
+    _print_backends(fetched)
+
     table = Table(show_header=True, header_style="bold")
     table.add_column("Amendment")
     for n in nets:
@@ -184,7 +216,8 @@ def _render_compare(
     for amendment in ordered:
         if diff_only and not differs(amendment):
             continue
-        name_text = Text(amendment)
+        label = amendment + (" ~" if amendment in varied else "")
+        name_text = Text(label)
         if check and amendment.lower() == check.lower():
             name_text.stylize("bold reverse")
         elif differs(amendment):
@@ -195,11 +228,41 @@ def _render_compare(
     console.print(table)
     n_diff = sum(1 for a in names if differs(a))
     console.print(
-        f"[dim]{n_diff} of {len(names)} amendments differ across networks[/dim]"
+        f"[bold]{n_diff}[/bold] of {len(names)} amendments differ by [bold]enabled[/bold] "
+        "(network truth)."
     )
+    console.print(
+        "[dim]Status labels (majority/vetoed/pending) are the queried node's view; "
+        "only ENABLED is network-wide.[/dim]"
+    )
+    if varied:
+        console.print(
+            f"[yellow]~[/yellow] [dim]{len(varied)} amendment(s) had veto/vote fields "
+            "that varied across backends (node-local, not a network difference).[/dim]"
+        )
 
     if check:
         _print_check_focus(fetched, check)
+
+
+def _print_backends(fetched: dict[str, amd.NetworkAmendments]) -> None:
+    """Report distinct backend nodes hit per network (load-balancing) + warnings."""
+    multi = any(d.samples > 1 for d in fetched.values())
+    if not multi:
+        return
+    for name, data in fetched.items():
+        nodes = ", ".join(n[:12] + "…" for n in data.nodes) or "?"
+        builds = ", ".join(data.builds) or "?"
+        console.print(
+            f"  [bold]{name}[/bold]: {data.samples} samples · "
+            f"{len(data.nodes)} backend node(s) [dim]({nodes})[/dim] · build {builds}"
+        )
+        if data.enabled_unstable:
+            console.print(
+                f"    [red]⚠ enabled varied across backends[/red] for "
+                f"{', '.join(sorted(data.enabled_unstable))} "
+                "[dim](an out-of-sync / amendment-blocked node)[/dim]"
+            )
 
 
 def _print_check_focus(fetched: dict[str, amd.NetworkAmendments], check: str) -> None:
