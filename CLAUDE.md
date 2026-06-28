@@ -212,6 +212,18 @@ x-format-changed --no-cmake           # skip CMake formatting
 
 Uses: clang-format 18 (via mise), ruff, shfmt, cmake-format
 
+### x-quick-check
+
+Run a fast compiler syntax check for dirty C/C++ translation units using
+`compile_commands.json`. It does not build, link, or run tests.
+
+```bash
+x-quick-check                                      # dirty C/C++ TUs
+x-quick-check --dry-run                           # show selected TUs
+x-quick-check --tu src/xrpld/app/foo/Bar.cpp      # add a TU for header edits
+x-quick-check --since origin/dev                  # changed files since branch
+```
+
 ## Project Structure
 
 ```
@@ -223,6 +235,7 @@ src/xahaud_scripts/
 ├── build_jshooks_header.py .... x-build-jshooks-header entrypoint
 ├── build_test_hooks.py ........ x-build-test-hooks entrypoint
 ├── format_changed.py .......... x-format-changed entrypoint
+├── quick_check.py ............. x-quick-check entrypoint
 │
 ├── build/ ..................... Build system utilities
 │   ├── config.py .............. BuildConfig dataclass, config mismatch detection

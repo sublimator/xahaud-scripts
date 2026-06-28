@@ -26,6 +26,7 @@ uv tool install --force --editable .
 - `x-build-jshooks-header` - Build JS hooks header file
 - `x-build-test-hooks` - Extract and compile WASM test hooks from C++ source
 - `x-format-changed` - Format changed files in git (C++, Python, shell, CMake)
+- `x-quick-check` - Run compiler syntax checks for dirty C/C++ translation units
 - `xr-build` - Build xrpld with coverage, patches, and cmake presets
 - `xr-coverage-diff` - Show uncovered lines from existing coverage data
 
