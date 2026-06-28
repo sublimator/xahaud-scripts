@@ -653,7 +653,7 @@ def main(
             run_cmd(
                 conan_install_args,
                 cwd=build_path,
-                env={"CONAN_CPU_COUNT": "4"},
+                env={"CONAN_CPU_COUNT": str(jobs)},
             )
         finally:
             # Restore prior remote state
