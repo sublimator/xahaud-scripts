@@ -457,6 +457,17 @@ def run_cmd(
     help="Generate HTML coverage report (slow — re-reads all coverage data).",
 )
 @click.option("--conan", is_flag=True, help="Run conan install (skipped by default).")
+@click.option(
+    "--san",
+    "sanitizers",
+    default=None,
+    metavar="LIST",
+    help=(
+        "Build with sanitizers (comma list of: address, thread, "
+        "undefinedbehavior). Implies a conan install with the sanitizers "
+        "profile. e.g. --san thread  or  --san address,undefinedbehavior."
+    ),
+)
 @click.option("--skip-test", is_flag=True, help="Skip test execution.")
 @click.option("--clean", is_flag=True, help="Remove build dir before starting.")
 @click.option(
@@ -480,6 +491,18 @@ def run_cmd(
     "--patches/--no-patches",
     default=True,
     help="Apply bundled patches before build (default: enabled).",
+)
+@click.option(
+    "--preset/--no-preset",
+    "use_cmake_preset",
+    default=True,
+    help=(
+        "Use the conan-generated cmake preset (default). --no-preset forces the "
+        "manual per-build-dir toolchain path — avoids cmake 'Duplicate presets' "
+        "when two build dirs share a build_type (e.g. a sanitizer build dir "
+        "alongside the release one, both Release in the shared root "
+        "CMakeUserPresets.json)."
+    ),
 )
 @click.option(
     "--linker",
@@ -522,12 +545,14 @@ def main(
     uncovered_diff: bool,
     cover_html: bool,
     conan: bool,
+    sanitizers: str | None,
     skip_test: bool,
     clean: bool,
     clean_build: bool,
     jobs: int,
     build_dir: str,
     patches: bool,
+    use_cmake_preset: bool,
     linker: str,
     build_tests: bool,
     cmake_targets: tuple[str, ...],
@@ -557,12 +582,38 @@ def main(
     build_path = root / build_dir
     build_type = "Debug" if (is_debug or coverage) else "Release"
 
+    # Validate sanitizers and resolve the conan profile that injects their flags.
+    san_profile: str | None = None
+    if sanitizers:
+        known = {"address", "thread", "undefinedbehavior"}
+        requested = [s.strip() for s in sanitizers.split(",") if s.strip()]
+        unknown = [s for s in requested if s not in known]
+        if unknown:
+            console.print(
+                f"[bold red]Unknown sanitizer(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(known))}[/bold red]"
+            )
+            sys.exit(1)
+        if "address" in requested and "thread" in requested:
+            console.print(
+                "[bold red]address and thread sanitizers are incompatible[/bold red]"
+            )
+            sys.exit(1)
+        sanitizers = ",".join(requested)
+        san_profile = str(root / "conan" / "profiles" / "sanitizers")
+        if not Path(san_profile).is_file():
+            console.print(
+                f"[bold red]Sanitizer profile not found: {san_profile}[/bold red]"
+            )
+            sys.exit(1)
+
     console.print(
         Panel(
             f"[bold]build_type=[cyan]{build_type}[/cyan]  "
             f"coverage=[cyan]{coverage}[/cyan]  "
             f"ccache=[cyan]{ccache}[/cyan]  "
             f"jobs=[cyan]{jobs}[/cyan]  "
+            f"san=[cyan]{sanitizers or 'none'}[/cyan]  "
             f"build_dir=[cyan]{build_dir}[/cyan][/bold]",
             title="xrpld build",
         )
@@ -576,7 +627,14 @@ def main(
     build_path.mkdir(exist_ok=True)
 
     # ── Conan ──
-    if conan:
+    # A sanitizer build must (re)generate the conan toolchain so the SANITIZERS
+    # extra_variable / instrumented deps are baked in — so --san implies conan.
+    if conan or sanitizers:
+        if sanitizers and not conan:
+            console.print(
+                f"[yellow]--san {sanitizers} implies a conan install "
+                "(sanitizer flags come from the conan profile).[/yellow]"
+            )
         console.rule("[bold blue]Conan Install")
         run_cmd(["conan", "--version"])
 
@@ -642,6 +700,10 @@ def main(
         ]
         if jemalloc:
             conan_install_args += ["--options:host", "&:jemalloc=True"]
+        if san_profile:
+            # profile:all == host+build; the profile reads $SANITIZERS (set below)
+            # and injects -fsanitize flags + the SANITIZERS cmake extra_variable.
+            conan_install_args += ["--profile:all", san_profile]
         conan_install_args += [
             "--settings:all",
             f"build_type={build_type}",
@@ -650,10 +712,13 @@ def main(
             "..",
         ]
         try:
+            conan_env = {"CONAN_CPU_COUNT": str(jobs)}
+            if sanitizers:
+                conan_env["SANITIZERS"] = sanitizers
             run_cmd(
                 conan_install_args,
                 cwd=build_path,
-                env={"CONAN_CPU_COUNT": str(jobs)},
+                env=conan_env,
             )
         finally:
             # Restore prior remote state
@@ -740,7 +805,7 @@ def main(
     # Use cmake presets when available (conan generates these and they handle
     # all the toolchain/path wiring correctly regardless of cmake_layout nesting)
     preset_name = f"conan-{build_type.lower()}"
-    use_preset = (root / "CMakeUserPresets.json").exists()
+    use_preset = use_cmake_preset and (root / "CMakeUserPresets.json").exists()
 
     if use_preset:
         debug(f"Using cmake preset: {preset_name}")

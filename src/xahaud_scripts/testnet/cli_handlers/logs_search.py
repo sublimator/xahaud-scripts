@@ -6,6 +6,7 @@ Uses a heap-based streaming merge to avoid loading all logs into memory.
 from __future__ import annotations
 
 import heapq
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -188,6 +189,29 @@ def parse_node_spec(spec: str) -> set[int]:
     return result
 
 
+def _network_json_node_ids(base_dir: Path) -> set[int] | None:
+    """Return node ids from network.json when available.
+
+    Archived suite runs can contain stale n* directories from earlier runs with a
+    larger node count. network.json is the authoritative description of the run.
+    """
+    network_json = base_dir / "network.json"
+    if not network_json.exists():
+        return None
+    try:
+        data = json.loads(network_json.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        click.echo(f"Warning: could not read {network_json}: {e}", err=True)
+        return None
+
+    ids: set[int] = set()
+    for node in data.get("nodes", []):
+        node_id = node.get("id")
+        if isinstance(node_id, int):
+            ids.add(node_id)
+    return ids or None
+
+
 def _get_latest_timestamp(
     log_files: list[Path], scan_lines: int = 50
 ) -> datetime | None:
@@ -294,8 +318,19 @@ def logs_search_handler(
     if not base_dir.exists():
         raise click.ClickException(f"Base directory does not exist: {base_dir}")
 
-    # Find all node directories
+    # Find all node directories. If network.json exists, use it as the run's
+    # authoritative node set and ignore stale dirs left by older runs.
     node_dirs = sorted(base_dir.glob("n[0-9]*"))
+    network_node_ids = _network_json_node_ids(base_dir)
+    if network_node_ids is not None:
+        before = len(node_dirs)
+        node_dirs = [d for d in node_dirs if int(d.name[1:]) in network_node_ids]
+        ignored = before - len(node_dirs)
+        if ignored:
+            click.echo(
+                f"Ignoring {ignored} stale node dir(s) not listed in network.json",
+                err=True,
+            )
     if nodes is not None:
         # Filter to specified nodes
         try:

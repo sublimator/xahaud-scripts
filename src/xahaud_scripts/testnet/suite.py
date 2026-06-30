@@ -243,17 +243,25 @@ def _snapshot_test(network: TestNetwork, dest: Path) -> None:
     """Copy node dirs and network.json from live testnet into dest."""
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Copy each node directory (excluding db/)
-    for node_dir in sorted(network.base_dir.glob("n*")):
-        if node_dir.is_dir():
-            target = dest / node_dir.name
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(
-                node_dir,
-                target,
-                ignore=shutil.ignore_patterns("db"),
-            )
+    # Copy only this run's nodes. The live testnet directory may contain stale
+    # n* dirs from an earlier larger network because teardown keeps logs.
+    for node in network.nodes:
+        node_dir = network.base_dir / f"n{node.id}"
+        if not node_dir.is_dir():
+            continue
+        target = dest / node_dir.name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(
+            node_dir,
+            target,
+            ignore=shutil.ignore_patterns("db"),
+        )
+
+    active = {f"n{node.id}" for node in network.nodes}
+    for stale in sorted(dest.glob("n[0-9]*")):
+        if stale.is_dir() and stale.name not in active:
+            shutil.rmtree(stale)
 
     # Copy network.json
     network_json = network.base_dir / "network.json"

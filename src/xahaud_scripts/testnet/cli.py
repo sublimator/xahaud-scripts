@@ -2073,6 +2073,15 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     default=None,
     help="Search snapshot instead of live network. Use 'latest' or snapshot name.",
 )
+@click.option(
+    "--run",
+    "run_name",
+    default=None,
+    help=(
+        "Search archived suite run under .testnet/output/runs. Use a run dir "
+        "name, 'latest/<test>', or just '<test>' for latest/<test>."
+    ),
+)
 @click.pass_context
 def logs_search(
     ctx: click.Context,
@@ -2085,6 +2094,7 @@ def logs_search(
     nodes: str | None,
     excludes: tuple[str, ...],
     snapshot_name: str | None,
+    run_name: str | None,
 ) -> None:
     """Search all node logs for a regex pattern and merge by timestamp.
 
@@ -2106,6 +2116,8 @@ def logs_search(
         x-testnet logs-search @consensus              # use preset from .testnet/logs-search.json
         x-testnet logs-search --snapshot latest "pattern"
         x-testnet logs-search --snapshot before-restart "pattern"
+        x-testnet logs-search --run steady_state_entropy "pattern"
+        x-testnet logs-search --run latest/steady_state_entropy "pattern"
 
     Presets: create .testnet/logs-search.json with named configs:
 
@@ -2122,10 +2134,25 @@ def logs_search(
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     base_dir = ctx.obj.get("testnet_dir") or (xahaud_root / "testnet")
 
+    if snapshot_name and run_name:
+        raise click.ClickException("Use only one of --snapshot or --run")
+
     # Swap to snapshot directory if requested
     if snapshot_name:
         base_dir = _resolve_snapshot(base_dir, snapshot_name)
         click.echo(f"Searching snapshot: {base_dir}", err=True)
+
+    if run_name:
+        runs_dir = xahaud_root / ".testnet" / "output" / "runs"
+        run_dir = runs_dir / run_name
+        if not run_dir.exists() and "/" not in run_name:
+            latest_run = runs_dir / "latest" / run_name
+            if latest_run.exists():
+                run_dir = latest_run
+        if not run_dir.exists():
+            raise click.ClickException(f"Run not found: {run_name} ({run_dir})")
+        base_dir = run_dir
+        click.echo(f"Searching run: {base_dir}", err=True)
 
     # Load preset if pattern starts with @
     if pattern.startswith("@"):
