@@ -93,6 +93,7 @@ PEER_PARAM_MAP = {
 }
 GLOBAL_PARAM_MAP = {
     "rngdrop": "rng_claim_drop_pct",
+    "rngrevealdrop": "rng_reveal_drop_pct",
     "rng_poll_ms": "rng_poll_ms",
     "bootstrap_fast_start": "bootstrap_fast_start",
     "no_export_sig": "no_export_sig",
@@ -110,6 +111,7 @@ class RuntimeConfigSpec:
     jitter: int | None = None
     drop: float | None = None
     rngdrop: float | None = None
+    rngrevealdrop: float | None = None
     rng_poll_ms: int | None = None
     bootstrap_fast_start: bool | None = None
     no_export_sig: bool | None = None
@@ -134,6 +136,8 @@ class RuntimeConfigSpec:
         cfg: dict[str, Any] = {}
         if self.rngdrop is not None:
             cfg[GLOBAL_PARAM_MAP["rngdrop"]] = self.rngdrop
+        if self.rngrevealdrop is not None:
+            cfg[GLOBAL_PARAM_MAP["rngrevealdrop"]] = self.rngrevealdrop
         if self.rng_poll_ms is not None:
             cfg[GLOBAL_PARAM_MAP["rng_poll_ms"]] = self.rng_poll_ms
         if self.bootstrap_fast_start is not None:
@@ -220,6 +224,14 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
             result.rngdrop = _parse_float(value, "rngdrop")
             if not (0 <= result.rngdrop <= 100):
                 raise click.BadParameter("rngdrop must be 0-100")
+        elif key == "rngrevealdrop":
+            if result.peer_id is not None:
+                raise click.BadParameter(
+                    "rngrevealdrop is node-scoped; use n0:rngrevealdrop=... not n0->n1"
+                )
+            result.rngrevealdrop = _parse_float(value, "rngrevealdrop")
+            if not (0 <= result.rngrevealdrop <= 100):
+                raise click.BadParameter("rngrevealdrop must be 0-100")
         elif key == "rng_poll_ms":
             if result.peer_id is not None:
                 raise click.BadParameter(
@@ -259,8 +271,8 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
         else:
             raise click.BadParameter(
                 f"Unknown param: {key!r}. Valid: delay, jitter, drop, rngdrop, "
-                "rng_poll_ms, bootstrap_fast_start, no_export_sig, "
-                "no_export_sig_hash, msg"
+                "rngrevealdrop, rng_poll_ms, bootstrap_fast_start, "
+                "no_export_sig, no_export_sig_hash, msg"
             )
 
     return result

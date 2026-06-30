@@ -74,20 +74,28 @@ def test_build_runtime_config_envs_resolves_directed_peer() -> None:
 
 
 def test_build_runtime_config_envs_splits_peer_and_global_scopes() -> None:
-    specs = [parse_rc_spec("delay=700,rngdrop=25,msg=proposal")]
+    specs = [parse_rc_spec("delay=700,rngdrop=25,rngrevealdrop=50,msg=proposal")]
 
     envs = build_runtime_config_envs(specs, _nodes(Path("/tmp/xahaud-test")))
 
     assert set(envs) == {0, 1}
     assert json.loads(envs[0]) == {
         "set": {
-            "global": {"rng_claim_drop_pct": 25.0},
+            "global": {
+                "rng_claim_drop_pct": 25.0,
+                "rng_reveal_drop_pct": 50.0,
+            },
             "peer_defaults": {
                 "send_delay_ms": 700,
                 "message_types": ["proposal"],
             },
         }
     }
+
+
+def test_rc_parser_rejects_peer_scoped_rng_reveal_drop() -> None:
+    with pytest.raises(click.BadParameter, match="rngrevealdrop is node-scoped"):
+        parse_rc_spec("n0->n1:rngrevealdrop=100")
 
 
 def test_build_runtime_config_envs_accepts_export_global_knobs() -> None:
