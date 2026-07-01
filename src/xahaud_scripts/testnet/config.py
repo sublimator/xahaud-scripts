@@ -423,11 +423,13 @@ class NetworkConfig:
         base_port_peer: Base port for peer connections (node N uses base + N)
         base_port_rpc: Base port for RPC connections (node N uses base + N)
         base_port_ws: Base port for WebSocket connections (node N uses base + N)
+        fixed_peers: If True, generated configs include full-mesh [ips_fixed].
     """
 
     network_id: int = DEFAULT_NETWORK_ID
     node_count: int = DEFAULT_NODE_COUNT
     validators: int | None = None
+    fixed_peers: bool = True
     base_port_peer: int = DEFAULT_BASE_PORT_PEER
     base_port_rpc: int = DEFAULT_BASE_PORT_RPC
     base_port_ws: int = DEFAULT_BASE_PORT_WS
@@ -536,6 +538,7 @@ class ConfigBuilder:
         self._base_port_peer: int = DEFAULT_BASE_PORT_PEER
         self._base_port_rpc: int = DEFAULT_BASE_PORT_RPC
         self._base_port_ws: int = DEFAULT_BASE_PORT_WS
+        self._fixed_peers: bool = True
         self._quorum: int | None = None
         self._no_delays: bool = True
         self._slave_delay: float = 1.0
@@ -589,6 +592,11 @@ class ConfigBuilder:
         self._base_port_ws = ws
         return self
 
+    def fixed_peers(self, enabled: bool = True) -> ConfigBuilder:
+        """Set whether generated configs include full-mesh fixed peers."""
+        self._fixed_peers = enabled
+        return self
+
     def quorum(self, quorum: int | None) -> ConfigBuilder:
         """Set quorum value."""
         self._quorum = quorum
@@ -639,6 +647,7 @@ class ConfigBuilder:
         network_config = NetworkConfig(
             network_id=self._network_id,
             node_count=self._node_count,
+            fixed_peers=self._fixed_peers,
             base_port_peer=self._base_port_peer,
             base_port_rpc=self._base_port_rpc,
             base_port_ws=self._base_port_ws,

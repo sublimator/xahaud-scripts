@@ -6,6 +6,7 @@ import hashlib
 import json
 import struct
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -32,6 +33,13 @@ from xahaud_scripts.testnet.config import (
     get_bundled_genesis_file,
     prepare_genesis_file,
     resolve_feature_name,
+)
+from xahaud_scripts.testnet.generator import generate_node_config
+from xahaud_scripts.testnet.suite import (
+    _apply_runtime_topology,
+    _build_launch_config,
+    _create_network,
+    _parse_topology_nodes,
 )
 
 
@@ -363,6 +371,46 @@ def test_network_config_ports_offset_by_node_id():
     assert cfg.port_ws(4) == DEFAULT_BASE_PORT_WS + 4
 
 
+def test_generate_node_config_full_mesh_fixed_peers_by_default(tmp_path: Path):
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    validators_file = node_dir / "validators.txt"
+    validators_file.write_text("")
+
+    cfg_path = generate_node_config(
+        node_id=0,
+        node_dir=node_dir,
+        validator_token="token",
+        validators_file=validators_file,
+        network_config=NetworkConfig(node_count=3),
+    )
+
+    text = cfg_path.read_text()
+    assert "[ips_fixed]" in text
+    assert f"127.0.0.1 {DEFAULT_BASE_PORT_PEER + 1}" in text
+    assert f"127.0.0.1 {DEFAULT_BASE_PORT_PEER + 2}" in text
+
+
+def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    validators_file = node_dir / "validators.txt"
+    validators_file.write_text("")
+
+    cfg_path = generate_node_config(
+        node_id=0,
+        node_dir=node_dir,
+        validator_token="token",
+        validators_file=validators_file,
+        network_config=NetworkConfig(node_count=3, fixed_peers=False),
+    )
+
+    text = cfg_path.read_text()
+    assert "\n[ips_fixed]\n" not in text
+    assert "[port_peer]" in text
+    assert "[peers_max]" in text
+
+
 # --- NodeInfo ---
 
 
@@ -421,6 +469,7 @@ def test_config_builder_fluent_overrides(tmp_path: Path):
         .node_count(3)
         .network_id(42)
         .ports(peer=30000, rpc=31000, ws=32000)
+        .fixed_peers(False)
         .quorum(2)
         .slave_delay(2.5)
         .extra_args(["--foo"])
@@ -429,6 +478,7 @@ def test_config_builder_fluent_overrides(tmp_path: Path):
     assert network.node_count == 3
     assert network.network_id == 42
     assert network.base_port_peer == 30000
+    assert network.fixed_peers is False
     assert network.port_rpc(1) == 31001
     assert launch.quorum == 2
     assert launch.slave_delay == 2.5
@@ -443,3 +493,120 @@ def test_config_builder_base_dir_path_explicit(tmp_path: Path):
 def test_config_builder_base_dir_path_defaults_to_root(tmp_path: Path):
     builder = ConfigBuilder().xahaud_root(tmp_path)
     assert builder.base_dir_path == tmp_path / "testnet"
+
+
+def test_suite_network_fixed_peers_false_reaches_network_config(tmp_path: Path):
+    network = _create_network(
+        tmp_path,
+        {"node_count": 3, "fixed_peers": False},
+    )
+
+    assert network.config.node_count == 3
+    assert network.config.fixed_peers is False
+
+
+def test_suite_launch_config_fixed_peers_false_keeps_validator_count(tmp_path: Path):
+    launch = _build_launch_config(
+        tmp_path,
+        {"node_count": 3, "fixed_peers": False},
+        network_config=NetworkConfig(node_count=3, fixed_peers=False),
+    )
+
+    assert launch.xahaud_root == tmp_path
+
+
+class _TopologyRPC:
+    def __init__(
+        self,
+        *,
+        connect_result: dict[str, Any] | None = None,
+        disconnect_result: dict[str, Any] | None = None,
+    ) -> None:
+        self.connect_result = connect_result or {"status": "success"}
+        self.disconnect_result = disconnect_result or {"status": "success"}
+
+    def server_info(self, node_id: int) -> dict[str, Any]:
+        return {"node": node_id}
+
+    def peers(self, node_id: int) -> list[dict[str, Any]]:
+        return []
+
+    def connect(self, node_id: int, ip: str, port: int) -> dict[str, Any] | None:
+        return self.connect_result
+
+    def disconnect(self, node_id: int, ip: str, port: int) -> dict[str, Any] | None:
+        return self.disconnect_result
+
+
+class _TopologyNetwork:
+    def __init__(
+        self,
+        *,
+        fixed_peers: bool,
+        rpc_client: _TopologyRPC | None = None,
+    ) -> None:
+        self.config = NetworkConfig(node_count=2, fixed_peers=fixed_peers)
+        self.nodes = [
+            NodeInfo(
+                id=0,
+                public_key="pk0",
+                token="token0",
+                config_path=Path("/tmp/n0/xahaud.cfg"),
+                port_peer=DEFAULT_BASE_PORT_PEER,
+                port_rpc=DEFAULT_BASE_PORT_RPC,
+                port_ws=DEFAULT_BASE_PORT_WS,
+            ),
+            NodeInfo(
+                id=1,
+                public_key="pk1",
+                token="token1",
+                config_path=Path("/tmp/n1/xahaud.cfg"),
+                port_peer=DEFAULT_BASE_PORT_PEER + 1,
+                port_rpc=DEFAULT_BASE_PORT_RPC + 1,
+                port_ws=DEFAULT_BASE_PORT_WS + 1,
+            ),
+        ]
+        self.rpc_client = rpc_client or _TopologyRPC()
+
+
+def test_parse_topology_nodes_accepts_numeric_and_n_specs():
+    assert _parse_topology_nodes([0, "1", "n2"]) == [0, 1, 2]
+
+
+def test_apply_runtime_topology_exact_requires_no_fixed_peers():
+    network = _TopologyNetwork(fixed_peers=True)
+
+    with pytest.raises(ValueError, match="fixed_peers: false"):
+        _apply_runtime_topology(
+            cast(Any, network),
+            {"topology": {"edges": ["n0->n1"], "stable_for": 0}},
+        )
+
+
+def test_apply_runtime_topology_rejects_edge_outside_selected_nodes():
+    network = _TopologyNetwork(fixed_peers=False)
+
+    with pytest.raises(ValueError, match="outside selected set"):
+        _apply_runtime_topology(
+            cast(Any, network),
+            {
+                "topology": {
+                    "nodes": ["n0", "n1"],
+                    "edges": ["n0->n2"],
+                    "stable_for": 0,
+                }
+            },
+        )
+
+
+def test_apply_runtime_topology_surfaces_connect_rpc_errors():
+    network = _TopologyNetwork(
+        fixed_peers=False,
+        rpc_client=_TopologyRPC(connect_result={"status": "error", "error": "nope"}),
+    )
+
+    with pytest.raises(RuntimeError, match="nope"):
+        _apply_runtime_topology(
+            cast(Any, network),
+            {"topology": {"edges": ["n0->n1"], "stable_for": 0}},
+        )

@@ -42,6 +42,7 @@ from websockets.exceptions import WebSocketException
 if TYPE_CHECKING:
     from xrpl.wallet import Wallet
 
+    from xahaud_scripts.testnet.config import NodeInfo
     from xahaud_scripts.testnet.network import TestNetwork
     from xahaud_scripts.testnet.protocols import RPCClient
     from xahaud_scripts.testnet.testing import AccountInfo
@@ -50,6 +51,20 @@ if TYPE_CHECKING:
 from xahaud_scripts.testnet.cli_handlers.logs_search import (
     LogEntry,
     merge_log_streams,
+)
+from xahaud_scripts.testnet.topology import (
+    Edge,
+    TopologySnapshot,
+    all_nodes,
+    format_edges,
+    normalize_edges,
+    require_rpc_success,
+    snapshot_topology,
+    topology_chain,
+    topology_clique,
+    topology_diff,
+    topology_star,
+    validate_edges_in_nodes,
 )
 from xahaud_scripts.utils.logging import make_logger
 
@@ -1412,6 +1427,340 @@ class ScenarioContext:
             timeout=timeout,
             poll_interval=poll_interval,
             name=name or "node-down",
+        )
+
+    # -- Topology control --------------------------------------------------
+
+    def _topology_nodes(self, nodes: list[int] | None = None) -> list[int]:
+        """Resolve topology node targeting and validate ids."""
+        target = nodes if nodes is not None else all_nodes(self.node_count)
+        unknown = [nid for nid in target if nid < 0 or nid >= self.node_count]
+        if unknown:
+            raise ValueError(f"Unknown node id(s): {unknown}")
+        return target
+
+    def _node_info(self, node_id: int) -> NodeInfo:
+        """Return generated node metadata for a node id."""
+        for node in self._network.nodes:
+            if node.id == node_id:
+                return node
+        raise ValueError(f"Unknown node id: n{node_id}")
+
+    def _require_runtime_topology_network(self, *, exact: bool, action: str) -> None:
+        """Avoid exact topology shaping against generated fixed peers."""
+        if exact and self._network.config.fixed_peers:
+            raise RuntimeError(
+                f"{action} exact topology shaping requires fixed_peers=false; "
+                "generated [ips_fixed] peers may reconnect omitted edges. "
+                "Use exact=False for additive checks, or generate with --no-fixed-peers."
+            )
+
+    def topology_edges(
+        self,
+        edges: list[Edge] | set[Edge],
+        *,
+        bidirectional: bool = False,
+    ) -> set[Edge]:
+        """Build a normalized directed edge set.
+
+        Args:
+            edges: Directed edges as ``(source, target)`` node id tuples.
+            bidirectional: If true, add each reverse edge too.
+        """
+        return normalize_edges(edges, bidirectional=bidirectional)
+
+    def topology_isolated(
+        self,
+        *,
+        nodes: list[int] | None = None,
+    ) -> set[Edge]:
+        """Build an empty edge set over nodes."""
+        self._topology_nodes(nodes)
+        return set()
+
+    def topology_star(
+        self,
+        *,
+        center: int,
+        nodes: list[int] | None = None,
+        bidirectional: bool = True,
+    ) -> set[Edge]:
+        """Build a star topology edge set."""
+        target = self._topology_nodes(nodes)
+        if center not in target:
+            raise ValueError(f"center n{center} is not in topology nodes")
+        return topology_star(center=center, nodes=target, bidirectional=bidirectional)
+
+    def topology_chain(
+        self,
+        nodes: list[int],
+        *,
+        bidirectional: bool = True,
+    ) -> set[Edge]:
+        """Build a chain topology edge set."""
+        target = self._topology_nodes(nodes)
+        return topology_chain(target, bidirectional=bidirectional)
+
+    def topology_clique(
+        self,
+        *,
+        nodes: list[int] | None = None,
+        bidirectional: bool = True,
+    ) -> set[Edge]:
+        """Build a clique topology edge set."""
+        target = self._topology_nodes(nodes)
+        return topology_clique(target, bidirectional=bidirectional)
+
+    def topology_snapshot(
+        self,
+        *,
+        nodes: list[int] | None = None,
+    ) -> TopologySnapshot:
+        """Read the live managed-node peer graph."""
+        return snapshot_topology(
+            self.rpc,
+            self._network.nodes,
+            include_nodes=self._topology_nodes(nodes),
+        )
+
+    async def _wait_for_topology_snapshot(
+        self,
+        expected_edges: set[Edge],
+        *,
+        nodes: list[int] | None,
+        exact: bool,
+        timeout: float,
+        poll_interval: float,
+        stable_for: float,
+    ) -> TopologySnapshot:
+        """Wait for topology to match, requiring optional stability."""
+        target_nodes = self._topology_nodes(nodes)
+        validate_edges_in_nodes(expected_edges, target_nodes)
+        deadline = _time.monotonic() + timeout
+        stable_since: float | None = None
+        last_message = "not checked"
+
+        while _time.monotonic() < deadline:
+            snapshot = self.topology_snapshot(nodes=target_nodes)
+            ok, message = topology_diff(
+                snapshot,
+                expected_edges,
+                nodes=target_nodes,
+                exact=exact,
+            )
+            last_message = message
+            if ok:
+                if stable_for <= 0:
+                    return snapshot
+                now = _time.monotonic()
+                stable_since = now if stable_since is None else stable_since
+                if now - stable_since >= stable_for:
+                    return snapshot
+            else:
+                stable_since = None
+            await asyncio.sleep(poll_interval)
+
+        raise TimeoutError(
+            f"Timed out waiting for topology {format_edges(expected_edges)}: "
+            f"{last_message}"
+        )
+
+    async def wait_for_topology(
+        self,
+        expected_edges: list[Edge] | set[Edge],
+        *,
+        nodes: list[int] | None = None,
+        exact: bool = True,
+        timeout: float = 60,
+        poll_interval: float = 1.0,
+        stable_for: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[TopologySnapshot]:
+        """Wait until live topology matches expected directed edges."""
+        started = now_marker(name or "topology-wait-start")
+        expected = normalize_edges(expected_edges)
+        validate_edges_in_nodes(expected, self._topology_nodes(nodes))
+        snapshot = await self._wait_for_topology_snapshot(
+            expected,
+            nodes=nodes,
+            exact=exact,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            stable_for=stable_for,
+        )
+        return Operation(
+            kind="wait_for_topology",
+            started=started,
+            ended=now_marker(name or "topology-wait-end"),
+            status="success",
+            result=snapshot,
+        )
+
+    def assert_topology(
+        self,
+        expected_edges: list[Edge] | set[Edge],
+        *,
+        nodes: list[int] | None = None,
+        exact: bool = True,
+    ) -> TopologySnapshot:
+        """Assert live topology matches expected directed edges."""
+        expected = normalize_edges(expected_edges)
+        target_nodes = self._topology_nodes(nodes)
+        validate_edges_in_nodes(expected, target_nodes)
+        snapshot = self.topology_snapshot(nodes=target_nodes)
+        ok, message = topology_diff(
+            snapshot,
+            expected,
+            nodes=target_nodes,
+            exact=exact,
+        )
+        if not ok:
+            raise AssertionError(message)
+        return snapshot
+
+    async def connect_peer(
+        self,
+        source: int,
+        target: int,
+        *,
+        wait: bool = True,
+        timeout: float = 30,
+        poll_interval: float = 0.5,
+        name: str | None = None,
+    ) -> Operation[TopologySnapshot]:
+        """Tell one node to connect to another managed node."""
+        self._topology_nodes([source, target])
+        started = now_marker(name or f"connect-n{source}-n{target}-start")
+        target_node = self._node_info(target)
+        result = self.rpc.connect(source, "127.0.0.1", target_node.port_peer)
+        require_rpc_success(result, f"n{source}->n{target} connect")
+
+        expected = {(source, target)}
+        if wait:
+            snapshot = await self._wait_for_topology_snapshot(
+                expected,
+                nodes=[source, target],
+                exact=False,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                stable_for=0,
+            )
+        else:
+            snapshot = self.topology_snapshot(nodes=[source, target])
+
+        return Operation(
+            kind="connect_peer",
+            started=started,
+            ended=now_marker(name or f"connect-n{source}-n{target}-end"),
+            status="success",
+            result=snapshot,
+        )
+
+    async def disconnect_peer(
+        self,
+        source: int,
+        target: int,
+        *,
+        wait: bool = True,
+        timeout: float = 30,
+        poll_interval: float = 0.5,
+        stable_for: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[TopologySnapshot]:
+        """Tell one node to drop its directed outbound connection.
+
+        Use two calls, or a bidirectional topology, to disconnect both directions.
+        """
+        self._topology_nodes([source, target])
+        started = now_marker(name or f"disconnect-n{source}-n{target}-start")
+        target_node = self._node_info(target)
+        result = self.rpc.disconnect(source, "127.0.0.1", target_node.port_peer)
+        require_rpc_success(result, f"n{source}->n{target} disconnect")
+
+        if wait:
+            deadline = _time.monotonic() + timeout
+            stable_since: float | None = None
+            snapshot = self.topology_snapshot(nodes=[source, target])
+            while _time.monotonic() < deadline:
+                snapshot = self.topology_snapshot(nodes=[source, target])
+                if (source, target) not in snapshot.outbound_edges:
+                    now = _time.monotonic()
+                    stable_since = now if stable_since is None else stable_since
+                    if now - stable_since >= stable_for:
+                        break
+                else:
+                    stable_since = None
+                await asyncio.sleep(poll_interval)
+            else:
+                raise TimeoutError(f"Timed out disconnecting n{source}->n{target}")
+        else:
+            snapshot = self.topology_snapshot(nodes=[source, target])
+
+        return Operation(
+            kind="disconnect_peer",
+            started=started,
+            ended=now_marker(name or f"disconnect-n{source}-n{target}-end"),
+            status="success",
+            result=snapshot,
+        )
+
+    async def apply_topology(
+        self,
+        expected_edges: list[Edge] | set[Edge],
+        *,
+        nodes: list[int] | None = None,
+        exact: bool = True,
+        wait: bool = True,
+        timeout: float = 60,
+        poll_interval: float = 1.0,
+        stable_for: float = 2.0,
+        name: str | None = None,
+    ) -> Operation[TopologySnapshot]:
+        """Connect/disconnect managed nodes to match a directed topology."""
+        target_nodes = self._topology_nodes(nodes)
+        expected = normalize_edges(expected_edges)
+        validate_edges_in_nodes(expected, target_nodes)
+        self._require_runtime_topology_network(exact=exact, action="apply_topology")
+        started = now_marker(name or "apply-topology-start")
+
+        # Isolated/no-fixed-peer networks may not close ledgers yet, but RPC
+        # should be available before topology changes are applied.
+        await self.wait_for_nodes(
+            lambda nid: self.rpc.server_info(nid) is not None,
+            nodes=target_nodes,
+            timeout=min(timeout, 30),
+            poll_interval=poll_interval,
+            name="topology-rpc-ready",
+        )
+
+        current = self.topology_snapshot(nodes=target_nodes).outbound_edges
+        for source, target in sorted(current - expected):
+            target_node = self._node_info(target)
+            result = self.rpc.disconnect(source, "127.0.0.1", target_node.port_peer)
+            require_rpc_success(result, f"n{source}->n{target} disconnect")
+        for source, target in sorted(expected - current):
+            target_node = self._node_info(target)
+            result = self.rpc.connect(source, "127.0.0.1", target_node.port_peer)
+            require_rpc_success(result, f"n{source}->n{target} connect")
+
+        if wait:
+            snapshot = await self._wait_for_topology_snapshot(
+                expected,
+                nodes=target_nodes,
+                exact=exact,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                stable_for=stable_for,
+            )
+        else:
+            snapshot = self.topology_snapshot(nodes=target_nodes)
+
+        return Operation(
+            kind="apply_topology",
+            started=started,
+            ended=now_marker(name or "apply-topology-end"),
+            status="success",
+            result=snapshot,
         )
 
     # -- Network control ---------------------------------------------------

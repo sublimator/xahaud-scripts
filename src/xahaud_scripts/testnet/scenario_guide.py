@@ -364,6 +364,11 @@ defaults:
   network:
     node_count: 5
     launcher: tmux
+    fixed_peers: false   # omit [ips_fixed]; scenario/suite controls topology
+    topology:
+      edges: ["n0->n1", "n1->n0", "n1->n2", "n2->n1"]
+      exact: true
+      settle_timeout: 30
     env:
       XAHAU_RESOURCE_PER_PORT: "1"
   params:                 # optional default scenario params
@@ -381,6 +386,21 @@ tests:
 ```
 
 Dict keys (``env``, ``log_levels``) are shallow-merged; all other keys replace.
+
+``fixed_peers`` defaults to ``true`` for backwards compatibility, generating the
+usual full-mesh ``[ips_fixed]`` config. Use ``fixed_peers: false`` for topology
+experiments; nodes start isolated and can be connected with suite
+``network.topology.edges`` or from a scenario via ``ctx.apply_topology(...)``.
+Quote edge specs such as ``'n0->n1'`` in shells, because ``>`` is redirection.
+
+Scenario topology helpers:
+
+```python
+async def scenario(ctx, log):
+    edges = ctx.topology_star(center=0, nodes=[0, 1, 2, 3], bidirectional=True)
+    await ctx.apply_topology(edges, exact=True)
+    ctx.assert_topology(edges, exact=True)
+```
 """)
 
     return "\n".join(parts)

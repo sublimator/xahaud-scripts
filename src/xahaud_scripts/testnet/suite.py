@@ -41,6 +41,16 @@ from xahaud_scripts.testnet.scenario import (
     load_scenario_variants,
     run_scenario_with_monitor,
 )
+from xahaud_scripts.testnet.topology import (
+    Edge,
+    format_edges,
+    parse_edge_specs,
+    parse_node_ref,
+    require_rpc_success,
+    snapshot_topology,
+    topology_diff,
+    validate_edges_in_nodes,
+)
 from xahaud_scripts.utils.logging import make_logger
 
 logger = make_logger(__name__)
@@ -283,7 +293,11 @@ def _create_network(
             f"validators ({validators}) cannot exceed node_count ({node_count})"
         )
 
-    network_config = NetworkConfig(node_count=node_count, validators=validators)
+    network_config = NetworkConfig(
+        node_count=node_count,
+        validators=validators,
+        fixed_peers=config.get("fixed_peers", True),
+    )
     launcher = get_launcher(launcher_type)
     rpc_client = RequestsRPCClient(network_config.base_port_rpc)
     process_manager = UnixProcessManager()
@@ -316,6 +330,7 @@ def _build_launch_config(
         network_config = NetworkConfig(
             node_count=config.get("node_count", 5),
             validators=config.get("validators"),
+            fixed_peers=config.get("fixed_peers", True),
         )
 
     base_genesis = get_bundled_genesis_file()
@@ -390,6 +405,158 @@ def _build_launch_config(
         extra_env=extra_env,
         node_env=node_env,
     )
+
+
+def _node_by_id(nodes: list[NodeInfo], node_id: int) -> NodeInfo:
+    for node in nodes:
+        if node.id == node_id:
+            return node
+    raise ValueError(f"Unknown node id: n{node_id}")
+
+
+def _parse_topology_nodes(nodes: Any) -> list[int] | None:
+    if nodes is None:
+        return None
+    return [parse_node_ref(node) for node in nodes]
+
+
+def _wait_for_rpc(network: TestNetwork, *, timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    pending = {node.id for node in network.nodes}
+    while time.monotonic() < deadline:
+        pending = {
+            node_id
+            for node_id in pending
+            if network.rpc_client.server_info(node_id) is None
+        }
+        if not pending:
+            return
+        time.sleep(0.5)
+    raise TimeoutError(f"Timed out waiting for RPC on nodes: {sorted(pending)}")
+
+
+def _wait_for_topology(
+    network: TestNetwork,
+    expected: set[Edge],
+    *,
+    nodes: list[int] | None = None,
+    exact: bool = True,
+    timeout: float = 60,
+    poll_interval: float = 1.0,
+    stable_for: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    stable_since: float | None = None
+    last_message = "not checked"
+
+    while time.monotonic() < deadline:
+        snapshot = snapshot_topology(
+            network.rpc_client, network.nodes, include_nodes=nodes
+        )
+        ok, message = topology_diff(snapshot, expected, nodes=nodes, exact=exact)
+        last_message = message
+        if ok:
+            now = time.monotonic()
+            stable_since = now if stable_since is None else stable_since
+            if now - stable_since >= stable_for:
+                return
+        else:
+            stable_since = None
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Timed out waiting for topology {format_edges(expected)}: {last_message}"
+    )
+
+
+def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> None:
+    """Apply suite-level runtime topology before scenario execution."""
+    topo = config.get("topology") or config.get("runtime_topology")
+    if not topo:
+        return
+    if not isinstance(topo, dict):
+        raise ValueError("network topology must be a mapping")
+
+    _wait_for_rpc(network, timeout=float(topo.get("rpc_timeout", 30)))
+
+    nodes = _parse_topology_nodes(topo.get("nodes"))
+    if nodes is not None:
+        for node_id in nodes:
+            _node_by_id(network.nodes, node_id)
+
+    bidirectional = bool(topo.get("bidirectional", False))
+    exact = bool(topo.get("exact", True))
+    timeout_value = topo.get("settle_timeout")
+    if timeout_value is None:
+        timeout_value = topo.get("timeout", 60)
+    timeout = float(timeout_value)
+    poll_interval = float(topo.get("poll_interval", 1.0))
+    stable_for = float(topo.get("stable_for", 2.0))
+
+    if "edges" in topo:
+        expected = parse_edge_specs(
+            topo.get("edges") or [], bidirectional=bidirectional
+        )
+        target_nodes = (
+            nodes if nodes is not None else [node.id for node in network.nodes]
+        )
+        validate_edges_in_nodes(expected, target_nodes)
+        if exact and network.config.fixed_peers:
+            raise ValueError(
+                "network.topology exact shaping requires fixed_peers: false; "
+                "generated [ips_fixed] peers may reconnect omitted edges"
+            )
+        logger.info(
+            "Applying runtime topology: "
+            f"expected={format_edges(expected)} exact={exact} nodes={target_nodes}"
+        )
+        current = snapshot_topology(
+            network.rpc_client,
+            network.nodes,
+            include_nodes=nodes,
+        ).outbound_edges
+        logger.info(f"Runtime topology before apply: {format_edges(current)}")
+        if exact:
+            for source, target in sorted(current - expected):
+                target_node = _node_by_id(network.nodes, target)
+                logger.info(f"Runtime topology disconnect n{source}->n{target}")
+                result = network.rpc_client.disconnect(
+                    source, "127.0.0.1", target_node.port_peer
+                )
+                require_rpc_success(result, f"n{source}->n{target} disconnect")
+        for source, target in sorted(expected - current):
+            target_node = _node_by_id(network.nodes, target)
+            logger.info(f"Runtime topology connect n{source}->n{target}")
+            result = network.rpc_client.connect(
+                source, "127.0.0.1", target_node.port_peer
+            )
+            require_rpc_success(result, f"n{source}->n{target} connect")
+        _wait_for_topology(
+            network,
+            expected,
+            nodes=nodes,
+            exact=exact,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            stable_for=stable_for,
+        )
+        logger.info(f"Applied runtime topology: {format_edges(expected)}")
+        return
+
+    for spec in topo.get("disconnect", []) or []:
+        source, target = parse_edge_specs([spec]).pop()
+        target_node = _node_by_id(network.nodes, target)
+        logger.info(f"Runtime topology disconnect n{source}->n{target}")
+        result = network.rpc_client.disconnect(
+            source, "127.0.0.1", target_node.port_peer
+        )
+        require_rpc_success(result, f"n{source}->n{target} disconnect")
+    for spec in topo.get("connect", []) or []:
+        source, target = parse_edge_specs([spec]).pop()
+        target_node = _node_by_id(network.nodes, target)
+        logger.info(f"Runtime topology connect n{source}->n{target}")
+        result = network.rpc_client.connect(source, "127.0.0.1", target_node.port_peer)
+        require_rpc_success(result, f"n{source}->n{target} connect")
 
 
 def _run_one_test(
@@ -472,9 +639,8 @@ def _run_one_test(
             nodes=network.nodes,
             network_config=network.config,
         )
-        network.run(launch_config)
-
-        # 4. Set up dual file logging for scenario + txn_generator etc.
+        # 4. Set up dual file logging before launch/topology setup so setup
+        # failures leave the same paper trail as scenario failures.
         from xahaud_scripts.utils.logging import scenario_file_logging
 
         with scenario_file_logging(
@@ -487,6 +653,9 @@ def _run_one_test(
             sep = f"\n{'=' * 60}\n  Test: {name}\n{'=' * 60}\n"
             combined_handler.stream.write(sep)
             combined_handler.stream.flush()
+
+            network.run(launch_config)
+            _apply_runtime_topology(network, config)
 
             # 5. Execute scenario
             tracked = config.get("track_features")
@@ -619,6 +788,8 @@ def run_suite(
             if params:
                 console.print(f"     params: {params}")
             console.print(f"     node_count: {config.get('node_count', 5)}")
+            if config.get("fixed_peers") is False:
+                console.print("     fixed_peers: false")
             features = config.get("features", [])
             if features:
                 console.print(f"     features: {', '.join(features)}")
@@ -628,6 +799,9 @@ def run_suite(
             rc = config.get("rc", [])
             if rc:
                 console.print(f"     rc: {rc}")
+            topology = config.get("topology") or config.get("runtime_topology")
+            if topology:
+                console.print(f"     topology: {topology}")
             log_levels = config.get("log_levels", {})
             if log_levels:
                 console.print(f"     log_levels: {log_levels}")

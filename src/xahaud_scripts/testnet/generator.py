@@ -238,12 +238,18 @@ def generate_node_config(
     port_rpc = network_config.port_rpc(node_id)
     port_ws = network_config.port_ws(node_id)
 
-    # Build peer connection list (all other nodes)
-    ips_entries = []
-    for i in range(network_config.node_count):
-        if i != node_id:
-            peer_port = network_config.port_peer(i)
-            ips_entries.append(f"127.0.0.1 {peer_port}")
+    fixed_peers_section = ""
+    if network_config.fixed_peers:
+        ips_entries = []
+        for i in range(network_config.node_count):
+            if i != node_id:
+                peer_port = network_config.port_peer(i)
+                ips_entries.append(f"127.0.0.1 {peer_port}")
+        fixed_peers_section = f"""
+# Fixed persistent connections
+[ips_fixed]
+{chr(10).join(ips_entries)}
+"""
 
     config = f"""# Node {node_id} Configuration
 
@@ -258,7 +264,7 @@ def generate_node_config(
 # With peers_max=10: outPeers=10, inPeers=0 -> "slots full" on inbound!
 # With peers_max=21: outPeers=10, inPeers=11 -> works correctly
 #
-# Fixed peers ([ips_fixed]) bypass slot check on OUTBOUND side only.
+# Fixed peers ([ips_fixed]), when generated, bypass slot check on OUTBOUND side only.
 # INBOUND connections still need available slots.
 # See: src/ripple/peerfinder/impl/Counts.h:70-83 (can_activate)
 # See: src/ripple/overlay/impl/OverlayImpl.cpp:272-284 (slots full error)
@@ -326,10 +332,7 @@ time.apple.com
 
 [peer_private]
 0
-
-# Fixed persistent connections
-[ips_fixed]
-{chr(10).join(ips_entries)}
+{fixed_peers_section}
 
 [rpc_startup]
 {_build_rpc_startup_section(log_levels)}

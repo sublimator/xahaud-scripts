@@ -91,6 +91,7 @@ def _create_network(
     ctx: click.Context,
     node_count: int | None = None,
     validators: int | None = None,
+    fixed_peers: bool = True,
     launcher_type: str | None = None,
 ) -> TestNetwork:
     """Create a TestNetwork instance from context."""
@@ -101,7 +102,11 @@ def _create_network(
     if node_count is None:
         node_count = ctx.obj.get("node_count", 5)
 
-    network_config = NetworkConfig(node_count=node_count, validators=validators)
+    network_config = NetworkConfig(
+        node_count=node_count,
+        validators=validators,
+        fixed_peers=fixed_peers,
+    )
 
     return TestNetwork(
         base_dir=base_dir,
@@ -211,6 +216,11 @@ def testnet(
     help="Auto-find free ports if defaults are in use (default: error if ports in use).",
 )
 @click.option(
+    "--fixed-peers/--no-fixed-peers",
+    default=True,
+    help="Generate full-mesh fixed peers, or start isolated for runtime topology tests.",
+)
+@click.option(
     "--rc",
     "rc_specs",
     multiple=True,
@@ -225,6 +235,7 @@ def generate(
     log_level_suite: str | None,
     log_levels: tuple[str, ...],
     find_ports: bool,
+    fixed_peers: bool,
     rc_specs: tuple[str, ...],
 ) -> None:
     """Generate configs for all nodes.
@@ -236,6 +247,7 @@ def generate(
         testnet generate
         testnet generate --node-count 3
         testnet generate --node-count 7 --validators 5
+        testnet generate --no-fixed-peers
         testnet generate --log-level-suite consensus
         testnet generate --rc delay=200,jitter=50
         testnet generate --find-ports
@@ -280,7 +292,12 @@ def generate(
 
     from xahaud_scripts.testnet.generator import PortConflictError
 
-    network = _create_network(ctx, node_count=node_count, validators=validators)
+    network = _create_network(
+        ctx,
+        node_count=node_count,
+        validators=validators,
+        fixed_peers=fixed_peers,
+    )
     try:
         network.generate(
             log_levels=log_level_dict,
@@ -298,6 +315,8 @@ def generate(
     click.echo(f"  Base directory: {network.base_dir}")
     if rc_specs:
         click.echo(f"  Runtime config: {len(rc_specs)} spec(s) persisted")
+    if not fixed_peers:
+        click.echo("  Fixed peers: disabled (nodes start isolated)")
     click.echo("\nValidator public keys:")
     for node in network.nodes:
         suffix = "" if node.id < vc else " (non-UNL)"

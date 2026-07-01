@@ -80,6 +80,7 @@ Launch and manage local xahaud test networks (5 nodes by default).
 # Lifecycle
 x-testnet generate                              # generate configs + validator keys
 x-testnet generate --node-count 3               # fewer nodes
+x-testnet generate --no-fixed-peers             # start isolated; shape topology via connect/RPC
 x-testnet generate --log-level-suite consensus   # preset log levels
 x-testnet generate --find-ports                  # auto-find free ports
 x-testnet run                                    # launch nodes + monitor
@@ -99,6 +100,8 @@ x-testnet inject n0,n1,n2 --amendment-id X --ledger-seq 100
 x-testnet logs Validations trace                 # set log level
 x-testnet logs PeerTMProposeSet debug n0         # set log level on specific node
 x-testnet topology                               # peer connection map
+x-testnet connect --bi n0 n1                     # add runtime peer connection
+x-testnet disconnect --bi n0 n1                  # drop runtime peer connection
 x-testnet ports                                  # port listening status
 x-testnet check-ports                            # check if ports are free
 x-testnet peer-addrs                             # output ip:port list
