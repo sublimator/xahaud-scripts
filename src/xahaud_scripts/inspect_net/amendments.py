@@ -158,7 +158,24 @@ def _rpc(url: str, method: str, timeout: float) -> dict[str, Any]:
     resp.raise_for_status()
     body = resp.json() or {}
     result = body.get("result")
-    return result if isinstance(result, dict) else {}
+    if not isinstance(result, dict):
+        raise ValueError(f"{method}: malformed JSON-RPC result")
+    return result
+
+
+def _server_definition_features(result: dict[str, Any]) -> dict[str, Any]:
+    """Return the amendment feature map, failing closed on bad RPC shape."""
+    features = result.get("features")
+    if not isinstance(features, dict) or not features:
+        raise ValueError("server_definitions: missing or empty features map")
+    for amendment_id, entry in features.items():
+        if not isinstance(amendment_id, str) or not isinstance(entry, dict):
+            raise ValueError("server_definitions: malformed features map")
+        if not isinstance(entry.get("enabled"), bool):
+            raise ValueError(
+                f"server_definitions: feature {amendment_id} missing boolean enabled"
+            )
+    return features
 
 
 def normalize(features: dict[str, Any]) -> list[Amendment]:
@@ -240,7 +257,7 @@ def fetch_sampled(
     samples = max(1, samples)
     readings: list[_Sample] = []
     for _ in range(samples):
-        features = _rpc(url, "server_definitions", timeout).get("features") or {}
+        features = _server_definition_features(_rpc(url, "server_definitions", timeout))
         if want_seq or samples > 1:
             node, build, seq = _node_identity(url, timeout)
         else:

@@ -135,7 +135,7 @@ x-testnet scenario-test-guide                    # show scenario script docs
 
 ### x-inspect-net
 
-Inspect live Xahau/XRPL networks without a local node. Two subcommands.
+Inspect live Xahau/XRPL networks without a local node. Three subcommands.
 
 ```bash
 # Amendment status (public server_definitions RPC)
@@ -150,10 +150,15 @@ x-inspect-net amendments --json out.json
 
 # Overlay version composition (BFS crawl of /crawl peer endpoint)
 x-inspect-net crawl                            # crawl xahau mainnet
-x-inspect-net crawl --network xahau-testnet
+x-inspect-net crawl --network testnet
 x-inspect-net crawl --network xrpl
 x-inspect-net crawl --seeds bacab.alloy.ee:21337   # custom seeds
 x-inspect-net crawl --max-nodes 500 --concurrency 64 --json nodes.json
+
+# Visible stale-build/zombie check: live enabled amendments vs local source tags
+x-inspect-net zombies --repo ~/projects/xahaud-worktrees/xahaud-feature-export-rng
+x-inspect-net zombies --samples 3 --json zombies.json --include-nodes
+x-inspect-net zombies --ref xahaud-2026.7.4-CustomBuild+DEBUG=my-local-ref
 ```
 
 Notes:
@@ -167,6 +172,11 @@ Notes:
 - `crawl` unions peers by `public_key` (each node counted once), reports a
   version histogram + by-release rollup. Uses `requests` + a thread pool; peer
   ports use self-signed certs so TLS verification is disabled for `/crawl`.
+- `zombies` marks a visible version `INCOMPATIBLE` only when the matching local
+  source ref is missing or marks unsupported an amendment that is already
+  enabled on the sampled network. Missing-amendment evidence links the exact
+  source file searched at the resolved commit; unsupported declarations link
+  the declaration line.
 
 ### x-get-job
 

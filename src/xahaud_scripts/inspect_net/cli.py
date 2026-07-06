@@ -317,7 +317,10 @@ def _print_check_focus(fetched: dict[str, amd.NetworkAmendments], check: str) ->
     "--seeds", multiple=True, metavar="HOST[:PORT]", help="Override seed nodes."
 )
 @click.option(
-    "--port", type=int, default=None, help="Default peer port for hidden peers."
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help="Default peer port for hidden peers.",
 )
 @click.option("--concurrency", type=int, default=64, show_default=True)
 @click.option("--timeout", type=float, default=10.0, show_default=True)
@@ -479,12 +482,17 @@ def _dump_crawl_json(crawler: Crawler, path: str) -> None:
     "--seeds", multiple=True, metavar="HOST[:PORT]", help="Override crawl seeds."
 )
 @click.option(
-    "--port", type=int, default=None, help="Default peer port for hidden peers."
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help="Default peer port for hidden peers.",
 )
-@click.option("--concurrency", type=int, default=64, show_default=True)
-@click.option("--timeout", type=float, default=10.0, show_default=True)
-@click.option("--samples", type=int, default=3, show_default=True)
-@click.option("--max-nodes", type=int, default=5000, show_default=True)
+@click.option("--concurrency", type=click.IntRange(1), default=64, show_default=True)
+@click.option(
+    "--timeout", type=click.FloatRange(min=0.1), default=10.0, show_default=True
+)
+@click.option("--samples", type=click.IntRange(1), default=3, show_default=True)
+@click.option("--max-nodes", type=click.IntRange(1), default=5000, show_default=True)
 @click.option(
     "--no-probe-default-port",
     is_flag=True,
@@ -595,10 +603,12 @@ def zombies(
         version_counts=version_counts,
         enabled=enabled,
         explicit_refs=explicit_refs,
+        sampled_rpc_url=net.rpc_url,
     )
     _render_zombies(
         network=network,
         repo=repo_path,
+        sampled_rpc_url=net.rpc_url,
         amendments=net_amendments,
         enabled=enabled,
         crawler=crawler,
@@ -609,6 +619,7 @@ def zombies(
             path=json_path,
             network=network,
             repo=repo_path,
+            sampled_rpc_url=net.rpc_url,
             amendments=net_amendments,
             enabled=enabled,
             crawler=crawler,
@@ -625,7 +636,7 @@ def _parse_ref_map(items: tuple[str, ...]) -> dict[str, str]:
         version, _, ref = item.partition("=")
         if not version.strip() or not ref.strip():
             raise click.ClickException(f"--ref must be VERSION=REF, got: {item}")
-        out[version.strip()] = ref.strip()
+        out[zmb.visible_version_key(version.strip())] = ref.strip()
     return out
 
 
@@ -633,6 +644,7 @@ def _render_zombies(
     *,
     network: str,
     repo: Path,
+    sampled_rpc_url: str,
     amendments: amd.NetworkAmendments,
     enabled: tuple[zmb.EnabledAmendment, ...],
     crawler: Crawler,
@@ -673,7 +685,7 @@ def _render_zombies(
     table.add_column("Ref")
     table.add_column("Source")
     table.add_column("Status")
-    table.add_column("Missing enabled amendments")
+    table.add_column("Blocking enabled amendments")
     for report in reports:
         pct = 100.0 * report.nodes / total_nodes if total_nodes else 0.0
         if report.status == "ok":
@@ -706,6 +718,10 @@ def _render_zombies(
         "unsupported an enabled amendment. Such nodes may still appear in crawls "
         "while following/acquiring validated ledgers; confirm server_state and "
         "complete_ledgers before making an operator claim.[/dim]"
+    )
+    console.print(
+        f"[dim]Live amendment state was sampled from {sampled_rpc_url}; "
+        f"{zmb.PUBLIC_DEFINITIONS_URL} is a human-readable reference.[/dim]"
     )
 
 
@@ -752,11 +768,14 @@ def _print_zombie_evidence(
     table.add_column("Links")
     for report, evidence in rows:
         links = Text()
-        links.append("live", style=f"link {zmb.LIVE_DEFINITIONS_URL}")
+        if evidence.sampled_rpc_url:
+            links.append("rpc", style=f"link {evidence.sampled_rpc_url}")
+        else:
+            links.append("rpc")
         if evidence.evidence_url:
             links.append(" · ")
             links.append(
-                "source" if evidence.issue == "missing" else "line",
+                "file" if evidence.issue == "missing" else "line",
                 style=f"link {evidence.evidence_url}",
             )
         table.add_row(
@@ -769,7 +788,8 @@ def _print_zombie_evidence(
     console.print(table)
     console.print(
         f"[dim]Evidence is capped at {per_version} amendment(s) per incompatible "
-        "version; JSON output includes the full evidence list.[/dim]"
+        "version; JSON output includes the full evidence list. Missing rows link "
+        "the searched source file; unsupported rows link the declaration line.[/dim]"
     )
 
 
@@ -778,6 +798,7 @@ def _dump_zombies_json(
     path: str,
     network: str,
     repo: Path,
+    sampled_rpc_url: str,
     amendments: amd.NetworkAmendments,
     enabled: tuple[zmb.EnabledAmendment, ...],
     crawler: Crawler,
@@ -788,6 +809,8 @@ def _dump_zombies_json(
     out = {
         "network": network,
         "repo": str(repo),
+        "sampled_rpc_url": sampled_rpc_url,
+        "public_definitions_url": zmb.PUBLIC_DEFINITIONS_URL,
         "ledger_seq": amendments.ledger_seq,
         "enabled_unstable": sorted(amendments.enabled_unstable),
         "enabled_amendments": [
@@ -820,7 +843,7 @@ def _zombie_node_json(
     node,
     reports_by_version: dict[str, zmb.VersionCompatibility],
 ) -> dict:
-    version_key = next(iter(zmb.visible_version_counts([node.version])))
+    version_key = zmb.visible_version_key(node.version)
     report = reports_by_version.get(version_key)
     return {
         "public_key": node.public_key,

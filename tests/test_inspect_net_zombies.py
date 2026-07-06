@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 
 from xahaud_scripts.binary_features import FeatureParser, RefFeatures
 from xahaud_scripts.inspect_net import amendments as amd
 from xahaud_scripts.inspect_net import cli as inspect_cli
 from xahaud_scripts.inspect_net import zombies as zmb
-from xahaud_scripts.inspect_net.crawl import Node
+from xahaud_scripts.inspect_net.crawl import Crawler, Node
 
 
 def _features(source: str) -> RefFeatures:
@@ -104,12 +105,16 @@ XRPL_FEATURE(UnsupportedLive, Supported::no, VoteBehavior::DefaultNo)
             ),
         ),
         "https://github.com/Xahau/xahaud/blob/abc/features.macro",
+        sampled_rpc_url="https://xahau.network",
     )
 
     by_name = {e.name: e for e in evidence}
     assert by_name["MissingLive"].issue == "missing"
     assert by_name["MissingLive"].evidence_url is not None
     assert by_name["MissingLive"].evidence_url.endswith("/features.macro")
+    assert (
+        by_name["MissingLive"].as_dict()["sampled_rpc_url"] == "https://xahau.network"
+    )
     assert by_name["UnsupportedLive"].issue == "unsupported"
     assert by_name["UnsupportedLive"].evidence_url is not None
     assert by_name["UnsupportedLive"].evidence_url.endswith("/features.macro#L2")
@@ -134,11 +139,17 @@ def test_version_ref_treats_unknowns_as_inconclusive():
     assert zmb.version_ref("2026.6.21-release+3350") == "2026.6.21-release+3350"
     assert (
         zmb.version_ref(
-            "xahaud-2026.6.21-release+3350",
-            {"xahaud-2026.6.21-release+3350": "tag"},
+            zmb.visible_version_key("xahaud-2026.6.21-release+3350"),
+            {"2026.6.21-release+3350": "tag"},
         )
         == "tag"
     )
+
+
+def test_parse_ref_map_normalizes_raw_xahaud_version_keys():
+    assert inspect_cli._parse_ref_map(("xahaud-2026.6.21-release+3350=my-ref",)) == {
+        "2026.6.21-release+3350": "my-ref"
+    }
 
 
 def test_visible_version_counts_preserves_non_xahaud_versions():
@@ -201,3 +212,57 @@ def test_zombie_node_json_reports_public_key_raw_version_and_status():
         "has_endpoint": True,
         "endpoints": ["127.0.0.1:21337"],
     }
+
+
+def test_dump_zombies_json_include_nodes_is_explicit(tmp_path):
+    report = zmb.VersionCompatibility(
+        version="2026.6.21-release+3350",
+        nodes=1,
+        ref="2026.6.21-release+3350",
+        parsed=None,
+        missing_enabled=(),
+        unsupported_enabled=(),
+    )
+    amendments = amd.NetworkAmendments(
+        amendments=[],
+        ledger_seq=10,
+    )
+    crawler = Crawler(default_port=21337)
+    crawler.nodes = {
+        "node-pubkey": Node(
+            public_key="node-pubkey",
+            version="xahaud-2026.6.21-release+3350",
+        )
+    }
+
+    without_nodes = tmp_path / "without.json"
+    inspect_cli._dump_zombies_json(
+        path=str(without_nodes),
+        network="mainnet",
+        repo=tmp_path,
+        sampled_rpc_url="https://xahau.network",
+        amendments=amendments,
+        enabled=(),
+        crawler=crawler,
+        reports=[report],
+        include_nodes=False,
+    )
+    without = json.loads(without_nodes.read_text())
+    assert "nodes" not in without
+    assert without["sampled_rpc_url"] == "https://xahau.network"
+
+    with_nodes = tmp_path / "with.json"
+    inspect_cli._dump_zombies_json(
+        path=str(with_nodes),
+        network="mainnet",
+        repo=tmp_path,
+        sampled_rpc_url="https://xahau.network",
+        amendments=amendments,
+        enabled=(),
+        crawler=crawler,
+        reports=[report],
+        include_nodes=True,
+    )
+    data = json.loads(with_nodes.read_text())
+    assert data["nodes"][0]["public_key"] == "node-pubkey"
+    assert data["nodes"][0]["version_key"] == "2026.6.21-release+3350"

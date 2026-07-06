@@ -16,7 +16,7 @@ from xahaud_scripts.binary_features import (
 )
 from xahaud_scripts.inspect_net import amendments as amd
 
-LIVE_DEFINITIONS_URL = "https://xrplwin.com/server-definitions"
+PUBLIC_DEFINITIONS_URL = "https://xrplwin.com/server-definitions"
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class AmendmentEvidence:
     issue: str
     source_line: int | None
     evidence_url: str | None
+    sampled_rpc_url: str | None
 
     def as_dict(self) -> dict:
         return {
@@ -44,7 +45,8 @@ class AmendmentEvidence:
             "issue": self.issue,
             "source_line": self.source_line,
             "evidence_url": self.evidence_url,
-            "live_definitions_url": LIVE_DEFINITIONS_URL,
+            "sampled_rpc_url": self.sampled_rpc_url,
+            "public_definitions_url": PUBLIC_DEFINITIONS_URL,
         }
 
 
@@ -132,6 +134,15 @@ def version_ref(version: str, explicit: dict[str, str] | None = None) -> str | N
     return version
 
 
+def visible_version_key(version: str | None) -> str:
+    """Bucket key used for crawl versions and explicit ref overrides."""
+    if not version:
+        return "(unknown)"
+    if version.startswith("xahaud-"):
+        return version.removeprefix("xahaud-")
+    return version
+
+
 def visible_version_counts(versions: Iterable[str | None]) -> Counter[str]:
     """Version buckets for zombie inference.
 
@@ -141,12 +152,7 @@ def visible_version_counts(versions: Iterable[str | None]) -> Counter[str]:
     """
     counts: Counter[str] = Counter()
     for version in versions:
-        if not version:
-            counts["(unknown)"] += 1
-        elif version.startswith("xahaud-"):
-            counts[version.removeprefix("xahaud-")] += 1
-        else:
-            counts[version] += 1
+        counts[visible_version_key(version)] += 1
     return counts
 
 
@@ -171,6 +177,7 @@ def amendment_evidence(
     ref_features: RefFeatures,
     enabled: tuple[EnabledAmendment, ...],
     source_url: str | None,
+    sampled_rpc_url: str | None = None,
 ) -> tuple[AmendmentEvidence, ...]:
     """Build auditable evidence for missing/unsupported enabled amendments."""
     by_id: dict[str, FeatureDecl] = {
@@ -187,6 +194,7 @@ def amendment_evidence(
                     issue="missing",
                     source_line=None,
                     evidence_url=source_url,
+                    sampled_rpc_url=sampled_rpc_url,
                 )
             )
         elif not decl.supported:
@@ -197,6 +205,7 @@ def amendment_evidence(
                     issue="unsupported",
                     source_line=decl.line,
                     evidence_url=line_url(source_url, decl.line),
+                    sampled_rpc_url=sampled_rpc_url,
                 )
             )
     return tuple(evidence)
@@ -258,6 +267,7 @@ def analyze_versions(
     version_counts: Counter[str],
     enabled: tuple[EnabledAmendment, ...],
     explicit_refs: dict[str, str] | None = None,
+    sampled_rpc_url: str | None = None,
 ) -> list[VersionCompatibility]:
     parser = FeatureParser()
     base_url = github_base(repo)
@@ -292,7 +302,12 @@ def analyze_versions(
                     unsupported_enabled=unsupported,
                     commit=commit,
                     source_url=source_url,
-                    evidence=amendment_evidence(parsed, enabled, source_url),
+                    evidence=amendment_evidence(
+                        parsed,
+                        enabled,
+                        source_url,
+                        sampled_rpc_url=sampled_rpc_url,
+                    ),
                 )
             )
         except Exception as exc:

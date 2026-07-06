@@ -201,6 +201,28 @@ def test_normalize_handles_unnamed_amendment():
     assert recs[0].name.startswith("(unknown DEADBEEF")
 
 
+def test_server_definitions_features_fail_closed_on_malformed_map():
+    for result in (
+        {},
+        {"features": []},
+        {"features": {}},
+        {"features": {"BAD": {}}},
+        {"features": {"BAD": []}},
+        {"features": {1: {"enabled": True}}},
+    ):
+        try:
+            amd._server_definition_features(result)
+        except ValueError as exc:
+            assert "feature" in str(exc)
+        else:
+            raise AssertionError("expected malformed server_definitions to fail")
+
+
+def test_server_definitions_features_accepts_non_empty_map():
+    features = {"ABC": {"name": "Live", "enabled": True}}
+    assert amd._server_definition_features({"features": features}) is features
+
+
 # --- amendments: sample aggregation / cross-referencing ---
 
 
