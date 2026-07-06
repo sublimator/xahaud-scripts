@@ -14,11 +14,13 @@ from rich.table import Table
 from rich.text import Text
 
 from xahaud_scripts.inspect_net import amendments as amd
+from xahaud_scripts.inspect_net import zombies as zmb
 from xahaud_scripts.inspect_net.crawl import Crawler, CrawlStats, parse_seed
 from xahaud_scripts.inspect_net.networks import (
     AMENDMENT_NETWORKS,
     NETWORKS,
 )
+from xahaud_scripts.utils.paths import get_xahaud_root
 
 console = Console()
 err = Console(stderr=True)
@@ -457,6 +459,380 @@ def _dump_crawl_json(crawler: Crawler, path: str) -> None:
     }
     Path(path).write_text(json.dumps(out, indent=2))
     err.print(f"  wrote raw node data -> {path}")
+
+
+# --------------------------------------------------------------------------- #
+#  zombies
+# --------------------------------------------------------------------------- #
+
+
+@main.command("zombies")
+@click.option(
+    "--network",
+    type=click.Choice(AMENDMENT_NETWORKS),
+    default="mainnet",
+    show_default=True,
+    help="Network to inspect.",
+)
+@click.option("--repo", type=click.Path(path_type=Path), help="xahaud checkout.")
+@click.option(
+    "--seeds", multiple=True, metavar="HOST[:PORT]", help="Override crawl seeds."
+)
+@click.option(
+    "--port", type=int, default=None, help="Default peer port for hidden peers."
+)
+@click.option("--concurrency", type=int, default=64, show_default=True)
+@click.option("--timeout", type=float, default=10.0, show_default=True)
+@click.option("--samples", type=int, default=3, show_default=True)
+@click.option("--max-nodes", type=int, default=5000, show_default=True)
+@click.option(
+    "--no-probe-default-port",
+    is_flag=True,
+    help="Don't guess the default port for peers that hide it.",
+)
+@click.option(
+    "--ref",
+    "ref_map",
+    multiple=True,
+    metavar="VERSION=REF",
+    help="Override version-to-git-ref mapping; repeatable.",
+)
+@click.option("--json", "json_path", metavar="PATH", help="Dump raw report to JSON.")
+@click.option(
+    "--include-nodes",
+    is_flag=True,
+    help="When dumping JSON, include per-peer public key/version/status rows.",
+)
+@click.option("--quiet", is_flag=True, help="Suppress crawl progress.")
+def zombies(
+    network: str,
+    repo: Path | None,
+    seeds: tuple[str, ...],
+    port: int | None,
+    concurrency: int,
+    timeout: float,
+    samples: int,
+    max_nodes: int,
+    no_probe_default_port: bool,
+    ref_map: tuple[str, ...],
+    json_path: str | None,
+    include_nodes: bool,
+    quiet: bool,
+) -> None:
+    """Find visible versions missing currently-enabled network amendments.
+
+    A row marked INCOMPATIBLE means the matching source tag does not register or
+    support at least one amendment that is already enabled on the network.
+    UNKNOWN means the visible version could not be mapped to a local git ref.
+    """
+    try:
+        repo_path = repo.expanduser().resolve() if repo else Path(get_xahaud_root())
+    except Exception as exc:
+        raise click.ClickException(
+            "could not find a xahaud checkout; pass --repo /path/to/xahaud"
+        ) from exc
+
+    net = NETWORKS[network]
+    default_port = port or net.peer_port
+    seed_endpoints = [
+        parse_seed(s, default_port) for s in (list(seeds) if seeds else list(net.seeds))
+    ]
+    explicit_refs = _parse_ref_map(ref_map)
+
+    err.print(f"reading [bold]{network}[/bold] enabled amendments…")
+    try:
+        net_amendments = amd.fetch_sampled(
+            net.rpc_url, timeout, samples=samples, want_seq=True
+        )
+    except requests.RequestException as exc:
+        raise click.ClickException(f"amendment query failed: {exc}") from exc
+    enabled = zmb.enabled_amendments(net_amendments)
+
+    crawler = Crawler(
+        default_port=default_port,
+        concurrency=concurrency,
+        timeout=timeout,
+        max_nodes=max_nodes,
+        probe_default_port=not no_probe_default_port,
+    )
+    err.print(
+        f"crawling [bold]{network}[/bold] overlay "
+        f"(default port {default_port}) from {len(seed_endpoints)} seed(s)…"
+    )
+    try:
+        if quiet:
+            crawler.crawl(seed_endpoints)
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                console=err,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("starting…", total=None)
+
+                def update(s: CrawlStats) -> None:
+                    progress.update(
+                        task,
+                        description=(
+                            f"queried {s.queried}  "
+                            f"[green]ok {s.reachable}[/green]  "
+                            f"[red]fail {s.unreachable}[/red]  "
+                            f"in-flight {s.in_flight}  "
+                            f"nodes {s.nodes}"
+                        ),
+                    )
+
+                crawler.crawl(seed_endpoints, on_progress=update)
+    except KeyboardInterrupt:
+        err.print("\n[yellow]interrupted — reporting partial results[/yellow]")
+
+    version_counts = zmb.visible_version_counts(
+        n.version for n in crawler.nodes.values()
+    )
+    reports = zmb.analyze_versions(
+        repo=repo_path,
+        version_counts=version_counts,
+        enabled=enabled,
+        explicit_refs=explicit_refs,
+    )
+    _render_zombies(
+        network=network,
+        repo=repo_path,
+        amendments=net_amendments,
+        enabled=enabled,
+        crawler=crawler,
+        reports=reports,
+    )
+    if json_path:
+        _dump_zombies_json(
+            path=json_path,
+            network=network,
+            repo=repo_path,
+            amendments=net_amendments,
+            enabled=enabled,
+            crawler=crawler,
+            reports=reports,
+            include_nodes=include_nodes,
+        )
+
+
+def _parse_ref_map(items: tuple[str, ...]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise click.ClickException(f"--ref must be VERSION=REF, got: {item}")
+        version, _, ref = item.partition("=")
+        if not version.strip() or not ref.strip():
+            raise click.ClickException(f"--ref must be VERSION=REF, got: {item}")
+        out[version.strip()] = ref.strip()
+    return out
+
+
+def _render_zombies(
+    *,
+    network: str,
+    repo: Path,
+    amendments: amd.NetworkAmendments,
+    enabled: tuple[zmb.EnabledAmendment, ...],
+    crawler: Crawler,
+    reports: list[zmb.VersionCompatibility],
+) -> None:
+    total_nodes = sum(r.nodes for r in reports)
+    incompatible_nodes = sum(r.nodes for r in reports if r.incompatible)
+    unknown_nodes = sum(r.nodes for r in reports if r.error)
+    ok_nodes = total_nodes - incompatible_nodes - unknown_nodes
+
+    head = (
+        f"[bold]{network.upper()} ZOMBIE CHECK[/bold]\n"
+        f"enabled amendments: {len(enabled)} · "
+        f"ledger: {amendments.ledger_seq or '?'} · repo: {repo}\n"
+        f"unique crawled nodes: {len(crawler.nodes)} · "
+        f"[green]ok {ok_nodes}[/green] · "
+        f"[red]incompatible {incompatible_nodes}[/red] · "
+        f"[yellow]unknown {unknown_nodes}[/yellow]"
+    )
+    console.print(Panel(head, expand=False))
+
+    _print_backends({network: amendments})
+    if amendments.enabled_unstable:
+        console.print(
+            "[bold yellow]classification provisional:[/bold yellow] sampled "
+            "backends disagreed on enabled amendment state; inspect those "
+            "backends before treating INCOMPATIBLE rows as operator evidence."
+        )
+
+    if not reports:
+        console.print("[yellow]no versions discovered[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Version")
+    table.add_column("Nodes", justify="right")
+    table.add_column("Share", justify="right")
+    table.add_column("Ref")
+    table.add_column("Source")
+    table.add_column("Status")
+    table.add_column("Missing enabled amendments")
+    for report in reports:
+        pct = 100.0 * report.nodes / total_nodes if total_nodes else 0.0
+        if report.status == "ok":
+            status = Text("OK", style="green")
+            detail = ""
+        elif report.status == "incompatible":
+            status = Text("INCOMPATIBLE", style="bold red")
+            detail = _summarize_missing(report)
+        else:
+            status = Text("UNKNOWN", style="yellow")
+            detail = report.error or ""
+        table.add_row(
+            report.version,
+            str(report.nodes),
+            f"{pct:5.1f}%",
+            report.ref or "-",
+            _source_link(report),
+            status,
+            detail,
+        )
+    console.print(table)
+    _print_zombie_evidence(reports)
+    console.print(
+        "[dim]Decision rule: only currently ENABLED amendments are compatibility "
+        "requirements. Vetoed/pending/majority vote fields are not used here "
+        "because they are not active ledger semantics yet.[/dim]"
+    )
+    console.print(
+        "[dim]INCOMPATIBLE means the local source tag is missing or marks "
+        "unsupported an enabled amendment. Such nodes may still appear in crawls "
+        "while following/acquiring validated ledgers; confirm server_state and "
+        "complete_ledgers before making an operator claim.[/dim]"
+    )
+
+
+def _summarize_missing(report: zmb.VersionCompatibility, limit: int = 5) -> str:
+    missing = list(report.missing_enabled)
+    unsupported = [f"{name} (unsupported)" for name in report.unsupported_enabled]
+    all_bad = missing + unsupported
+    shown = ", ".join(all_bad[:limit])
+    extra = len(all_bad) - limit
+    if extra > 0:
+        shown += f", +{extra} more"
+    return shown
+
+
+def _source_link(report: zmb.VersionCompatibility) -> Text | str:
+    if not report.parsed:
+        return "-"
+    label = report.parsed.source_path.rsplit("/", 1)[-1]
+    if report.commit:
+        label = f"{label}@{report.commit[:8]}"
+    if report.source_url:
+        return Text(label, style=f"link {report.source_url}")
+    return label
+
+
+def _print_zombie_evidence(
+    reports: list[zmb.VersionCompatibility], *, per_version: int = 3
+) -> None:
+    rows: list[tuple[zmb.VersionCompatibility, zmb.AmendmentEvidence]] = []
+    for report in reports:
+        rows.extend((report, evidence) for evidence in report.evidence[:per_version])
+    if not rows:
+        return
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        title="Evidence",
+    )
+    table.add_column("Version")
+    table.add_column("Amendment")
+    table.add_column("Hash")
+    table.add_column("Issue")
+    table.add_column("Links")
+    for report, evidence in rows:
+        links = Text()
+        links.append("live", style=f"link {zmb.LIVE_DEFINITIONS_URL}")
+        if evidence.evidence_url:
+            links.append(" · ")
+            links.append(
+                "source" if evidence.issue == "missing" else "line",
+                style=f"link {evidence.evidence_url}",
+            )
+        table.add_row(
+            report.version,
+            evidence.name,
+            evidence.amendment_id[:12],
+            evidence.issue,
+            links,
+        )
+    console.print(table)
+    console.print(
+        f"[dim]Evidence is capped at {per_version} amendment(s) per incompatible "
+        "version; JSON output includes the full evidence list.[/dim]"
+    )
+
+
+def _dump_zombies_json(
+    *,
+    path: str,
+    network: str,
+    repo: Path,
+    amendments: amd.NetworkAmendments,
+    enabled: tuple[zmb.EnabledAmendment, ...],
+    crawler: Crawler,
+    reports: list[zmb.VersionCompatibility],
+    include_nodes: bool = False,
+) -> None:
+    reports_by_version = {r.version: r for r in reports}
+    out = {
+        "network": network,
+        "repo": str(repo),
+        "ledger_seq": amendments.ledger_seq,
+        "enabled_unstable": sorted(amendments.enabled_unstable),
+        "enabled_amendments": [
+            {"name": a.name, "amendment_id": a.amendment_id} for a in enabled
+        ],
+        "crawl": {
+            "endpoints_queried": len(crawler.visited),
+            "reachable": crawler.ok,
+            "unreachable": crawler.failed,
+            "unique_nodes": len(crawler.nodes),
+            "version_counts": dict(
+                zmb.visible_version_counts(n.version for n in crawler.nodes.values())
+            ),
+        },
+        "versions": [r.as_dict() for r in reports],
+    }
+    if include_nodes:
+        out["nodes"] = [
+            _zombie_node_json(node, reports_by_version)
+            for node in sorted(
+                crawler.nodes.values(),
+                key=lambda n: (n.version or "", n.public_key),
+            )
+        ]
+    Path(path).write_text(json.dumps(out, indent=2))
+    err.print(f"  wrote zombie report -> {path}")
+
+
+def _zombie_node_json(
+    node,
+    reports_by_version: dict[str, zmb.VersionCompatibility],
+) -> dict:
+    version_key = next(iter(zmb.visible_version_counts([node.version])))
+    report = reports_by_version.get(version_key)
+    return {
+        "public_key": node.public_key,
+        "version": node.version,
+        "version_key": version_key,
+        "status": report.status if report else "unknown",
+        "ref": report.ref if report else None,
+        "missing_enabled_count": len(report.missing_enabled) if report else 0,
+        "unsupported_enabled_count": len(report.unsupported_enabled) if report else 0,
+        "has_endpoint": node.has_endpoint,
+        "endpoints": [f"{host}:{port}" for host, port in sorted(node.endpoints)],
+    }
 
 
 if __name__ == "__main__":

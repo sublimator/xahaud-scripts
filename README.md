@@ -27,6 +27,8 @@ uv tool install --force --editable .
 - `x-build-test-hooks` - Extract and compile WASM test hooks from C++ source
 - `x-format-changed` - Format changed files in git (C++, Python, shell, CMake)
 - `x-quick-check` - Run compiler syntax checks for dirty C/C++ translation units
+- `x-inspect-net` - Inspect live network amendment status and version mix
+- `x-binary-features` - Inspect amendment support encoded in xahaud git refs/tags
 - `xr-build` - Build xrpld with coverage, patches, and cmake presets
 - `xr-coverage-diff` - Show uncovered lines from existing coverage data
 

@@ -25,6 +25,8 @@ dependencies = [
     "pyyaml>=6.0",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-cpp>=0.23.4",
 ]
 
 [project.scripts]
@@ -40,6 +42,7 @@ x-format-changed = "xahaud_scripts.format_changed:main"
 x-quick-check = "xahaud_scripts.quick_check:main"
 x-testnet = "xahaud_scripts.testnet.cli:main"
 x-inspect-net = "xahaud_scripts.inspect_net.cli:main"
+x-binary-features = "xahaud_scripts.binary_features:main"
 x-run-stats = "xahaud_scripts.run_stats:main"
 xr-build = "xahaud_scripts.build_xrpld:main"
 xr-coverage-diff = "xahaud_scripts.build_xrpld:coverage_diff"
