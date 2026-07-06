@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xahaud_scripts.utils.logging import make_logger
+from xahaud_scripts.utils.quoting import shell_export
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
@@ -239,14 +240,14 @@ class TmuxLauncher:
         """Build the full command with env vars and startup flags."""
         env_vars = self._build_env_vars(node, config)
         startup_flags = self._build_startup_flags(node, config)
-        binary = str(config.get_rippled_path(node.id))
-        args = f"--conf {node.config_path} {startup_flags}"
+        binary = shlex.quote(str(config.get_rippled_path(node.id)))
+        args = f"--conf {shlex.quote(str(node.config_path))} {startup_flags}"
 
         if node.id in config.lldb_nodes:
             from xahaud_scripts.utils.lldb import create_lldb_script
 
             script = create_lldb_script(all_threads=False)
-            cmd = f"lldb -s {script} -- {binary} {args}"
+            cmd = f"lldb -s {shlex.quote(str(script))} -- {binary} {args}"
             logger.info(f"Node {node.id} running under lldb (script: {script})")
         else:
             cmd = f"{binary} {args}"
@@ -266,12 +267,12 @@ class TmuxLauncher:
 
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
-            parts.append(f"export {key}={shlex.quote(value)}")
+            parts.append(shell_export(key, value))
 
         # Node-specific environment variables (override global)
         if node.id in config.node_env:
             for key, value in config.node_env[node.id].items():
-                parts.append(f"export {key}={shlex.quote(value)}")
+                parts.append(shell_export(key, value))
 
         return " && ".join(parts)
 
@@ -280,7 +281,7 @@ class TmuxLauncher:
         parts = []
 
         # Genesis ledger file
-        parts.append(f"--ledgerfile {config.genesis_file}")
+        parts.append(f"--ledgerfile {shlex.quote(str(config.genesis_file))}")
 
         # Quorum setting
         if config.quorum is not None:

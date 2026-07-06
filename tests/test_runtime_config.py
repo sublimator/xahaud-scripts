@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -250,3 +251,103 @@ def test_launchers_shell_quote_json_env_values(tmp_path: Path, launcher_cls) -> 
 
     assert json.loads(output[0]) == {"set": {"global": {"rng_poll_ms": 333}}}
     assert json.loads(output[1]) == {"set": {"global": {"no_export_sig_hash": True}}}
+
+
+def test_tmux_launcher_quotes_binary_config_and_genesis_paths(tmp_path: Path) -> None:
+    node = NodeInfo(
+        id=0,
+        public_key="pk",
+        token="token",
+        config_path=tmp_path / "node dir; touch bad" / "xahaud.cfg",
+        port_peer=5005,
+        port_rpc=6005,
+        port_ws=7005,
+    )
+    launch = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "bin dir; touch bad" / "rippled",
+        genesis_file=tmp_path / "genesis dir; touch bad" / "genesis.json",
+        extra_env={"XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'},
+    )
+
+    cmd = TmuxLauncher()._build_full_command(node, launch)
+    output = subprocess.check_output(
+        [
+            "sh",
+            "-c",
+            "_xrun() { printf '%s\\n' \"$@\"; }; " + cmd,
+        ],
+        text=True,
+    ).splitlines()
+
+    assert output[:5] == [
+        str(launch.rippled_path),
+        "--conf",
+        str(node.config_path),
+        "--ledgerfile",
+        str(launch.genesis_file),
+    ]
+
+
+@pytest.mark.parametrize(
+    "launcher_cls,module_name",
+    [
+        (ITermLauncher, "xahaud_scripts.testnet.launcher.iterm"),
+        (ITermPanesLauncher, "xahaud_scripts.testnet.launcher.iterm_panes"),
+    ],
+)
+def test_iterm_launchers_quote_binary_config_and_genesis_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    launcher_cls,
+    module_name: str,
+) -> None:
+    node = NodeInfo(
+        id=0,
+        public_key="pk",
+        token="token",
+        config_path=tmp_path / "node dir; touch bad" / "xahaud.cfg",
+        port_peer=5005,
+        port_rpc=6005,
+        port_ws=7005,
+    )
+    launch = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "bin dir; touch bad" / "rippled",
+        genesis_file=tmp_path / "genesis dir; touch bad" / "genesis.json",
+        extra_env={"XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'},
+    )
+    scripts: list[str] = []
+
+    def fake_run(args, **_kwargs):
+        scripts.append(args[2])
+        return subprocess.CompletedProcess(args, 0, stdout="window-id")
+
+    monkeypatch.setattr(f"{module_name}.subprocess.run", fake_run)
+
+    assert launcher_cls().launch(node, launch) is True
+    script = scripts[-1]
+
+    assert f'write text "cd {shlex.quote(str(node.node_dir))}"' in script
+    assert shlex.quote(str(launch.rippled_path)) in script
+    assert f"--conf {shlex.quote(str(node.config_path))}" in script
+    assert f"--ledgerfile {shlex.quote(str(launch.genesis_file))}" in script
+    assert '{"set"' not in script
+    assert '{\\"set\\"' in script
+
+
+@pytest.mark.parametrize(
+    "launcher_cls",
+    [TmuxLauncher, ITermLauncher, ITermPanesLauncher],
+)
+def test_launchers_reject_invalid_env_names(tmp_path: Path, launcher_cls) -> None:
+    node = _nodes(tmp_path)[0]
+    launch = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "build" / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+        extra_env={"BAD-NAME": "1"},
+    )
+
+    with pytest.raises(ValueError, match="shell identifiers"):
+        launcher_cls()._build_env_vars(node, launch)

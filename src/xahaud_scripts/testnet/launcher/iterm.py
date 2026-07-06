@@ -6,7 +6,6 @@ iTerm2 window with appropriate environment variables and commands.
 
 from __future__ import annotations
 
-import shlex
 import shutil
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xahaud_scripts.utils.logging import make_logger
+from xahaud_scripts.utils.quoting import applescript_string, shell_export, shell_quote
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
@@ -107,18 +107,24 @@ class ITermLauncher:
         window_title = f"XahaudTest_Node{node.id}"
 
         # Build the command to run
-        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
+        binary = shell_quote(config.get_rippled_path(node.id))
+        conf = shell_quote(node.config_path)
+        cmd = f"{binary} --conf {conf} {startup_flags}"
         # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
         full_cmd = f" {env_vars} && {cmd}"
+        cd_cmd = applescript_string(f"cd {shell_quote(node.node_dir)}")
+        window_title_literal = applescript_string(window_title)
+        full_cmd_literal = applescript_string(full_cmd)
+        title_comment = applescript_string(f"# {window_title} - PID will be saved for teardown")
 
         applescript = f'''
 tell application "iTerm"
     create window with default profile
     tell current session of current window
-        set name to "{window_title}"
-        write text "cd {node.node_dir}"
-        write text "# {window_title} - PID will be saved for teardown"
-        write text "{full_cmd}"
+        set name to {window_title_literal}
+        write text {cd_cmd}
+        write text {title_comment}
+        write text {full_cmd_literal}
     end tell
 end tell
 '''
@@ -197,12 +203,12 @@ end tell
 
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
-            parts.append(f"export {key}={shlex.quote(value)}")
+            parts.append(shell_export(key, value))
 
         # Node-specific environment variables (override global)
         if node.id in config.node_env:
             for key, value in config.node_env[node.id].items():
-                parts.append(f"export {key}={shlex.quote(value)}")
+                parts.append(shell_export(key, value))
 
         return " && ".join(parts)
 
@@ -219,7 +225,7 @@ end tell
         parts = []
 
         # Genesis ledger file
-        parts.append(f"--ledgerfile {config.genesis_file}")
+        parts.append(f"--ledgerfile {shell_quote(config.genesis_file)}")
 
         # Quorum setting
         if config.quorum is not None:

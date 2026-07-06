@@ -17,6 +17,7 @@ from pathlib import Path
 
 import click
 
+from xahaud_scripts.binary_registry import alias_name
 from xahaud_scripts.build import (
     CMakeOptions,
     ccache_show_stats,
@@ -43,6 +44,16 @@ OUTPUTS_DIR = Path.home() / ".config" / "xahaud-scripts" / "outputs"
 
 # Set up logger
 logger = make_logger(__name__)
+
+
+def find_rippled_binary(build_dir: str | Path) -> Path | None:
+    """Return the rippled executable in a build dir, if present."""
+    base = Path(build_dir)
+    for name in ("rippled", "rippled.exe"):
+        candidate = base / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def get_build_output_path(xahaud_root: str, build_type: str) -> Path:
@@ -122,6 +133,15 @@ def build_rippled(
 
     # Determine if we need to configure.
     need_configure = not build_dir_exists or reconfigure_build
+
+    if build_dir_exists and not need_configure:
+        cmake_cache = os.path.join(build_dir, "CMakeCache.txt")
+        if not os.path.exists(cmake_cache):
+            logger.warning(
+                f"{build_dir} exists but CMakeCache.txt is missing — "
+                "forcing cmake reconfigure."
+            )
+            need_configure = True
 
     # If the build dir exists but the conan toolchain isn't there
     # (e.g. a fresh build-debug-llvm/ created by a previous failed run,
@@ -483,6 +503,12 @@ def run_rippled(
     help="Build directory name (default: build-debug for Debug, build for Release).",
 )
 @click.option(
+    "--save-binary",
+    default=None,
+    metavar="@NAME",
+    help="After a successful build, copy the rippled binary into the @NAME registry.",
+)
+@click.option(
     "-j",
     "--jobs",
     type=int,
@@ -545,6 +571,7 @@ def main(
     log_line_numbers,
     build_type,
     build_dir,
+    save_binary,
     jobs,
     keep_gcda,
     diff_cover,
@@ -619,6 +646,22 @@ def main(
         build_type = "Debug"
         logger.info(
             "--build-type=Coverage: enabling coverage instrumentation with Debug build"
+        )
+
+    if save_binary and not build:
+        raise click.UsageError(
+            "--save-binary requires --build so stale build-dir binaries are not "
+            "registered by accident."
+        )
+    if save_binary:
+        try:
+            alias_name(save_binary)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+    if save_binary and target != "rippled":
+        raise click.UsageError(
+            "--save-binary only supports --target rippled; saved aliases are used "
+            "as xahaud testnet node binaries."
         )
 
     # Auto-enable coverage when diff-cover is requested
@@ -809,6 +852,30 @@ def main(
                     sys.exit(0)
             else:
                 logger.info("Skipping build as requested")
+
+            if save_binary and not dry_run:
+                from xahaud_scripts.binary_registry import (
+                    save_binary as save_named_binary,
+                )
+
+                binary_path = find_rippled_binary(build_dir)
+                if binary_path is None:
+                    raise click.ClickException(
+                        f"Cannot save binary {save_binary}: no rippled executable "
+                        f"found in {build_dir}"
+                    )
+                try:
+                    saved = save_named_binary(
+                        save_binary,
+                        binary_path,
+                        worktree=Path(xahaud_root),
+                        build_type=build_type,
+                    )
+                except (OSError, ValueError) as exc:
+                    raise click.ClickException(
+                        f"Could not save binary {save_binary}: {exc}"
+                    ) from exc
+                logger.info(f"Saved binary @{saved.name}: {saved.path}")
 
             # Clear stale .gcda / .profraw before test runs for clean coverage
             if coverage and not keep_gcda:

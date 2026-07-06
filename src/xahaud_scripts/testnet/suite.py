@@ -53,6 +53,7 @@ from xahaud_scripts.testnet.topology import (
     validate_edges_in_nodes,
 )
 from xahaud_scripts.utils.logging import make_logger
+from xahaud_scripts.utils.quoting import validate_shell_identifier
 
 logger = make_logger(__name__)
 
@@ -250,6 +251,67 @@ def _expand_tests(
     return expanded
 
 
+def _validated_env_mapping(raw: Any, *, label: str) -> dict[str, str]:
+    """Validate and stringify a YAML env mapping."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} must be a mapping of NAME: VALUE")
+
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{label} keys must be strings, got {key!r}")
+        try:
+            validate_shell_identifier(key)
+        except ValueError as exc:
+            raise ValueError(f"{label}.{key}: {exc}") from exc
+        result[key] = str(value)
+    return result
+
+
+def _validated_node_env(raw: Any) -> dict[int, dict[str, str]]:
+    """Validate and stringify the YAML node_env mapping."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("network.node_env must be a mapping of node_id: env")
+
+    result: dict[int, dict[str, str]] = {}
+    for node_id_raw, env_dict in raw.items():
+        try:
+            node_id = int(node_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"network.node_env key must be an integer node id: {node_id_raw!r}") from exc
+        result[node_id] = _validated_env_mapping(
+            env_dict,
+            label=f"network.node_env.{node_id}",
+        )
+    return result
+
+
+def _merge_env_override(
+    config: dict[str, Any],
+    env_override: dict[str, str] | None,
+) -> None:
+    """Merge suite-level CLI env overrides into a network config."""
+    if not env_override:
+        return
+    base_env = config.get("env", {})
+    if not isinstance(base_env, dict):
+        raise ValueError("network.env must be a mapping of NAME: VALUE")
+    config["env"] = {
+        **base_env,
+        **env_override,
+    }
+
+
+def _validate_network_env(config: dict[str, Any]) -> None:
+    """Validate env-bearing network config without mutating it."""
+    _validated_env_mapping(config.get("env", {}), label="network.env")
+    _validated_node_env(config.get("node_env", {}))
+
+
 def _snapshot_test(network: TestNetwork, dest: Path) -> None:
     """Copy node dirs and network.json from live testnet into dest."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -320,9 +382,11 @@ def _build_launch_config(
     *,
     nodes: list[NodeInfo] | None = None,
     network_config: NetworkConfig | None = None,
+    rippled_path: Path | None = None,
 ) -> LaunchConfig:
     """Build a LaunchConfig from effective config dict."""
-    rippled_path = xahaud_root / "build" / "rippled"
+    if rippled_path is None:
+        rippled_path = xahaud_root / "build" / "rippled"
 
     # Genesis file with feature/start-ledger modifications. Mirrors the
     # lower-level `x-testnet run` knobs so suites can exercise flag-ledger
@@ -356,14 +420,10 @@ def _build_launch_config(
     )
 
     # Environment variables (simple key=value, no node-specific parsing needed)
-    extra_env: dict[str, str] = {}
-    for key, value in config.get("env", {}).items():
-        extra_env[key] = str(value)
+    extra_env = _validated_env_mapping(config.get("env", {}), label="network.env")
 
     # Per-node environment variables: node_env: {3: {KEY: VAL}, 4: {KEY: VAL}}
-    node_env: dict[int, dict[str, str]] = {}
-    for node_id_str, env_dict in config.get("node_env", {}).items():
-        node_env[int(node_id_str)] = {k: str(v) for k, v in env_dict.items()}
+    node_env = _validated_node_env(config.get("node_env", {}))
 
     # Suite-level rc specs use the same startup env path as `x-testnet run
     # --rc`, so delayed/dropped links are active from node launch.
@@ -574,6 +634,7 @@ def _run_one_test(
     env_override: dict[str, str] | None = None,
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
+    rippled_path: Path | None = None,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
     name = test["name"]
@@ -590,12 +651,8 @@ def _run_one_test(
         )
 
     config = suite.effective_network(test)
-    if env_override:
-        base_env = config.get("env", {})
-        config["env"] = {
-            **(base_env if isinstance(base_env, dict) else {}),
-            **env_override,
-        }
+    _merge_env_override(config, env_override)
+    _validate_network_env(config)
 
     # --fast-bootstrap: inject global.bootstrap_fast_start=true unless already
     # set in XAHAUD_RUNTIME_TEST_CONFIG.
@@ -643,6 +700,7 @@ def _run_one_test(
             config,
             nodes=network.nodes,
             network_config=network.config,
+            rippled_path=rippled_path,
         )
         # 4. Set up dual file logging before launch/topology setup so setup
         # failures leave the same paper trail as scenario failures.
@@ -737,6 +795,7 @@ def run_suite(
     dry_run: bool = False,
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
+    rippled_path: Path | None = None,
 ) -> list[TestResult]:
     """Run a scenario test suite.
 
@@ -759,6 +818,8 @@ def run_suite(
         fast_bootstrap: If True (default), inject
             XAHAUD_RUNTIME_TEST_CONFIG global.bootstrap_fast_start=true unless
             explicitly set in suite config or --env.
+        rippled_path: If set, use this binary instead of
+            ``$xahaud_root/build/rippled``.
 
     Returns:
         List of TestResult for all executed tests.
@@ -787,6 +848,8 @@ def run_suite(
         console.print(f"[bold]Tests:[/bold] {tests_label}")
         for i, test in enumerate(tests, 1):
             config = suite.effective_network(test)
+            _merge_env_override(config, env_override)
+            _validate_network_env(config)
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
             console.print(f"     script: {test['script']}")
             params = test.get("_params")
@@ -850,6 +913,7 @@ def run_suite(
                     env_override=env_override,
                     py_log_specs=py_log_specs,
                     fast_bootstrap=fast_bootstrap,
+                    rippled_path=rippled_path,
                 )
             except KeyboardInterrupt:
                 logger.info("Suite interrupted — network left in place for inspection")

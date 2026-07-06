@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from click.testing import CliRunner
 
+from xahaud_scripts.testnet.cli import testnet
 from xahaud_scripts.testnet.config import (
     DEFAULT_BASE_PORT_PEER,
     DEFAULT_BASE_PORT_RPC,
@@ -40,6 +42,7 @@ from xahaud_scripts.testnet.suite import (
     _build_launch_config,
     _create_network,
     _parse_topology_nodes,
+    run_suite,
 )
 from xahaud_scripts.testnet.topology import disconnect_managed_peer
 
@@ -514,6 +517,205 @@ def test_suite_launch_config_fixed_peers_false_keeps_validator_count(tmp_path: P
     )
 
     assert launch.xahaud_root == tmp_path
+
+
+def test_suite_launch_config_uses_supplied_rippled_path(tmp_path: Path):
+    binary = tmp_path / "saved" / "rippled"
+    launch = _build_launch_config(
+        tmp_path,
+        {"node_count": 3},
+        network_config=NetworkConfig(node_count=3),
+        rippled_path=binary,
+    )
+
+    assert launch.rippled_path == binary
+
+
+def test_suite_cli_passes_group_rippled_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text("tests: []\n")
+    binary = tmp_path / "saved bin" / "rippled"
+    seen: dict[str, Path | None] = {}
+
+    def fake_run_suite(**kwargs):
+        seen["rippled_path"] = kwargs["rippled_path"]
+        return []
+
+    monkeypatch.setattr("xahaud_scripts.testnet.suite.run_suite", fake_run_suite)
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "--rippled-path",
+            str(binary),
+            "suite",
+            str(suite_file),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["rippled_path"] == binary
+
+
+def test_suite_rejects_invalid_env_override_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text("tests: []\n")
+    called = False
+
+    def fake_run_suite(**kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr("xahaud_scripts.testnet.suite.run_suite", fake_run_suite)
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "suite",
+            str(suite_file),
+            "--env",
+            "BAD-NAME=1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "shell identifiers" in result.output
+    assert not called
+
+
+def test_suite_dry_run_rejects_invalid_yaml_env_name(tmp_path: Path):
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        """
+defaults:
+  network:
+    env:
+      BAD-NAME: 1
+tests:
+  - name: bad_env
+    script: missing.py
+"""
+    )
+
+    with pytest.raises(ValueError, match="shell identifiers"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_suite_dry_run_rejects_invalid_yaml_node_env_name(tmp_path: Path):
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        """
+defaults:
+  network:
+    node_env:
+      0:
+        BAD-NAME: 1
+tests:
+  - name: bad_node_env
+    script: missing.py
+"""
+    )
+
+    with pytest.raises(ValueError, match="shell identifiers"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_run_rejects_out_of_range_node_binary(tmp_path: Path):
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "run",
+            "--node-count",
+            "2",
+            "--node-binary",
+            "n2:/bin/sh",
+            "--no-monitor",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "outside this 2-node network" in result.output
+
+
+def test_run_rejects_invalid_env_name(tmp_path: Path):
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "run",
+            "--env",
+            "BAD-NAME=1",
+            "--no-monitor",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "shell identifiers" in result.output
+
+
+def test_run_rejects_non_executable_node_binary_path(tmp_path: Path):
+    binary = tmp_path / "not-executable"
+    binary.write_text("")
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "run",
+            "--node-count",
+            "2",
+            "--node-binary",
+            f"n0:{binary}",
+            "--no-monitor",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not an executable file" in result.output
+
+
+def test_run_rejects_non_executable_peer_node_binary(tmp_path: Path):
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    rippled = build_dir / "rippled"
+    rippled.write_text("")
+    rippled.chmod(0o755)
+    peer_binary = build_dir / "old-release"
+    peer_binary.write_text("")
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "--rippled-path",
+            str(rippled),
+            "run",
+            "--node-count",
+            "2",
+            "--node-binary",
+            "n0:old-release",
+            "--no-monitor",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not an executable file" in result.output
 
 
 class _TopologyRPC:

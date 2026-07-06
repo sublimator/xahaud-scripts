@@ -17,6 +17,7 @@ x-run-tests -- ripple.app.Import                          # build + run test
 x-run-tests --no-build -- ripple.app.Import               # skip build
 x-run-tests --times 5 -- ripple.app.Import                # repeat 5x
 x-run-tests --times=0                                     # build only
+x-run-tests --times=0 --save-binary @rng-ce               # build + save named binary
 x-run-tests --compile-hooks src/test/app/Export_test.cpp -- ripple.app.Export
 x-run-tests --lldb -- ripple.app.Import                   # debug with lldb
 x-run-tests --ccache --build-type Release -- unit_test_hook
@@ -31,6 +32,7 @@ Key options:
 - `--ccache/--no-ccache` - ccache with worktree cache sharing
 - `--build-type Debug|Release|Coverage`
 - `--target rippled|xrpld`
+- `--save-binary @name` - Copy the built `rippled` into the local binary registry
 - `--coverage` - Enable coverage instrumentation
 - `--coverage-version v1|v2|auto` - v1=llvm-cov, v2=gcovr
 - `--diff-cover` - Show uncovered lines in git diff
@@ -84,7 +86,9 @@ x-testnet generate --no-fixed-peers             # start isolated; shape topology
 x-testnet generate --log-level-suite consensus   # preset log levels
 x-testnet generate --find-ports                  # auto-find free ports
 x-testnet run                                    # launch nodes + monitor
+x-testnet --rippled-path @rng-ce run             # launch with a saved binary
 x-testnet run --launcher tmux                    # use tmux instead of iTerm
+x-testnet run --node-binary n0:@old --node-binary n1:@new # mixed binary run
 x-testnet run --reconnect                        # reconnect to existing network
 x-testnet teardown                               # kill all node processes
 x-testnet clean                                  # remove generated files
@@ -128,10 +132,21 @@ x-testnet scenario-test-guide                    # show scenario script docs
 - `--feature HASH` - Enable amendment (prefix `-` to disable, repeatable)
 - `--genesis-file PATH` - Custom genesis ledger
 - `--env NAME=VALUE` - Env vars for nodes (or `n0:NAME=VALUE` for specific node)
+- `--node-binary n0:@name` - Per-node saved binary override for mixed-binary tests
 - `--launcher tmux|iterm|iterm-panes`
 - `--desktop N` - macOS desktop number for window placement
 - `--scenario-script PATH` - Run scenario script instead of monitoring
 - `--teardown` - Kill nodes after scenario/txn-gen finishes
+
+Saved binaries:
+- Aliases use an explicit `@name` prefix. Non-`@` paths and peer-binary names
+  keep their existing meaning; an `@...` value is always a saved-binary alias.
+- `x-run-tests --save-binary @name` copies the built `rippled` into
+  `~/.cache/xahaud-scripts/binaries/<name>/` and records metadata in
+  `~/.config/xahaud-scripts/binaries.json`.
+- The JSON manifest is generated state: branch, commit, dirty flag, source path,
+  build type, and `--version` output are best-effort evidence, not a package
+  manager.
 
 ### x-inspect-net
 

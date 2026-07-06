@@ -6,7 +6,6 @@ iTerm2 window with split panes. Closing the window kills all nodes.
 
 from __future__ import annotations
 
-import shlex
 import shutil
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xahaud_scripts.utils.logging import make_logger
+from xahaud_scripts.utils.quoting import applescript_string, shell_export, shell_quote
 
 if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import LaunchConfig, NodeInfo
@@ -106,7 +106,9 @@ class ITermPanesLauncher:
         pane_title = f"n{node.id}"
 
         # Build the command to run
-        cmd = f"{config.get_rippled_path(node.id)} --conf {node.config_path} {startup_flags}"
+        binary = shell_quote(config.get_rippled_path(node.id))
+        conf = shell_quote(node.config_path)
+        cmd = f"{binary} --conf {conf} {startup_flags}"
         # Leading space prevents zsh history logging (HIST_IGNORE_SPACE)
         full_cmd = f" {env_vars} && {cmd}"
 
@@ -132,6 +134,9 @@ class ITermPanesLauncher:
         """Create the iTerm window with the first node."""
         # Derive base_dir from node directory (node_dir is {base_dir}/n0, etc.)
         self._base_dir = node.node_dir.parent
+        title_literal = applescript_string(title)
+        cd_cmd = applescript_string(f"cd {shell_quote(node.node_dir)}")
+        cmd_literal = applescript_string(cmd)
 
         # Create window and return its ID for later teardown
         applescript = f'''
@@ -140,9 +145,9 @@ tell application "iTerm"
     set newWindow to (create window with default profile)
     set windowId to id of newWindow
     tell current session of newWindow
-        set name to "{title}"
-        write text "cd {node.node_dir}"
-        write text "{cmd}"
+        set name to {title_literal}
+        write text {cd_cmd}
+        write text {cmd_literal}
     end tell
     return windowId
 end tell
@@ -173,6 +178,8 @@ end tell
         window_target = (
             f"window id {self._window_id}" if self._window_id else "current window"
         )
+        title_literal = applescript_string(title)
+        cmd_literal = applescript_string(cmd)
 
         applescript = f'''
 tell application "iTerm"
@@ -181,8 +188,8 @@ tell application "iTerm"
         tell current session
             set newSession to (split {split_direction} with default profile)
             tell newSession
-                set name to "{title}"
-                write text "{cmd}"
+                set name to {title_literal}
+                write text {cmd_literal}
             end tell
         end tell
     end tell
@@ -319,12 +326,12 @@ end tell
 
         # Extra environment variables from CLI (global)
         for key, value in config.extra_env.items():
-            parts.append(f"export {key}={shlex.quote(value)}")
+            parts.append(shell_export(key, value))
 
         # Node-specific environment variables (override global)
         if node.id in config.node_env:
             for key, value in config.node_env[node.id].items():
-                parts.append(f"export {key}={shlex.quote(value)}")
+                parts.append(shell_export(key, value))
 
         return " && ".join(parts)
 
@@ -333,7 +340,7 @@ end tell
         parts = []
 
         # Genesis ledger file
-        parts.append(f"--ledgerfile {config.genesis_file}")
+        parts.append(f"--ledgerfile {shell_quote(config.genesis_file)}")
 
         # Quorum setting
         if config.quorum is not None:

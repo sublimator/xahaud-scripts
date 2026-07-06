@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 
 import click
 
+from xahaud_scripts.binary_registry import is_binary_alias, resolve_binary_alias
 from xahaud_scripts.testnet.config import (
     MAX_NODE_COUNT,
     LaunchConfig,
@@ -47,6 +49,7 @@ from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.topology import disconnect_managed_peer
 from xahaud_scripts.utils.logging import make_logger, setup_logging
+from xahaud_scripts.utils.quoting import validate_shell_identifier
 
 logger = make_logger(__name__)
 
@@ -86,6 +89,37 @@ def _parse_node_list(specs: str, node_count: int = 5) -> list[int]:
         excluded = [_parse_node_spec(s.strip()) for s in specs[1:].split(",")]
         return [i for i in range(node_count) if i not in excluded]
     return [_parse_node_spec(s.strip()) for s in specs.split(",")]
+
+
+def _resolve_binary_alias(value: str | Path, *, param_hint: str) -> Path:
+    """Resolve an @binary alias for testnet CLI options."""
+    try:
+        return resolve_binary_alias(value)
+    except (OSError, ValueError) as exc:
+        raise click.BadParameter(str(exc), param_hint=param_hint) from exc
+
+
+def _require_executable_file(path: Path, *, original: str, param_hint: str) -> Path:
+    """Validate that a resolved binary path is executable."""
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise click.BadParameter(
+            f"Binary is not an executable file: {original} -> {path}",
+            param_hint=param_hint,
+        )
+    return path
+
+
+def _parse_env_assignment(env_spec: str, *, param_hint: str) -> tuple[str, str]:
+    """Parse and validate one NAME[=VALUE] shell env assignment."""
+    if "=" in env_spec:
+        key, value = env_spec.split("=", 1)
+    else:
+        key, value = env_spec, "1"
+    try:
+        validate_shell_identifier(key)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint=param_hint) from exc
+    return key, value
 
 
 def _create_network(
@@ -129,7 +163,7 @@ def _create_network(
     "--rippled-path",
     type=click.Path(path_type=Path),
     default=None,
-    help="Path to rippled binary (default: $xahaud-root/build/rippled)",
+    help="Path to rippled binary or @saved-binary (default: $xahaud-root/build/rippled)",
 )
 @click.option(
     "--testnet-dir",
@@ -175,6 +209,9 @@ def testnet(
         testnet teardown
     """
     setup_logging(log_level.upper(), logger)
+
+    if rippled_path is not None and is_binary_alias(rippled_path):
+        rippled_path = _resolve_binary_alias(rippled_path, param_hint="--rippled-path")
 
     ctx.ensure_object(dict)
     ctx.obj["xahaud_root"] = xahaud_root
@@ -419,9 +456,9 @@ def generate(
     "--node-binary",
     "node_binaries",
     multiple=True,
-    help="Per-node binary override. Format: n0:binary-name or n0:/path/to/binary. "
+    help="Per-node binary override. Format: n0:@name, n0:binary-name, or n0:/path. "
     "Without node prefix, applies to all nodes. Peer names resolved relative to "
-    "default binary dir. Can be repeated.",
+    "default binary dir. @names resolve from the saved-binary registry. Can be repeated.",
 )
 @click.option(
     "--no-monitor",
@@ -581,20 +618,14 @@ def run(
             prefix, rest = env_spec.split(":", 1)
             if prefix[1:].isdigit():
                 node_id = int(prefix[1:])
-                if "=" in rest:
-                    key, value = rest.split("=", 1)
-                else:
-                    key, value = rest, "1"
+                key, value = _parse_env_assignment(rest, param_hint="--env")
                 if node_id not in node_env:
                     node_env[node_id] = {}
                 node_env[node_id][key] = value
                 continue
         # Global env var
-        if "=" in env_spec:
-            key, value = env_spec.split("=", 1)
-            extra_env[key] = value
-        else:
-            extra_env[env_spec] = "1"
+        key, value = _parse_env_assignment(env_spec, param_hint="--env")
+        extra_env[key] = value
 
     if extra_env:
         logger.info(f"Global environment variables: {len(extra_env)}")
@@ -674,17 +705,35 @@ def run(
         else:
             value = spec
             node_ids = list(range(node_count))
-
-        # Resolve: peer binary first, then path
-        peer_path = rippled_path.parent / value
-        if peer_path.exists():
-            binary_path = peer_path
-        else:
-            binary_path = Path(value).resolve()
-            if not binary_path.exists():
+        for nid in node_ids:
+            if nid < 0 or nid >= node_count:
                 raise click.BadParameter(
-                    f"Binary not found: {value} "
-                    f"(checked peer: {peer_path}, path: {binary_path})",
+                    f"Node n{nid} is outside this {node_count}-node network",
+                    param_hint="--node-binary",
+                )
+
+        # Resolve: saved alias first, then peer binary, then path
+        if is_binary_alias(value):
+            binary_path = _resolve_binary_alias(value, param_hint="--node-binary")
+        else:
+            peer_path = rippled_path.parent / value
+            if peer_path.exists():
+                binary_path = _require_executable_file(
+                    peer_path,
+                    original=value,
+                    param_hint="--node-binary",
+                )
+            else:
+                binary_path = Path(value).resolve()
+                if not binary_path.exists():
+                    raise click.BadParameter(
+                        f"Binary not found: {value} "
+                        f"(checked peer: {peer_path}, path: {binary_path})",
+                        param_hint="--node-binary",
+                    )
+                binary_path = _require_executable_file(
+                    binary_path,
+                    original=value,
                     param_hint="--node-binary",
                 )
 
@@ -2399,6 +2448,7 @@ def suite(
     )
 
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
+    rippled_path = ctx.obj.get("rippled_path")
 
     if list_tests:
         suite_config = SuiteConfig.from_yaml(suite_file)
@@ -2425,6 +2475,10 @@ def suite(
             if "=" not in entry:
                 raise click.BadParameter(f"Expected NAME=VALUE, got: {entry}")
             k, v = entry.split("=", 1)
+            try:
+                validate_shell_identifier(k)
+            except ValueError as exc:
+                raise click.BadParameter(str(exc), param_hint="--env") from exc
             env_override[k] = v
 
     results = run_suite(
@@ -2439,6 +2493,7 @@ def suite(
         dry_run=dry_run,
         py_log_specs=list(py_log_specs) if py_log_specs else None,
         fast_bootstrap=fast_bootstrap,
+        rippled_path=rippled_path,
     )
 
     print_summary(results)

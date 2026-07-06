@@ -32,6 +32,19 @@ uv tool install --force --editable .
 - `xr-build` - Build xrpld with coverage, patches, and cmake presets
 - `xr-coverage-diff` - Show uncovered lines from existing coverage data
 
+## Saved Test Binaries
+
+Use `@name` aliases to keep local mixed-binary testnets readable:
+
+```bash
+x-run-tests --times=0 --save-binary @rng-ce
+x-testnet --rippled-path @rng-ce run
+x-testnet run --node-binary n0:@old --node-binary n1:@new
+```
+
+Saved binaries are copied under `~/.cache/xahaud-scripts/binaries/`; metadata is
+written to `~/.config/xahaud-scripts/binaries.json`.
+
 ## Development
 
 ```bash
