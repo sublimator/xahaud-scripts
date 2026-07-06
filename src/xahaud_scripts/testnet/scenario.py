@@ -1804,6 +1804,29 @@ class ScenarioContext:
         """
         return self._network.start_nodes(nodes)
 
+    async def restart_node_with_binary(
+        self, node_id: int, binary: str, *, delay: float = 0
+    ) -> dict[int, bool]:
+        """Restart a node into a DIFFERENT binary (rolling upgrade).
+
+        Stops the node, rewrites its launch command to use ``binary`` — an
+        ``@alias`` from the saved-binary registry or a path — then starts it
+        again. Environment, startup flags and config are preserved; only the
+        rippled binary changes, and later restarts of this node keep it.
+
+        Args:
+            node_id: Node to restart into the new binary.
+            binary: ``@alias`` (e.g. ``"@new"``) or a path to a rippled binary.
+            delay: Seconds to wait between stop and start.
+
+        Returns:
+            Dict mapping node_id -> success, matching stop_nodes/start_nodes.
+        """
+        from xahaud_scripts.binary_registry import resolve_binary_spec
+
+        binary_path = resolve_binary_spec(binary)
+        return self._network.restart_node_with_binary(node_id, binary_path, delay=delay)
+
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node."""
         return self._network.capture_output(node_id, lines)

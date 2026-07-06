@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -726,6 +728,94 @@ class TestNetwork:
             nid: stop_results.get(nid, False) and start_results.get(nid, False)
             for nid in node_ids
         }
+
+    def rebuild_launch_command(self, node_id: int, binary_path: Path) -> str:
+        """Rewrite a node's saved launch command to use a different binary.
+
+        Reuses the launcher's command builder with node_rippled_paths overridden
+        so env vars, startup flags and lldb wrapping are reproduced exactly —
+        only the rippled path changes. Falls back to swapping the single
+        rippled-path token in the saved command string if the launcher exposes
+        no builder (asserting the token appears exactly once first).
+
+        Persists the rewritten command to launch_state + network.json and
+        updates LaunchConfig.node_rippled_paths[node_id] so later restarts stay
+        consistent. Does NOT stop or start the process — use
+        restart_node_with_binary for that.
+
+        Returns:
+            The rewritten launch command string.
+        """
+        if not self._nodes:
+            self._load_network_info()
+
+        node = self._get_node(node_id)
+        if node is None:
+            raise ValueError(f"Unknown node: n{node_id}")
+
+        commands = self._launch_state.setdefault("launch_commands", {})
+        builder = getattr(self._launcher, "build_launch_command", None)
+
+        if builder is not None and self._launch_config is not None:
+            # Clean path: rebuild through the launcher's command builder so
+            # everything but the rippled path is reproduced verbatim.
+            self._launch_config.node_rippled_paths[node_id] = binary_path
+            new_cmd = builder(node, self._launch_config)
+        else:
+            # Fallback: swap the single rippled-path token in the saved command.
+            if self._launch_config is None:
+                raise RuntimeError(
+                    f"Cannot rewrite n{node_id} launch command: no live "
+                    "LaunchConfig. Binary swaps require launching the network in "
+                    "this process (x-testnet run), not a reconnected session."
+                )
+            old_cmd = commands.get(str(node_id))
+            if old_cmd is None:
+                raise RuntimeError(
+                    f"No saved launch command for n{node_id}; launch the network first."
+                )
+            old_token = shlex.quote(str(self._launch_config.get_rippled_path(node_id)))
+            occurrences = old_cmd.count(old_token)
+            if occurrences != 1:
+                raise RuntimeError(
+                    f"Refusing to rewrite n{node_id} launch command: expected "
+                    f"exactly one occurrence of binary token {old_token}, found "
+                    f"{occurrences}"
+                )
+            new_cmd = old_cmd.replace(old_token, shlex.quote(str(binary_path)))
+            self._launch_config.node_rippled_paths[node_id] = binary_path
+
+        commands[str(node_id)] = new_cmd
+        self._save_network_info()
+        return new_cmd
+
+    def restart_node_with_binary(
+        self, node_id: int, binary_path: Path, delay: float = 0
+    ) -> dict[int, bool]:
+        """Restart a node into a different binary (stop, rewrite launch, start).
+
+        Args:
+            node_id: Node to restart into the new binary.
+            binary_path: Path to the new rippled binary.
+            delay: Seconds to wait between stop and start.
+
+        Returns:
+            Dict mapping node_id -> success, matching restart_nodes. NOTE this is
+            OPTIMISTIC: it reflects SIGTERM delivery and command dispatch, not that
+            the new process bound its ports and rejoined consensus. A rolling
+            upgrade should verify each node actually came back (RPC responsive +
+            ledger advancing) before restarting the next.
+        """
+        self._ensure_controllable()
+        # Fail loud on a bad binary before touching the node: raw path specs are
+        # unvalidated and the tmux launcher's fire-and-forget start would report
+        # success even if the process cannot exec (leaving the node silently down).
+        if not binary_path.is_file() or not os.access(binary_path, os.X_OK):
+            raise FileNotFoundError(
+                f"Cannot swap n{node_id}: not an executable binary: {binary_path}"
+            )
+        self.rebuild_launch_command(node_id, binary_path)
+        return self.restart_nodes([node_id], delay=delay)
 
     def get_exit_status(self, node_id: int) -> int | None:
         """Get the exit status of a stopped node's process.

@@ -236,6 +236,15 @@ class TmuxLauncher:
         logger.info(f"Created pane for node {node.id}")
         return pane_id
 
+    def build_launch_command(self, node: NodeInfo, config: LaunchConfig) -> str:
+        """Build a node's full launch command (public wrapper over the builder).
+
+        Reused when swapping a node's binary: rebuilding through the same
+        builder reproduces env vars, startup flags and lldb wrapping exactly,
+        so only the rippled path (via ``config.get_rippled_path``) changes.
+        """
+        return self._build_full_command(node, config)
+
     def _build_full_command(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build the full command with env vars and startup flags."""
         env_vars = self._build_env_vars(node, config)
