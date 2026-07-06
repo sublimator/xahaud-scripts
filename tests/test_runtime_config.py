@@ -267,7 +267,9 @@ def test_tmux_launcher_quotes_binary_config_and_genesis_paths(tmp_path: Path) ->
         xahaud_root=tmp_path,
         rippled_path=tmp_path / "bin dir; touch bad" / "rippled",
         genesis_file=tmp_path / "genesis dir; touch bad" / "genesis.json",
-        extra_env={"XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'},
+        extra_env={
+            "XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'
+        },
     )
 
     cmd = TmuxLauncher()._build_full_command(node, launch)
@@ -315,7 +317,9 @@ def test_iterm_launchers_quote_binary_config_and_genesis_paths(
         xahaud_root=tmp_path,
         rippled_path=tmp_path / "bin dir; touch bad" / "rippled",
         genesis_file=tmp_path / "genesis dir; touch bad" / "genesis.json",
-        extra_env={"XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'},
+        extra_env={
+            "XAHAUD_RUNTIME_TEST_CONFIG": '{"set":{"global":{"rng_poll_ms":333}}}'
+        },
     )
     scripts: list[str] = []
 

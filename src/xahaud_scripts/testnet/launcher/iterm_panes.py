@@ -139,7 +139,7 @@ class ITermPanesLauncher:
         cmd_literal = applescript_string(cmd)
 
         # Create window and return its ID for later teardown
-        applescript = f'''
+        applescript = f"""
 tell application "iTerm"
     activate
     set newWindow to (create window with default profile)
@@ -151,7 +151,7 @@ tell application "iTerm"
     end tell
     return windowId
 end tell
-'''
+"""
         result = subprocess.run(
             ["osascript", "-e", applescript],
             check=True,
@@ -181,7 +181,7 @@ end tell
         title_literal = applescript_string(title)
         cmd_literal = applescript_string(cmd)
 
-        applescript = f'''
+        applescript = f"""
 tell application "iTerm"
     activate
     tell {window_target}
@@ -194,7 +194,7 @@ tell application "iTerm"
         end tell
     end tell
 end tell
-'''
+"""
         subprocess.run(
             ["osascript", "-e", applescript],
             check=True,

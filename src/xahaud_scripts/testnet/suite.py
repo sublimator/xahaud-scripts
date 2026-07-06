@@ -282,7 +282,9 @@ def _validated_node_env(raw: Any) -> dict[int, dict[str, str]]:
         try:
             node_id = int(node_id_raw)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"network.node_env key must be an integer node id: {node_id_raw!r}") from exc
+            raise ValueError(
+                f"network.node_env key must be an integer node id: {node_id_raw!r}"
+            ) from exc
         result[node_id] = _validated_env_mapping(
             env_dict,
             label=f"network.node_env.{node_id}",

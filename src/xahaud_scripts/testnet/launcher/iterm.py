@@ -115,9 +115,11 @@ class ITermLauncher:
         cd_cmd = applescript_string(f"cd {shell_quote(node.node_dir)}")
         window_title_literal = applescript_string(window_title)
         full_cmd_literal = applescript_string(full_cmd)
-        title_comment = applescript_string(f"# {window_title} - PID will be saved for teardown")
+        title_comment = applescript_string(
+            f"# {window_title} - PID will be saved for teardown"
+        )
 
-        applescript = f'''
+        applescript = f"""
 tell application "iTerm"
     create window with default profile
     tell current session of current window
@@ -127,7 +129,7 @@ tell application "iTerm"
         write text {full_cmd_literal}
     end tell
 end tell
-'''
+"""
 
         logger.info(f"Launching node {node.id} in iTerm")
         logger.debug(f"  Working dir: {node.node_dir}")

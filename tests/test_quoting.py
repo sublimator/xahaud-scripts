@@ -14,7 +14,10 @@ def test_applescript_string_escapes_applescript_literal_chars() -> None:
 
 
 def test_shell_export_rejects_invalid_env_names() -> None:
-    assert shell_export("GOOD_NAME_1", "value with space") == "export GOOD_NAME_1='value with space'"
+    assert (
+        shell_export("GOOD_NAME_1", "value with space")
+        == "export GOOD_NAME_1='value with space'"
+    )
 
     with pytest.raises(ValueError, match="shell identifiers"):
         shell_export("BAD-NAME", "value")

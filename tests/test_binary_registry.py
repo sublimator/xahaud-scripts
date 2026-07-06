@@ -55,7 +55,9 @@ def test_registry_paths_honor_xdg_env(
 
     assert config_dir() == tmp_path / "config-root" / "xahaud-scripts"
     assert cache_dir() == tmp_path / "cache-root" / "xahaud-scripts"
-    assert manifest_path() == tmp_path / "config-root" / "xahaud-scripts" / "binaries.json"
+    assert (
+        manifest_path() == tmp_path / "config-root" / "xahaud-scripts" / "binaries.json"
+    )
     assert binary_cache_dir() == tmp_path / "cache-root" / "xahaud-scripts" / "binaries"
 
 
@@ -237,8 +239,7 @@ def test_build_reconfigures_existing_build_dir_without_cmake_cache(
     )
     monkeypatch.setattr(
         "xahaud_scripts.run_tests.cmake_build",
-        lambda build_dir_arg, **_kwargs: calls.append(("build", build_dir_arg))
-        or True,
+        lambda build_dir_arg, **_kwargs: calls.append(("build", build_dir_arg)) or True,
     )
 
     assert build_rippled(
