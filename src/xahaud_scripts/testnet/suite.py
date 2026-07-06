@@ -43,6 +43,7 @@ from xahaud_scripts.testnet.scenario import (
 )
 from xahaud_scripts.testnet.topology import (
     Edge,
+    disconnect_managed_peer,
     format_edges,
     parse_edge_specs,
     parse_node_ref,
@@ -518,10 +519,12 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
         logger.info(f"Runtime topology before apply: {format_edges(current)}")
         if exact:
             for source, target in sorted(current - expected):
-                target_node = _node_by_id(network.nodes, target)
                 logger.info(f"Runtime topology disconnect n{source}->n{target}")
-                result = network.rpc_client.disconnect(
-                    source, "127.0.0.1", target_node.port_peer
+                result = disconnect_managed_peer(
+                    network.rpc_client,
+                    network.nodes,
+                    source=source,
+                    target=target,
                 )
                 require_rpc_success(result, f"n{source}->n{target} disconnect")
         for source, target in sorted(expected - current):
@@ -545,10 +548,12 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
 
     for spec in topo.get("disconnect", []) or []:
         source, target = parse_edge_specs([spec]).pop()
-        target_node = _node_by_id(network.nodes, target)
         logger.info(f"Runtime topology disconnect n{source}->n{target}")
-        result = network.rpc_client.disconnect(
-            source, "127.0.0.1", target_node.port_peer
+        result = disconnect_managed_peer(
+            network.rpc_client,
+            network.nodes,
+            source=source,
+            target=target,
         )
         require_rpc_success(result, f"n{source}->n{target} disconnect")
     for spec in topo.get("connect", []) or []:

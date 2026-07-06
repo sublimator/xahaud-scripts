@@ -56,6 +56,7 @@ from xahaud_scripts.testnet.topology import (
     Edge,
     TopologySnapshot,
     all_nodes,
+    disconnect_managed_peer,
     format_edges,
     normalize_edges,
     require_rpc_success,
@@ -1673,8 +1674,12 @@ class ScenarioContext:
         """
         self._topology_nodes([source, target])
         started = now_marker(name or f"disconnect-n{source}-n{target}-start")
-        target_node = self._node_info(target)
-        result = self.rpc.disconnect(source, "127.0.0.1", target_node.port_peer)
+        result = disconnect_managed_peer(
+            self.rpc,
+            self._network.nodes,
+            source=source,
+            target=target,
+        )
         require_rpc_success(result, f"n{source}->n{target} disconnect")
 
         if wait:
@@ -1735,8 +1740,12 @@ class ScenarioContext:
 
         current = self.topology_snapshot(nodes=target_nodes).outbound_edges
         for source, target in sorted(current - expected):
-            target_node = self._node_info(target)
-            result = self.rpc.disconnect(source, "127.0.0.1", target_node.port_peer)
+            result = disconnect_managed_peer(
+                self.rpc,
+                self._network.nodes,
+                source=source,
+                target=target,
+            )
             require_rpc_success(result, f"n{source}->n{target} disconnect")
         for source, target in sorted(expected - current):
             target_node = self._node_info(target)

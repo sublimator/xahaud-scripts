@@ -28,6 +28,19 @@ class PeerRPC(Protocol):
         ...
 
 
+class DisconnectRPC(PeerRPC, Protocol):
+    """Peer RPC subset that can also disconnect a live endpoint."""
+
+    def disconnect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to disconnect from a peer endpoint."""
+        ...
+
+
 @dataclass(frozen=True)
 class TopologySnapshot:
     """Live peer graph among managed testnet nodes."""
@@ -185,6 +198,20 @@ def peer_address_to_node_id(
     return port_to_node.get(port)
 
 
+def peer_address_endpoint(address: str | None) -> tuple[str, int] | None:
+    """Parse a peer RPC address into an ``(ip, port)`` endpoint."""
+    if not address or ":" not in address:
+        return None
+    host, port_text = address.rsplit(":", 1)
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    if not host or port <= 0:
+        return None
+    return host, port
+
+
 def node_identity_map(rpc: PeerRPC, nodes: list[NodeInfo]) -> dict[str, int]:
     """Map known validator and overlay peer public keys to managed node ids."""
     key_to_node = {node.public_key: node.id for node in nodes}
@@ -253,6 +280,61 @@ def snapshot_topology(
         raw_peers=raw_peers,
         unreachable_nodes=unreachable_nodes,
     )
+
+
+def managed_peer_endpoint(
+    rpc: PeerRPC,
+    nodes: list[NodeInfo],
+    *,
+    source: int,
+    target: int,
+) -> tuple[str, int] | None:
+    """Return the live endpoint ``source`` sees for managed peer ``target``.
+
+    ``disconnect`` matches an active peer's remote endpoint, not necessarily the
+    target's listening peer port. For inbound connections that remote endpoint
+    is often an ephemeral source port, so resolve by the peer identity exposed by
+    ``peers`` before falling back to the managed listen port.
+    """
+    peers = rpc.peers(source)
+    if peers is None:
+        return None
+
+    port_to_node = {node.port_peer: node.id for node in nodes}
+    key_to_node = node_identity_map(rpc, nodes)
+
+    for peer in peers:
+        address = peer.get("address")
+        endpoint = peer_address_endpoint(address)
+        if endpoint is None:
+            continue
+
+        peer_key = peer.get("public_key")
+        if isinstance(peer_key, str) and key_to_node.get(peer_key) == target:
+            return endpoint
+
+        if peer_address_to_node_id(address, port_to_node=port_to_node) == target:
+            return endpoint
+
+    return None
+
+
+def disconnect_managed_peer(
+    rpc: DisconnectRPC,
+    nodes: list[NodeInfo],
+    *,
+    source: int,
+    target: int,
+) -> dict[str, Any] | None:
+    """Disconnect ``source`` from managed ``target`` using the live endpoint."""
+    endpoint = managed_peer_endpoint(rpc, nodes, source=source, target=target)
+    if endpoint is None:
+        target_node = next((node for node in nodes if node.id == target), None)
+        if target_node is None:
+            raise ValueError(f"Unknown target node: n{target}")
+        endpoint = ("127.0.0.1", target_node.port_peer)
+    ip, port = endpoint
+    return rpc.disconnect(source, ip, port)
 
 
 def topology_diff(

@@ -45,6 +45,7 @@ from xahaud_scripts.testnet.monitor import (
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
+from xahaud_scripts.testnet.topology import disconnect_managed_peer
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 
 logger = make_logger(__name__)
@@ -1353,7 +1354,12 @@ def disconnect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
         if tgt_node is None:
             raise click.ClickException(f"Unknown node: n{tgt_id}")
 
-        result = network.rpc_client.disconnect(src_id, "127.0.0.1", tgt_node.port_peer)
+        result = disconnect_managed_peer(
+            network.rpc_client,
+            network.nodes,
+            source=src_id,
+            target=tgt_id,
+        )
         if result is None:
             click.echo(f"n{src_id} ✕ n{tgt_id}: failed (offline?)")
         elif result.get("status") == "success":

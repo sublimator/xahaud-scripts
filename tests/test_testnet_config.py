@@ -41,6 +41,7 @@ from xahaud_scripts.testnet.suite import (
     _create_network,
     _parse_topology_nodes,
 )
+from xahaud_scripts.testnet.topology import disconnect_managed_peer
 
 
 def _name_to_hash(name: str) -> str:
@@ -521,20 +522,26 @@ class _TopologyRPC:
         *,
         connect_result: dict[str, Any] | None = None,
         disconnect_result: dict[str, Any] | None = None,
+        peers_by_node: dict[int, list[dict[str, Any]]] | None = None,
+        pubkey_node_by_node: dict[int, str] | None = None,
     ) -> None:
         self.connect_result = connect_result or {"status": "success"}
         self.disconnect_result = disconnect_result or {"status": "success"}
+        self.peers_by_node = peers_by_node or {}
+        self.pubkey_node_by_node = pubkey_node_by_node or {}
+        self.disconnect_calls: list[tuple[int, str, int]] = []
 
     def server_info(self, node_id: int) -> dict[str, Any]:
-        return {"node": node_id}
+        return {"info": {"pubkey_node": self.pubkey_node_by_node.get(node_id)}}
 
     def peers(self, node_id: int) -> list[dict[str, Any]]:
-        return []
+        return self.peers_by_node.get(node_id, [])
 
     def connect(self, node_id: int, ip: str, port: int) -> dict[str, Any] | None:
         return self.connect_result
 
     def disconnect(self, node_id: int, ip: str, port: int) -> dict[str, Any] | None:
+        self.disconnect_calls.append((node_id, ip, port))
         return self.disconnect_result
 
 
@@ -610,3 +617,44 @@ def test_apply_runtime_topology_surfaces_connect_rpc_errors():
             cast(Any, network),
             {"topology": {"edges": ["n0->n1"], "stable_for": 0}},
         )
+
+
+def test_disconnect_managed_peer_uses_live_inbound_endpoint():
+    rpc = _TopologyRPC(
+        peers_by_node={
+            0: [
+                {
+                    "address": "127.0.0.1:64001",
+                    "public_key": "nodepk1",
+                    "inbound": True,
+                }
+            ]
+        },
+        pubkey_node_by_node={1: "nodepk1"},
+    )
+    network = _TopologyNetwork(fixed_peers=False, rpc_client=rpc)
+
+    result = disconnect_managed_peer(
+        cast(Any, rpc),
+        network.nodes,
+        source=0,
+        target=1,
+    )
+
+    assert result == {"status": "success"}
+    assert rpc.disconnect_calls == [(0, "127.0.0.1", 64001)]
+
+
+def test_disconnect_managed_peer_falls_back_to_listen_port_when_peer_not_visible():
+    rpc = _TopologyRPC()
+    network = _TopologyNetwork(fixed_peers=False, rpc_client=rpc)
+
+    result = disconnect_managed_peer(
+        cast(Any, rpc),
+        network.nodes,
+        source=0,
+        target=1,
+    )
+
+    assert result == {"status": "success"}
+    assert rpc.disconnect_calls == [(0, "127.0.0.1", DEFAULT_BASE_PORT_PEER + 1)]
