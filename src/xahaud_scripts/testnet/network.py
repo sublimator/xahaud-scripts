@@ -790,7 +790,11 @@ class TestNetwork:
         return new_cmd
 
     def restart_node_with_binary(
-        self, node_id: int, binary_path: Path, delay: float = 0
+        self,
+        node_id: int,
+        binary_path: Path,
+        delay: float = 0,
+        verify_timeout: float = 60,
     ) -> dict[int, bool]:
         """Restart a node into a different binary (stop, rewrite launch, start).
 
@@ -798,15 +802,25 @@ class TestNetwork:
             node_id: Node to restart into the new binary.
             binary_path: Path to the new rippled binary.
             delay: Seconds to wait between stop and start.
+            verify_timeout: Seconds to poll the node's RPC for liveness after the
+                restart. restart_nodes reports success optimistically (SIGTERM +
+                command dispatch), so without this a node that failed to rebind its
+                ports would look like a successful upgrade. Set to 0 to skip the
+                (blocking) poll — async callers doing their own await-based liveness
+                check should pass 0 to avoid stalling their event loop.
 
         Returns:
-            Dict mapping node_id -> success, matching restart_nodes. NOTE this is
-            OPTIMISTIC: it reflects SIGTERM delivery and command dispatch, not that
-            the new process bound its ports and rejoined consensus. A rolling
-            upgrade should verify each node actually came back (RPC responsive +
-            ledger advancing) before restarting the next.
+            Dict mapping node_id -> success from the restart dispatch.
+
+        Raises:
+            TimeoutError: if verify_timeout > 0 and the node does not answer RPC
+                within the window — a restart that never came back is a hard
+                failure, not a spurious success.
         """
         self._ensure_controllable()
+        # Resolve to an absolute path first: tmux runs each node from its own dir,
+        # so a relative path would validate here (caller cwd) yet fail to exec there.
+        binary_path = binary_path.resolve()
         # Fail loud on a bad binary before touching the node: raw path specs are
         # unvalidated and the tmux launcher's fire-and-forget start would report
         # success even if the process cannot exec (leaving the node silently down).
@@ -815,7 +829,29 @@ class TestNetwork:
                 f"Cannot swap n{node_id}: not an executable binary: {binary_path}"
             )
         self.rebuild_launch_command(node_id, binary_path)
-        return self.restart_nodes([node_id], delay=delay)
+        result = self.restart_nodes([node_id], delay=delay)
+        if (
+            verify_timeout > 0
+            and result.get(node_id)
+            and not self._wait_node_responsive(node_id, timeout=verify_timeout)
+        ):
+            raise TimeoutError(
+                f"n{node_id} did not answer RPC on {binary_path} within "
+                f"{verify_timeout:.0f}s of restarting into the new binary"
+            )
+        return result
+
+    def _wait_node_responsive(
+        self, node_id: int, timeout: float = 60, poll: float = 1.0
+    ) -> bool:
+        """Poll server_info until the node answers RPC, or timeout (blocking)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.server_info(node_id):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(poll)
 
     def get_exit_status(self, node_id: int) -> int | None:
         """Get the exit status of a stopped node's process.

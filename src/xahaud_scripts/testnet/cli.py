@@ -157,7 +157,9 @@ def _create_network(
     "--xahaud-root",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="Path to xahaud repository (default: inferred via git)",
+    help="Path to the xahaud repo. OPTIONAL when run from inside a xahaud "
+    "checkout — auto-detected by walking up for CMakeLists.txt + .git (or set "
+    "XAHAUD_ROOT). Only needed when run from elsewhere.",
 )
 @click.option(
     "--rippled-path",

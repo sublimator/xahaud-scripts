@@ -1805,7 +1805,7 @@ class ScenarioContext:
         return self._network.start_nodes(nodes)
 
     async def restart_node_with_binary(
-        self, node_id: int, binary: str, *, delay: float = 0
+        self, node_id: int, binary: str, *, delay: float = 0, verify_timeout: float = 60
     ) -> dict[int, bool]:
         """Restart a node into a DIFFERENT binary (rolling upgrade).
 
@@ -1818,14 +1818,35 @@ class ScenarioContext:
             node_id: Node to restart into the new binary.
             binary: ``@alias`` (e.g. ``"@new"``) or a path to a rippled binary.
             delay: Seconds to wait between stop and start.
+            verify_timeout: Seconds to wait (async) for the node to answer RPC
+                again after the restart. The start itself is optimistic, so this
+                gate turns a node that failed to come back into a reported failure
+                rather than a spurious success. 0 skips the wait.
 
         Returns:
-            Dict mapping node_id -> success, matching stop_nodes/start_nodes.
+            Dict mapping node_id -> success from the restart dispatch.
+
+        Raises:
+            TimeoutError: if verify_timeout > 0 and the node does not answer RPC
+                within the window.
         """
         from xahaud_scripts.binary_registry import resolve_binary_spec
 
         binary_path = resolve_binary_spec(binary)
-        return self._network.restart_node_with_binary(node_id, binary_path, delay=delay)
+        # verify_timeout=0 to the network layer: its poll is BLOCKING and would
+        # stall this event loop; verify liveness with an async wait here instead.
+        result = self._network.restart_node_with_binary(
+            node_id, binary_path, delay=delay, verify_timeout=0
+        )
+        if verify_timeout > 0 and result.get(node_id):
+            # wait_for_nodes raises TimeoutError if the node never answers RPC —
+            # a failed rolling-upgrade restart should halt the scenario loudly.
+            await self.wait_for_nodes(
+                lambda x: bool(self.rpc.server_info(x)),
+                nodes=[node_id],
+                timeout=verify_timeout,
+            )
+        return result
 
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:
         """Capture terminal output from a node."""
