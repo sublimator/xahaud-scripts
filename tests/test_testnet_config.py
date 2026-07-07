@@ -37,7 +37,10 @@ from xahaud_scripts.testnet.config import (
     resolve_feature_name,
 )
 from xahaud_scripts.testnet.generator import generate_node_config
+from xahaud_scripts.testnet.network import TestNetwork
+from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.suite import (
+    SuiteConfig,
     _apply_runtime_topology,
     _build_launch_config,
     _create_network,
@@ -49,6 +52,12 @@ from xahaud_scripts.testnet.topology import disconnect_managed_peer
 
 def _name_to_hash(name: str) -> str:
     return hashlib.sha512(name.encode()).digest()[:32].hex().upper()
+
+
+def _write_executable(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
 
 
 # --- feature_name_to_hash ---
@@ -531,6 +540,71 @@ def test_suite_launch_config_uses_supplied_rippled_path(tmp_path: Path):
     assert launch.rippled_path == binary
 
 
+def test_suite_effective_network_merges_node_binaries() -> None:
+    suite = SuiteConfig(
+        defaults={"network": {"node_binaries": {0: "/default-n0", 1: "/default-n1"}}},
+        tests=[],
+    )
+
+    config = suite.effective_network({"network": {"node_binaries": {1: "/test-n1"}}})
+
+    assert config["node_binaries"] == {0: "/default-n0", 1: "/test-n1"}
+
+
+def test_suite_launch_config_uses_node_binary_paths(tmp_path: Path) -> None:
+    n1_binary = tmp_path / "bins" / "n1-rippled"
+    n2_binary = tmp_path / "bins" / "n2-rippled"
+    _write_executable(n1_binary)
+    _write_executable(n2_binary)
+    default_binary = tmp_path / "build" / "rippled"
+
+    launch = _build_launch_config(
+        tmp_path,
+        {
+            "node_count": 3,
+            "node_binaries": {1: str(n1_binary), "n2": str(n2_binary)},
+        },
+        network_config=NetworkConfig(node_count=3),
+        rippled_path=default_binary,
+    )
+
+    assert launch.get_rippled_path(0) == default_binary
+    assert launch.get_rippled_path(1) == n1_binary.resolve()
+    assert launch.get_rippled_path(2) == n2_binary.resolve()
+
+
+def test_suite_launch_config_resolves_node_binary_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "saved" / "rippled"
+    _write_executable(binary)
+    config_home = tmp_path / "config"
+    manifest_dir = config_home / "xahaud-scripts"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "binaries.json").write_text(
+        json.dumps({"old-release": {"path": str(binary)}})
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    launch = _build_launch_config(
+        tmp_path,
+        {"node_count": 2, "node_binaries": {"n1": "@old-release"}},
+        network_config=NetworkConfig(node_count=2),
+    )
+
+    assert launch.get_rippled_path(1) == binary.resolve()
+
+
+def test_suite_launch_config_rejects_out_of_range_node_binary(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="outside this 2-node network"):
+        _build_launch_config(
+            tmp_path,
+            {"node_count": 2, "node_binaries": {"n2": "/bin/sh"}},
+            network_config=NetworkConfig(node_count=2),
+        )
+
+
 def test_suite_cli_passes_group_rippled_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -716,6 +790,106 @@ def test_run_rejects_non_executable_peer_node_binary(tmp_path: Path):
 
     assert result.exit_code != 0
     assert "not an executable file" in result.output
+
+
+class _RunScenarioLauncher:
+    def launch(self, _node: NodeInfo, _config: LaunchConfig) -> bool:
+        return True
+
+    def finalize(self) -> None:
+        pass
+
+    def shutdown(self, base_dir: Path, _process_manager: Any) -> int:
+        return len(list(base_dir.glob("n[0-9]*")))
+
+
+class _RunScenarioProcessManager:
+    def check_ports_free(self, _ports: list[int]) -> dict[int, list[dict[str, str]]]:
+        return {}
+
+    def get_port_state(self, _port: int) -> list[dict[str, str]]:
+        return []
+
+    def kill(self, _pid: int) -> None:
+        pass
+
+
+def test_run_scenario_failure_archives_logs_before_teardown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_dir = tmp_path / "testnet"
+    node_dir = base_dir / "n0"
+    node_dir.mkdir(parents=True)
+    (node_dir / "xahaud.cfg").write_text("[server]\n")
+    (node_dir / "debug.log").write_text("N0 01:02:03 +00 failure clue\n")
+    db_dir = node_dir / "db"
+    db_dir.mkdir()
+    (db_dir / "ledger.db").write_text("large")
+
+    network = TestNetwork(
+        base_dir=base_dir,
+        network_config=NetworkConfig(node_count=1),
+        launcher=cast(Any, _RunScenarioLauncher()),
+        rpc_client=RequestsRPCClient(DEFAULT_BASE_PORT_RPC),
+        process_manager=cast(Any, _RunScenarioProcessManager()),
+    )
+    network._nodes = [
+        NodeInfo(
+            id=0,
+            public_key="pk0",
+            token="tok0",
+            config_path=node_dir / "xahaud.cfg",
+            port_peer=DEFAULT_BASE_PORT_PEER,
+            port_rpc=DEFAULT_BASE_PORT_RPC,
+            port_ws=DEFAULT_BASE_PORT_WS,
+        )
+    ]
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.cli._create_network",
+        lambda *_args, **_kwargs: network,
+    )
+
+    async def fail_scenario(**_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.scenario.run_scenario_with_monitor",
+        fail_scenario,
+    )
+
+    script = tmp_path / "bad_scenario.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\n")
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "run",
+            "--node-count",
+            "1",
+            "--scenario-script",
+            str(script),
+            "--teardown",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert not node_dir.exists()
+    latest = tmp_path / ".testnet" / "output" / "runs" / "latest" / "bad_scenario"
+    assert (latest / "n0" / "debug.log").read_text() == (
+        "N0 01:02:03 +00 failure clue\n"
+    )
+    assert not (latest / "n0" / "db").exists()
+    assert (latest / "network.json").exists()
+    assert (latest / "scenario.log").exists()
+    failures = sorted(
+        (tmp_path / ".testnet" / "output" / "runs").glob("*-bad_scenario")
+    )
+    assert len(failures) == 1
+    assert (failures[0] / "n0" / "debug.log").exists()
 
 
 class _TopologyRPC:

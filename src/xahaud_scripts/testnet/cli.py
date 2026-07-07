@@ -867,6 +867,30 @@ def run(
             except KeyboardInterrupt:
                 logger.info("Scenario interrupted")
 
+        if not scenario_passed:
+            from xahaud_scripts.testnet.suite import archive_failed_run
+
+            archive_name = scenario_script.stem or "scenario"
+            runs_dir = xahaud_root / ".testnet" / "output" / "runs"
+            try:
+                snapshot_dir = archive_failed_run(
+                    network,
+                    archive_name,
+                    runs_dir=runs_dir,
+                    scenario_log=log_file,
+                )
+                logger.info(f"Archived failed scenario run: {snapshot_dir}")
+                logger.info(
+                    "Search archived logs with: "
+                    f"x-testnet logs-search --run latest/{archive_name} PATTERN"
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to archive scenario logs before teardown; "
+                    "skipping teardown to preserve live node dirs"
+                )
+                teardown = False
+
         if teardown:
             count = network.teardown()
             logger.info(f"Teardown: killed {count} processes")
@@ -2155,8 +2179,8 @@ def hooks_server(host: str, port: int, errors: tuple[str, ...]) -> None:
     "run_name",
     default=None,
     help=(
-        "Search archived suite run under .testnet/output/runs. Use a run dir "
-        "name, 'latest/<test>', or just '<test>' for latest/<test>."
+        "Search archived suite/scenario run under .testnet/output/runs. Use a "
+        "run dir name, 'latest/<name>', or just '<name>' for latest/<name>."
     ),
 )
 @click.pass_context

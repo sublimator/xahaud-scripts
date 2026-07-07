@@ -15,6 +15,7 @@ import ast
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
 import time
@@ -26,6 +27,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from xahaud_scripts.binary_registry import resolve_binary_spec
 from xahaud_scripts.testnet.config import (
     LaunchConfig,
     NetworkConfig,
@@ -59,7 +61,7 @@ logger = make_logger(__name__)
 
 # Keys within ``network:`` that are merged as dicts (test values override
 # defaults per-key).  All other network keys are replaced entirely.
-_DICT_MERGE_KEYS = {"log_levels", "env"}
+_DICT_MERGE_KEYS = {"log_levels", "env", "node_binaries"}
 
 
 @dataclass
@@ -80,9 +82,11 @@ class SuiteConfig:
     YAML structure::
 
         defaults:
-          network:          # default network config
-            node_count: 5
-            env: { ... }
+            network:          # default network config
+              node_count: 5
+              node_binaries:
+                2: "@old-release"
+              env: { ... }
           params:           # default scenario params (optional)
             min_txns: 5
 
@@ -292,6 +296,54 @@ def _validated_node_env(raw: Any) -> dict[int, dict[str, str]]:
     return result
 
 
+def _validated_node_binaries(raw: Any, *, node_count: int) -> dict[int, Path]:
+    """Validate and resolve the YAML node_binaries mapping."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("network.node_binaries must be a mapping of node_id: binary")
+
+    result: dict[int, Path] = {}
+    for node_id_raw, spec_raw in raw.items():
+        try:
+            node_id = parse_node_ref(node_id_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"network.node_binaries key must be a node id: {node_id_raw!r}"
+            ) from exc
+
+        if node_id < 0 or node_id >= node_count:
+            raise ValueError(
+                f"network.node_binaries n{node_id} is outside this "
+                f"{node_count}-node network"
+            )
+
+        if not isinstance(spec_raw, (str, Path)):
+            raise ValueError(
+                f"network.node_binaries.n{node_id} must be an @alias or path"
+            )
+        spec = str(spec_raw)
+        if not spec:
+            raise ValueError(
+                f"network.node_binaries.n{node_id} must be an @alias or path"
+            )
+
+        try:
+            binary_path = resolve_binary_spec(spec)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"network.node_binaries.n{node_id}: {exc}") from exc
+
+        binary_path = binary_path.expanduser().resolve()
+        if not binary_path.is_file() or not os.access(binary_path, os.X_OK):
+            raise ValueError(
+                f"network.node_binaries.n{node_id}: binary is not an "
+                f"executable file: {spec} -> {binary_path}"
+            )
+        result[node_id] = binary_path
+
+    return result
+
+
 def _merge_env_override(
     config: dict[str, Any],
     env_override: dict[str, str] | None,
@@ -316,32 +368,45 @@ def _validate_network_env(config: dict[str, Any]) -> None:
 
 def _snapshot_test(network: TestNetwork, dest: Path) -> None:
     """Copy node dirs and network.json from live testnet into dest."""
-    dest.mkdir(parents=True, exist_ok=True)
+    network.copy_snapshot_to(dest, active_nodes_only=True)
 
-    # Copy only this run's nodes. The live testnet directory may contain stale
-    # n* dirs from an earlier larger network because teardown keeps logs.
-    for node in network.nodes:
-        node_dir = network.base_dir / f"n{node.id}"
-        if not node_dir.is_dir():
-            continue
-        target = dest / node_dir.name
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(
-            node_dir,
-            target,
-            ignore=shutil.ignore_patterns("db"),
-        )
 
-    active = {f"n{node.id}" for node in network.nodes}
-    for stale in sorted(dest.glob("n[0-9]*")):
-        if stale.is_dir() and stale.name not in active:
-            shutil.rmtree(stale)
+def _unique_failure_dir(runs_dir: Path, name: str) -> Path:
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    candidate = runs_dir / f"{timestamp}-{name}"
+    suffix = 2
+    while candidate.exists():
+        candidate = runs_dir / f"{timestamp}-{name}-{suffix}"
+        suffix += 1
+    return candidate
 
-    # Copy network.json
-    network_json = network.base_dir / "network.json"
-    if network_json.exists():
-        shutil.copy2(network_json, dest / "network.json")
+
+def archive_failed_run(
+    network: TestNetwork,
+    name: str,
+    *,
+    runs_dir: Path | None = None,
+    scenario_log: Path | None = None,
+) -> Path:
+    """Archive a failed run under output/runs/latest and a timestamped dir."""
+    runs_dir = runs_dir or (network.base_dir.parent / ".testnet" / "output" / "runs")
+    latest_dir = runs_dir / "latest" / name
+    latest_dir.mkdir(parents=True, exist_ok=True)
+
+    _snapshot_test(network, latest_dir)
+    if scenario_log is not None and scenario_log.exists():
+        dest_log = latest_dir / "scenario.log"
+        # Guard against a self-copy: suite runs pass their own
+        # latest/<name>/scenario.log here, which shutil.copy2 rejects with
+        # SameFileError (previously swallowed → failed suite tests lost their
+        # timestamped archive).
+        if scenario_log.resolve() != dest_log.resolve():
+            shutil.copy2(scenario_log, dest_log)
+
+    fail_dir = _unique_failure_dir(runs_dir, name)
+    shutil.copytree(latest_dir, fail_dir)
+    logger.info(f"Failure snapshot: {fail_dir}")
+    return fail_dir
 
 
 def _create_network(
@@ -427,6 +492,10 @@ def _build_launch_config(
 
     # Per-node environment variables: node_env: {3: {KEY: VAL}, 4: {KEY: VAL}}
     node_env = _validated_node_env(config.get("node_env", {}))
+    node_rippled_paths = _validated_node_binaries(
+        config.get("node_binaries", {}),
+        node_count=network_config.node_count,
+    )
 
     # Suite-level rc specs use the same startup env path as `x-testnet run
     # --rc`, so delayed/dropped links are active from node launch.
@@ -468,6 +537,7 @@ def _build_launch_config(
         extra_args=[],
         extra_env=extra_env,
         node_env=node_env,
+        node_rippled_paths=node_rippled_paths,
     )
 
 
@@ -738,17 +808,17 @@ def _run_one_test(
 
         duration = time.monotonic() - start
 
-        # 6. Always snapshot to latest/
-        _snapshot_test(network, latest_dir)
-
         snapshot_dir = None
         if not passed and snapshot_on_fail:
-            # Preserve a timestamped copy for failure investigation
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            fail_dir = runs_dir / f"{timestamp}-{name}"
-            shutil.copytree(latest_dir, fail_dir)
-            logger.info(f"Failure snapshot: {fail_dir}")
-            snapshot_dir = fail_dir
+            snapshot_dir = archive_failed_run(
+                network,
+                name,
+                runs_dir=runs_dir,
+                scenario_log=per_test_log,
+            )
+        else:
+            # 6. Always snapshot to latest/
+            _snapshot_test(network, latest_dir)
 
         # Kill processes but keep dirs — the next test's pre-test
         # teardown (or the user) handles cleanup.
@@ -771,11 +841,12 @@ def _run_one_test(
         snapshot_dir = None
         if snapshot_on_fail:
             with contextlib.suppress(Exception):
-                _snapshot_test(network, latest_dir)
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                fail_dir = runs_dir / f"{timestamp}-{name}"
-                shutil.copytree(latest_dir, fail_dir)
-                snapshot_dir = fail_dir
+                snapshot_dir = archive_failed_run(
+                    network,
+                    name,
+                    runs_dir=runs_dir,
+                    scenario_log=per_test_log,
+                )
         network.teardown(keep_dirs=True)
         return TestResult(
             name=name,
@@ -855,6 +926,10 @@ def run_suite(
             config = suite.effective_network(test)
             _merge_env_override(config, env_override)
             _validate_network_env(config)
+            node_binaries = _validated_node_binaries(
+                config.get("node_binaries", {}),
+                node_count=config.get("node_count", 5),
+            )
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
             console.print(f"     script: {test['script']}")
             params = test.get("_params")
@@ -872,6 +947,8 @@ def run_suite(
             rc = config.get("rc", [])
             if rc:
                 console.print(f"     rc: {rc}")
+            if node_binaries:
+                console.print(f"     node_binaries: {node_binaries}")
             topology = config.get("topology") or config.get("runtime_topology")
             if topology:
                 console.print(f"     topology: {topology}")

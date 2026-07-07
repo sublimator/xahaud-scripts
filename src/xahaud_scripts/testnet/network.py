@@ -903,16 +903,11 @@ class TestNetwork:
         snap_base = self._base_dir.parent / ".testnet" / "output" / "snapshots"
         snapshot_dir = snap_base / dir_name
 
-        exclude: list[str] = []
-        if not keep_db:
-            exclude.append("db")
-
         logger.info(f"Snapshotting {self._base_dir} -> {snapshot_dir}")
 
-        shutil.copytree(
-            self._base_dir,
+        self.copy_snapshot_to(
             snapshot_dir,
-            ignore=shutil.ignore_patterns(*exclude),
+            keep_db=keep_db,
         )
 
         # Write metadata.json at snapshot root
@@ -945,3 +940,48 @@ class TestNetwork:
 
         logger.info(f"Snapshot saved to {snapshot_dir}")
         return snapshot_dir
+
+    def copy_snapshot_to(
+        self,
+        dest: Path,
+        *,
+        keep_db: bool = False,
+        active_nodes_only: bool = False,
+    ) -> None:
+        """Copy network artifacts to ``dest``.
+
+        ``active_nodes_only`` is used for archived test runs: it copies only the
+        generated nodes in ``network.json``/``self.nodes`` so stale node dirs from
+        earlier larger networks do not pollute logs-search results.
+        """
+        if not self._nodes:
+            self._load_network_info()
+
+        exclude: list[str] = []
+        if not keep_db:
+            exclude.append("db")
+        ignore = shutil.ignore_patterns(*exclude) if exclude else None
+
+        if not active_nodes_only:
+            shutil.copytree(self._base_dir, dest, ignore=ignore)
+            return
+
+        dest.mkdir(parents=True, exist_ok=True)
+
+        for node in self._nodes:
+            node_dir = self._base_dir / f"n{node.id}"
+            if not node_dir.is_dir():
+                continue
+            target = dest / node_dir.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(node_dir, target, ignore=ignore)
+
+        active = {f"n{node.id}" for node in self._nodes}
+        for stale in sorted(dest.glob("n[0-9]*")):
+            if stale.is_dir() and stale.name not in active:
+                shutil.rmtree(stale)
+
+        network_json = self._base_dir / "network.json"
+        if network_json.exists():
+            shutil.copy2(network_json, dest / "network.json")

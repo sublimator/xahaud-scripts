@@ -365,6 +365,8 @@ defaults:
     node_count: 5
     launcher: tmux
     fixed_peers: false   # omit [ips_fixed]; scenario/suite controls topology
+    node_binaries:
+      2: "@old-release"  # quote @aliases; paths are also accepted
     topology:
       edges: ["n0->n1", "n1->n0", "n1->n2", "n2->n1"]
       exact: true
@@ -379,13 +381,18 @@ tests:
     script: path/to/script.py
     network:              # overrides/merges with defaults.network
       node_count: 7
+      node_binaries:
+        n3: /path/to/rippled
       env:
         EXTRA_VAR: "1"    # merged into defaults.network.env
     params:               # overrides/merges with defaults.params
       drop_count: 3
 ```
 
-Dict keys (``env``, ``log_levels``) are shallow-merged; all other keys replace.
+``node_binaries`` maps node ids (``0`` or ``n0``) to a saved binary alias or path,
+for example ``"@old-release"`` or ``/path/to/rippled``. Dict keys
+(``env``, ``log_levels``, ``node_binaries``) are shallow-merged; all other keys
+replace.
 
 ``fixed_peers`` defaults to ``true`` for backwards compatibility, generating the
 usual full-mesh ``[ips_fixed]`` config. Use ``fixed_peers: false`` for topology
