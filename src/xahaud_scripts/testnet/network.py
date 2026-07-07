@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -193,6 +194,43 @@ class TestNetwork:
 
         return self._process_mgr.check_ports_free(ports)
 
+    def _verify_loopback_aliases(self) -> None:
+        """Fail loud if the loopback aliases a localhost mesh needs are missing.
+
+        Each node dials its peers at a distinct 127.0.0.<id+1> (the peerfinder
+        dedups fixed peers by IP address, so reusing 127.0.0.1 collapses the
+        mesh to ~1 peer). On macOS those 127.0.0.2+ aliases must be created
+        (`x-testnet setup-aliases`); Linux routes all of 127/8 already.
+        """
+        if sys.platform != "darwin" or not self._config.fixed_peers:
+            return
+        count = len(self._nodes) if self._nodes else self._config.node_count
+        required = [f"127.0.0.{i + 1}" for i in range(1, count)]
+        if not required:
+            return
+        try:
+            out = subprocess.run(
+                ["ifconfig", "lo0"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return  # can't verify; don't block launch
+        present = {
+            line.split()[1]
+            for line in out.splitlines()
+            if line.strip().startswith("inet ")
+        }
+        missing = [ip for ip in required if ip not in present]
+        if missing:
+            raise RuntimeError(
+                "Missing macOS loopback aliases for the peer mesh: "
+                + ", ".join(missing)
+                + f"\n  Fix: x-testnet setup-aliases -n {count}"
+                + "\n  (or per alias: sudo ifconfig lo0 alias 127.0.0.X up)"
+            )
+
     def run(self, launch_config: LaunchConfig) -> None:
         """Launch all nodes and start monitoring.
 
@@ -204,6 +242,9 @@ class TestNetwork:
         # Load network info if not already loaded
         if not self._nodes:
             self._load_network_info()
+
+        # Localhost mesh needs per-node loopback aliases (macOS); fail loud if missing.
+        self._verify_loopback_aliases()
 
         # Wait for ports to become free before launching
         max_wait = 30  # seconds

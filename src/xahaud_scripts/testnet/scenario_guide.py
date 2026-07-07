@@ -371,8 +371,8 @@ defaults:
       edges: ["n0->n1", "n1->n0", "n1->n2", "n2->n1"]
       exact: true
       settle_timeout: 30
-    env:
-      XAHAU_RESOURCE_PER_PORT: "1"
+    env:                  # extra env vars exported for each node process
+      EXAMPLE_VAR: "value"
   params:                 # optional default scenario params
     min_txns: 5
 

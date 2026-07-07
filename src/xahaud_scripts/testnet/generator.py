@@ -244,7 +244,13 @@ def generate_node_config(
         for i in range(network_config.node_count):
             if i != node_id:
                 peer_port = network_config.port_peer(i)
-                ips_entries.append(f"127.0.0.1 {peer_port}")
+                # Distinct loopback address per peer (node i -> 127.0.0.{i+1}).
+                # rippled's peerfinder dedups fixed peers by IP address (ignoring
+                # port), so reusing 127.0.0.1 collapses them all into one candidate
+                # and the localhost mesh never forms. Distinct addresses avoid that
+                # with stock binaries. On macOS the 127.0.0.2+ aliases must exist
+                # (`x-testnet setup-aliases`); Linux routes all of 127/8 already.
+                ips_entries.append(f"127.0.0.{i + 1} {peer_port}")
         fixed_peers_section = f"""
 # Fixed persistent connections
 [ips_fixed]

@@ -400,8 +400,10 @@ def test_generate_node_config_full_mesh_fixed_peers_by_default(tmp_path: Path):
 
     text = cfg_path.read_text()
     assert "[ips_fixed]" in text
-    assert f"127.0.0.1 {DEFAULT_BASE_PORT_PEER + 1}" in text
-    assert f"127.0.0.1 {DEFAULT_BASE_PORT_PEER + 2}" in text
+    # Each peer gets a distinct loopback address (node i -> 127.0.0.{i+1}) so the
+    # peerfinder's address-based fixed-peer dedup doesn't collapse them.
+    assert f"127.0.0.2 {DEFAULT_BASE_PORT_PEER + 1}" in text
+    assert f"127.0.0.3 {DEFAULT_BASE_PORT_PEER + 2}" in text
 
 
 def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):

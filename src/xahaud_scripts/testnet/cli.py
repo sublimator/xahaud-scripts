@@ -1534,6 +1534,71 @@ def peer_addrs(ctx: click.Context, node_count: int | None, host: str) -> None:
             click.echo(f"{host}:{base_port + i}")
 
 
+@testnet.command("setup-aliases")
+@click.option(
+    "--node-count",
+    "-n",
+    type=click.IntRange(1, MAX_NODE_COUNT),
+    default=None,
+    help="Number of nodes (default: from network.json or 5)",
+)
+@click.option(
+    "--print-only",
+    is_flag=True,
+    help="Print the ifconfig commands instead of running them",
+)
+@click.pass_context
+def setup_aliases(ctx: click.Context, node_count: int | None, print_only: bool) -> None:
+    """Bring up loopback aliases 127.0.0.2..N for a localhost testnet.
+
+    Each node dials its peers at a distinct 127.0.0.<id+1>, because rippled's
+    peerfinder dedups fixed peers by IP address (ignoring port) -- so reusing
+    127.0.0.1 collapses the mesh to ~1 peer. macOS needs these aliases created;
+    Linux already routes all of 127/8 to loopback.
+
+    Examples:
+        x-testnet setup-aliases -n 7
+        x-testnet setup-aliases -n 7 --print-only
+    """
+    count = node_count
+    if count is None:
+        network = _create_network(ctx, node_count=None)
+        try:
+            network._load_network_info()
+            count = len(network.nodes)
+        except FileNotFoundError:
+            count = 5
+
+    if sys.platform.startswith("linux"):
+        click.echo("Linux routes all of 127.0.0.0/8 to loopback; no aliases needed.")
+        return
+    if sys.platform != "darwin":
+        click.echo(
+            f"setup-aliases is unimplemented for {sys.platform} -- PRs welcome. "
+            f"Make 127.0.0.2..127.0.0.{count} routable to loopback yourself."
+        )
+        return
+
+    aliases = [f"127.0.0.{i + 1}" for i in range(1, count)]
+    if not aliases:
+        click.echo("Single node uses 127.0.0.1 only; no aliases needed.")
+        return
+
+    cmds = [["sudo", "ifconfig", "lo0", "alias", ip, "up"] for ip in aliases]
+    if print_only:
+        for c in cmds:
+            click.echo(" ".join(c))
+        return
+
+    click.echo(
+        f"Adding {len(aliases)} loopback aliases (sudo may prompt): "
+        + ", ".join(aliases)
+    )
+    for c in cmds:
+        subprocess.run(c, check=True)
+    click.echo("Done. Verify with: ifconfig lo0 | grep 'inet 127'")
+
+
 @testnet.command("dump-conf")
 @click.pass_context
 def dump_conf(ctx: click.Context) -> None:
