@@ -215,8 +215,16 @@ class TestNetwork:
                 text=True,
                 check=True,
             ).stdout
-        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-            return  # can't verify; don't block launch
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+            # Couldn't verify -- don't hard-block, but surface it (not silent) so a
+            # mesh that fails to form isn't mistaken for the preflight passing.
+            logger.warning(
+                "Could not verify loopback aliases via ifconfig (%s); if the peer "
+                "mesh fails to form, run: x-testnet setup-aliases -n %d",
+                e,
+                count,
+            )
+            return
         present = {
             line.split()[1]
             for line in out.splitlines()

@@ -1594,8 +1594,15 @@ def setup_aliases(ctx: click.Context, node_count: int | None, print_only: bool) 
         f"Adding {len(aliases)} loopback aliases (sudo may prompt): "
         + ", ".join(aliases)
     )
-    for c in cmds:
-        subprocess.run(c, check=True)
+    for ip, c in zip(aliases, cmds, strict=True):
+        try:
+            subprocess.run(c, check=True)
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(
+                f"Failed to add alias {ip} (exit {e.returncode}); earlier aliases "
+                f"may already be up. Re-run with sudo access, or add it manually: "
+                f"{' '.join(c)}"
+            ) from e
     click.echo("Done. Verify with: ifconfig lo0 | grep 'inet 127'")
 
 

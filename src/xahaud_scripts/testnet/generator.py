@@ -240,6 +240,14 @@ def generate_node_config(
 
     fixed_peers_section = ""
     if network_config.fixed_peers:
+        if network_config.node_count > 254:
+            # Each peer is 127.0.0.<i+1>; the last octet caps at 255. Guard the
+            # non-CLI paths (suite YAML / direct NetworkConfig) that skip the
+            # MAX_NODE_COUNT check, so we never emit an invalid 127.0.0.256.
+            raise ValueError(
+                "Localhost distinct-IP mesh supports at most 254 nodes "
+                f"(peer i -> 127.0.0.<i+1>); got node_count={network_config.node_count}"
+            )
         ips_entries = []
         for i in range(network_config.node_count):
             if i != node_id:
