@@ -347,6 +347,7 @@ def _snapshot_test(network: TestNetwork, dest: Path) -> None:
 def _create_network(
     xahaud_root: Path,
     config: dict[str, Any],
+    testnet_dir: Path | None = None,
 ) -> TestNetwork:
     """Create a TestNetwork from effective config."""
     node_count = config.get("node_count", 5)
@@ -367,7 +368,7 @@ def _create_network(
     rpc_client = RequestsRPCClient(network_config.base_port_rpc)
     process_manager = UnixProcessManager()
 
-    base_dir = xahaud_root / "testnet"
+    base_dir = testnet_dir or (xahaud_root / "testnet")
 
     return TestNetwork(
         base_dir=base_dir,
@@ -637,6 +638,7 @@ def _run_one_test(
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
     rippled_path: Path | None = None,
+    testnet_dir: Path | None = None,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
     name = test["name"]
@@ -673,7 +675,7 @@ def _run_one_test(
 
     start = time.monotonic()
 
-    network = _create_network(xahaud_root, config)
+    network = _create_network(xahaud_root, config, testnet_dir=testnet_dir)
 
     # Prepare output dirs
     runs_dir = xahaud_root / ".testnet" / "output" / "runs"
@@ -798,6 +800,7 @@ def run_suite(
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
     rippled_path: Path | None = None,
+    testnet_dir: Path | None = None,
 ) -> list[TestResult]:
     """Run a scenario test suite.
 
@@ -916,6 +919,7 @@ def run_suite(
                     py_log_specs=py_log_specs,
                     fast_bootstrap=fast_bootstrap,
                     rippled_path=rippled_path,
+                    testnet_dir=testnet_dir,
                 )
             except KeyboardInterrupt:
                 logger.info("Suite interrupted — network left in place for inspection")

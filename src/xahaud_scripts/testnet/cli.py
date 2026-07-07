@@ -157,9 +157,9 @@ def _create_network(
     "--xahaud-root",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="Path to the xahaud repo. OPTIONAL when run from inside a xahaud "
-    "checkout — auto-detected by walking up for CMakeLists.txt + .git (or set "
-    "XAHAUD_ROOT). Only needed when run from elsewhere.",
+    help="Path to the xahaud repo. OPTIONAL when run from inside the xahaud git "
+    "repo — auto-detected via `git rev-parse --show-toplevel` from CWD. Only "
+    "needed when run from outside the repo.",
 )
 @click.option(
     "--rippled-path",
@@ -434,7 +434,8 @@ def generate(
     "--teardown",
     is_flag=True,
     default=False,
-    help="Kill all nodes after scenario/txn-gen finishes (keeps configs/logs)",
+    help="Kill all nodes AND delete their node dirs (configs + logs) when the "
+    "scenario/txn-gen finishes. Omit to keep the net + logs up (or use `snapshot`).",
 )
 @click.option(
     "--rc",
@@ -2496,6 +2497,7 @@ def suite(
         py_log_specs=list(py_log_specs) if py_log_specs else None,
         fast_bootstrap=fast_bootstrap,
         rippled_path=rippled_path,
+        testnet_dir=ctx.obj.get("testnet_dir"),
     )
 
     print_summary(results)

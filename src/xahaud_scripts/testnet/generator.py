@@ -392,6 +392,7 @@ def find_free_port_base(
                     network_id=network_config.network_id,
                     node_count=network_config.node_count,
                     validators=network_config.validators,
+                    fixed_peers=network_config.fixed_peers,
                     base_port_peer=network_config.base_port_peer + offset,
                     base_port_rpc=network_config.base_port_rpc + offset,
                     base_port_ws=network_config.base_port_ws + offset,
