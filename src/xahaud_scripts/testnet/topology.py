@@ -188,7 +188,7 @@ def peer_address_to_node_id(
     *,
     port_to_node: dict[int, int],
 ) -> int | None:
-    """Map a peer address like 127.0.0.1:21236 to a managed node id."""
+    """Map a peer address (host:port) to a managed node id, by its peer port."""
     if not address or ":" not in address:
         return None
     try:
@@ -332,7 +332,7 @@ def disconnect_managed_peer(
         target_node = next((node for node in nodes if node.id == target), None)
         if target_node is None:
             raise ValueError(f"Unknown target node: n{target}")
-        endpoint = ("127.0.0.1", target_node.port_peer)
+        endpoint = (target_node.peer_host, target_node.port_peer)
     ip, port = endpoint
     return rpc.disconnect(source, ip, port)
 

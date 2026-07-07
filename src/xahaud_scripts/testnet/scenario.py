@@ -1633,7 +1633,7 @@ class ScenarioContext:
         self._topology_nodes([source, target])
         started = now_marker(name or f"connect-n{source}-n{target}-start")
         target_node = self._node_info(target)
-        result = self.rpc.connect(source, "127.0.0.1", target_node.port_peer)
+        result = self.rpc.connect(source, target_node.peer_host, target_node.port_peer)
         require_rpc_success(result, f"n{source}->n{target} connect")
 
         expected = {(source, target)}
@@ -1749,7 +1749,9 @@ class ScenarioContext:
             require_rpc_success(result, f"n{source}->n{target} disconnect")
         for source, target in sorted(expected - current):
             target_node = self._node_info(target)
-            result = self.rpc.connect(source, "127.0.0.1", target_node.port_peer)
+            result = self.rpc.connect(
+                source, target_node.peer_host, target_node.port_peer
+            )
             require_rpc_success(result, f"n{source}->n{target} connect")
 
         if wait:

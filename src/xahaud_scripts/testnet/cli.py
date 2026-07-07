@@ -1299,7 +1299,7 @@ def topology_graph(ctx: click.Context, output: str | None, fmt: str) -> None:
     # Build address → node name lookup
     addr_to_node: dict[str, str] = {}
     for node in network.nodes:
-        addr_to_node[f"127.0.0.1:{node.port_peer}"] = f"n{node.id}"
+        addr_to_node[node.peer_addr] = f"n{node.id}"
 
     dot = graphviz.Digraph(
         "topology",
@@ -1384,7 +1384,9 @@ def connect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
         if tgt_node is None:
             raise click.ClickException(f"Unknown node: n{tgt_id}")
 
-        result = network.rpc_client.connect(src_id, "127.0.0.1", tgt_node.port_peer)
+        result = network.rpc_client.connect(
+            src_id, tgt_node.peer_host, tgt_node.port_peer
+        )
         if result is None:
             click.echo(f"n{src_id} → n{tgt_id}: failed (offline?)")
         elif result.get("status") == "success":

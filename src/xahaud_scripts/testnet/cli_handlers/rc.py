@@ -156,7 +156,7 @@ def parse_rc_spec(spec: str) -> RuntimeConfigSpec:
 
     Directed NODE->PEER specs affect outbound sends from NODE to PEER only.
     PEER is resolved to that node's listening peer port
-    (peer:127.0.0.1:<port>), matching xahaud outbound peer slots. The reverse
+    (peer:127.0.0.<n>:<port>), matching xahaud outbound peer slots. The reverse
     direction is unaffected unless specified separately.
 
     Examples:
@@ -314,17 +314,17 @@ def _parse_float(s: str, name: str) -> float:
 
 
 def resolve_peer_address(nodes: list[NodeInfo], peer_id: int) -> str:
-    """Resolve a node ID to its peer address (127.0.0.1:<port>)."""
+    """Resolve a node ID to its peer address (127.0.0.<n>:<port>)."""
     for node in nodes:
         if node.id == peer_id:
-            return f"127.0.0.1:{node.port_peer}"
+            return node.peer_addr
     raise click.ClickException(f"Unknown peer node: n{peer_id}")
 
 
 def reverse_resolve_peer(address: str, nodes: list[NodeInfo]) -> str | None:
     """Reverse-resolve a peer address to a node name, if possible."""
     for node in nodes:
-        if address == f"127.0.0.1:{node.port_peer}":
+        if address == node.peer_addr:
             return f"n{node.id}"
     return None
 

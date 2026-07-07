@@ -664,7 +664,7 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
             target_node = _node_by_id(network.nodes, target)
             logger.info(f"Runtime topology connect n{source}->n{target}")
             result = network.rpc_client.connect(
-                source, "127.0.0.1", target_node.port_peer
+                source, target_node.peer_host, target_node.port_peer
             )
             require_rpc_success(result, f"n{source}->n{target} connect")
         _wait_for_topology(
@@ -693,7 +693,9 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
         source, target = parse_edge_specs([spec]).pop()
         target_node = _node_by_id(network.nodes, target)
         logger.info(f"Runtime topology connect n{source}->n{target}")
-        result = network.rpc_client.connect(source, "127.0.0.1", target_node.port_peer)
+        result = network.rpc_client.connect(
+            source, target_node.peer_host, target_node.port_peer
+        )
         require_rpc_success(result, f"n{source}->n{target} connect")
 
 

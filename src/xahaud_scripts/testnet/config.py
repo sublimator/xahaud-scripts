@@ -514,6 +514,21 @@ class NodeInfo:
         """Get the node's directory."""
         return self.config_path.parent
 
+    @property
+    def peer_host(self) -> str:
+        """Loopback address this node's peers dial it at: 127.0.0.<id+1>.
+
+        Each node gets a distinct loopback IP because rippled's peerfinder dedups
+        fixed peers by IP address (ignoring port); see generator.py's [ips_fixed]
+        and `x-testnet setup-aliases`.
+        """
+        return f"127.0.0.{self.id + 1}"
+
+    @property
+    def peer_addr(self) -> str:
+        """This node's peer endpoint as host:port (e.g. 127.0.0.2:21236)."""
+        return f"{self.peer_host}:{self.port_peer}"
+
 
 class ConfigBuilder:
     """Fluent builder for testnet configuration.

@@ -1035,4 +1035,5 @@ def test_disconnect_managed_peer_falls_back_to_listen_port_when_peer_not_visible
     )
 
     assert result == {"status": "success"}
-    assert rpc.disconnect_calls == [(0, "127.0.0.1", DEFAULT_BASE_PORT_PEER + 1)]
+    # target n1 -> distinct loopback 127.0.0.2 (node i dials 127.0.0.<i+1>)
+    assert rpc.disconnect_calls == [(0, "127.0.0.2", DEFAULT_BASE_PORT_PEER + 1)]
