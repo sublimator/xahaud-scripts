@@ -28,6 +28,11 @@ Key options:
 - Always builds first — `--no-build` was removed deliberately (tests against a
   stale binary present green results as evidence for code they never ran); an
   up-to-date incremental build is a cheap no-op
+- Builds hold an exclusive per-build-dir lock (`build*/.x-build-lock`) and
+  recompact ninja's databases after success — overlapping/killed ninja
+  invocations corrupt `.ninja_deps`, which ninja never self-repairs (the
+  2026-07-11 replay-the-world incident). Corollary: never run raw `ninja`/
+  `cmake -B` against a shared build dir; go through x-run-tests
 - `--reconfigure-build` - Force CMake reconfiguration
 - `--conan/--no-conan` - Use conan (default: enabled)
 - `--ccache/--no-ccache` - ccache with worktree cache sharing

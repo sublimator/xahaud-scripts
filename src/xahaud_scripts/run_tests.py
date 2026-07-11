@@ -9,8 +9,11 @@ Features include:
 - Comprehensive logging
 """
 
+import contextlib
+import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +47,66 @@ OUTPUTS_DIR = Path.home() / ".config" / "xahaud-scripts" / "outputs"
 
 # Set up logger
 logger = make_logger(__name__)
+
+
+BUILD_LOCK_NAME = ".x-build-lock"
+
+
+@contextlib.contextmanager
+def build_dir_lock(build_dir: str | Path):
+    """Serialize builds per build directory with an exclusive flock.
+
+    Ninja has no build-dir locking of its own: two overlapping invocations
+    (or one killed mid-write) corrupt .ninja_deps, whose damaged tail is
+    never auto-repaired — every later build then replays the full compile
+    graph. Incident: 2026-07-11, feature worktree.
+
+    If another holder has the lock, log who and block until it is released.
+    """
+    lock_path = Path(build_dir) / BUILD_LOCK_NAME
+    with open(lock_path, "a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.seek(0)
+            holder = handle.read().strip() or "unknown process"
+            logger.warning(
+                f"Build dir is locked by {holder}; waiting for it to finish "
+                f"(lock: {lock_path})"
+            )
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid {os.getpid()}: {' '.join(sys.argv)}\n")
+        handle.flush()
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def recompact_ninja_dbs(build_dir: str | Path) -> None:
+    """Rewrite ninja's .ninja_log/.ninja_deps to a compact, valid state.
+
+    A ninja process killed mid-write (agent timeouts, Ctrl-C) leaves a
+    truncated tail that ninja tolerates on read but never repairs, so the
+    missing-record rebuild tax repeats forever. Recompacting after each
+    successful build caps any corruption at one rebuild. Cheap: a few MB
+    rewrite while we still hold the build lock.
+    """
+    base = Path(build_dir)
+    if not (base / "build.ninja").is_file():
+        return
+    ninja = shutil.which("ninja")
+    if not ninja:
+        return
+    result = subprocess.run(
+        [ninja, "-C", str(base), "-t", "recompact"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning(f"ninja recompact failed: {result.stderr.strip()}")
 
 
 def find_rippled_binary(build_dir: str | Path) -> Path | None:
@@ -170,49 +233,58 @@ def build_rippled(
     if not dry_run:
         os.makedirs(build_dir, exist_ok=True)
 
-    # Run conan install if requested
-    if use_conan and need_configure:
-        success = conan_install(
-            xahaud_root=xahaud_root,
-            build_type=build_type,
-            build_dir=build_dir,
-            dry_run=dry_run,
-        )
-        if not success:
-            return False
+    # Serialize everything that mutates the build dir. Dry runs execute
+    # nothing, so they neither need nor take the lock.
+    lock = build_dir_lock(build_dir) if not dry_run else contextlib.nullcontext()
+    with lock:
+        # Run conan install if requested
+        if use_conan and need_configure:
+            success = conan_install(
+                xahaud_root=xahaud_root,
+                build_type=build_type,
+                build_dir=build_dir,
+                dry_run=dry_run,
+            )
+            if not success:
+                return False
 
-    # Configure cmake if needed
-    if need_configure:
-        options = CMakeOptions(
-            build_type=build_type,
-            coverage=coverage,
-            coverage_impl=coverage_impl,
+        # Configure cmake if needed
+        if need_configure:
+            options = CMakeOptions(
+                build_type=build_type,
+                coverage=coverage,
+                coverage_impl=coverage_impl,
+                verbose=verbose,
+                ubsan=ubsan,
+                stdlib_hardening=stdlib_hardening,
+                ccache=use_ccache,
+                ccache_basedir=ccache_basedir,
+                ccache_sloppy=ccache_sloppy,
+                ccache_debug=ccache_debug,
+                log_line_numbers=log_line_numbers,
+                use_conan=use_conan,
+                unity=unity,
+            )
+            if not cmake_configure(
+                build_dir, options, dry_run=dry_run, tee_file=tee_file
+            ):
+                return False
+
+        # Build the target
+        built = cmake_build(
+            build_dir,
+            target=target,
             verbose=verbose,
-            ubsan=ubsan,
-            stdlib_hardening=stdlib_hardening,
+            parallel=jobs,
+            dry_run=dry_run,
             ccache=use_ccache,
             ccache_basedir=ccache_basedir,
             ccache_sloppy=ccache_sloppy,
-            ccache_debug=ccache_debug,
-            log_line_numbers=log_line_numbers,
-            use_conan=use_conan,
-            unity=unity,
+            tee_file=tee_file,
         )
-        if not cmake_configure(build_dir, options, dry_run=dry_run, tee_file=tee_file):
-            return False
-
-    # Build the target
-    return cmake_build(
-        build_dir,
-        target=target,
-        verbose=verbose,
-        parallel=jobs,
-        dry_run=dry_run,
-        ccache=use_ccache,
-        ccache_basedir=ccache_basedir,
-        ccache_sloppy=ccache_sloppy,
-        tee_file=tee_file,
-    )
+        if built and not dry_run:
+            recompact_ninja_dbs(build_dir)
+        return built
 
 
 def run_rippled(
