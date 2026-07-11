@@ -254,14 +254,17 @@ def test_build_reconfigures_existing_build_dir_without_cmake_cache(
     ]
 
 
-def test_save_binary_requires_build() -> None:
+def test_no_build_flag_stays_dead() -> None:
+    # Tombstone: --no-build let tests run against a stale binary and present
+    # green results as evidence for code they never executed. It was removed
+    # deliberately (2026-07-11); this test guarantees it never comes back.
     result = CliRunner().invoke(
         run_tests_main,
-        ["--no-build", "--save-binary", "@stale", "--times=0"],
+        ["--no-build", "--times=0"],
     )
 
     assert result.exit_code != 0
-    assert "--save-binary requires --build" in result.output
+    assert "No such option" in result.output
 
 
 def test_save_binary_requires_rippled_target() -> None:
@@ -277,7 +280,7 @@ def test_save_binary_requires_rippled_target() -> None:
 def test_save_binary_validates_alias_before_dry_run_build() -> None:
     result = CliRunner().invoke(
         run_tests_main,
-        ["--build", "--dry-run", "--save-binary", "@bad/name", "--times=0"],
+        ["--dry-run", "--save-binary", "@bad/name", "--times=0"],
     )
 
     assert result.exit_code != 0

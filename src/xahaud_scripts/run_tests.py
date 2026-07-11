@@ -370,7 +370,6 @@ def run_rippled(
     help="File containing lldb commands to run before running rippled",
 )
 @click.option("--times", default=1, type=int, help="Number of times to run the command")
-@click.option("--build/--no-build", default=True, is_flag=True, help="Build rippled")
 @click.option(
     "--stop-on-fail/--no-stop-on-fail",
     is_flag=True,
@@ -551,7 +550,6 @@ def main(
     times,
     stop_on_fail,
     rippled_args,
-    build,
     reconfigure_build,
     dry_run,
     coverage,
@@ -648,11 +646,6 @@ def main(
             "--build-type=Coverage: enabling coverage instrumentation with Debug build"
         )
 
-    if save_binary and not build:
-        raise click.UsageError(
-            "--save-binary requires --build so stale build-dir binaries are not "
-            "registered by accident."
-        )
     if save_binary:
         try:
             alias_name(save_binary)
@@ -795,63 +788,63 @@ def main(
                     logger.error(f"Failed to compile WASM hooks: {e}")
                     raise
 
-            # Build rippled
-            if build or dry_run:
-                logger.info("Building rippled...")
+            # Build rippled — always. --no-build was removed deliberately:
+            # tests run against a stale binary present green results as
+            # evidence for code they never executed. An up-to-date incremental
+            # build is a cheap no-op; a stale-binary "pass" is unbounded harm.
+            logger.info("Building rippled...")
 
-                # Resolve ccache_basedir to absolute path if provided
-                resolved_ccache_basedir = None
-                if ccache_basedir:
-                    resolved_ccache_basedir = os.path.abspath(ccache_basedir)
-                    logger.debug(
-                        f"Resolved ccache_basedir to: {resolved_ccache_basedir}"
-                    )
-
-                # Zero ccache stats before build if requested
-                if ccache_stats and ccache and not dry_run:
-                    ccache_zero_stats()
-
-                recorder.build_started()
-                build_successful = build_rippled(
-                    reconfigure_build=reconfigure_build or dry_run,
-                    coverage=coverage,
-                    coverage_impl=coverage_impl,
-                    use_conan=conan,
-                    ubsan=ubsan,
-                    stdlib_hardening=stdlib_hardening,
-                    verbose=verbose,
-                    use_ccache=ccache,
-                    ccache_basedir=resolved_ccache_basedir,
-                    ccache_sloppy=ccache_sloppy,
-                    ccache_debug=ccache_debug,
-                    target=target,
-                    log_line_numbers=log_line_numbers,
-                    build_type=build_type,
-                    dry_run=dry_run,
-                    unity=unity,
-                    build_dir=build_dir,
-                    tee_file=tee_file,
-                    jobs=jobs,
+            # Resolve ccache_basedir to absolute path if provided
+            resolved_ccache_basedir = None
+            if ccache_basedir:
+                resolved_ccache_basedir = os.path.abspath(ccache_basedir)
+                logger.debug(
+                    f"Resolved ccache_basedir to: {resolved_ccache_basedir}"
                 )
-                recorder.build_finished(build_successful)
 
-                # Show ccache stats after build if requested
-                if ccache_stats and ccache and not dry_run:
-                    ccache_show_stats()
-                    if ccache_show_config:
-                        _ccache_show_config()
+            # Zero ccache stats before build if requested
+            if ccache_stats and ccache and not dry_run:
+                ccache_zero_stats()
 
-                if not build_successful:
-                    logger.error("Build failed, cannot run tests")
-                    recorder.save()
-                    sys.exit(1)
+            recorder.build_started()
+            build_successful = build_rippled(
+                reconfigure_build=reconfigure_build or dry_run,
+                coverage=coverage,
+                coverage_impl=coverage_impl,
+                use_conan=conan,
+                ubsan=ubsan,
+                stdlib_hardening=stdlib_hardening,
+                verbose=verbose,
+                use_ccache=ccache,
+                ccache_basedir=resolved_ccache_basedir,
+                ccache_sloppy=ccache_sloppy,
+                ccache_debug=ccache_debug,
+                target=target,
+                log_line_numbers=log_line_numbers,
+                build_type=build_type,
+                dry_run=dry_run,
+                unity=unity,
+                build_dir=build_dir,
+                tee_file=tee_file,
+                jobs=jobs,
+            )
+            recorder.build_finished(build_successful)
 
-                if dry_run:
-                    logger.info("Dry run complete - no commands were executed")
-                    recorder.save()
-                    sys.exit(0)
-            else:
-                logger.info("Skipping build as requested")
+            # Show ccache stats after build if requested
+            if ccache_stats and ccache and not dry_run:
+                ccache_show_stats()
+                if ccache_show_config:
+                    _ccache_show_config()
+
+            if not build_successful:
+                logger.error("Build failed, cannot run tests")
+                recorder.save()
+                sys.exit(1)
+
+            if dry_run:
+                logger.info("Dry run complete - no commands were executed")
+                recorder.save()
+                sys.exit(0)
 
             if save_binary and not dry_run:
                 from xahaud_scripts.binary_registry import (

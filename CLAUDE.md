@@ -14,7 +14,6 @@ Build and run xahaud tests with conan, ccache, coverage, and lldb support.
 
 ```bash
 x-run-tests -- ripple.app.Import                          # build + run test
-x-run-tests --no-build -- ripple.app.Import               # skip build
 x-run-tests --times 5 -- ripple.app.Import                # repeat 5x
 x-run-tests --times=0                                     # build only
 x-run-tests --times=0 --save-binary @rng-ce               # build + save named binary
@@ -26,7 +25,9 @@ x-run-tests --dry-run --reconfigure-build                 # preview commands
 ```
 
 Key options:
-- `--build/--no-build` - Build before running (default: build)
+- Always builds first — `--no-build` was removed deliberately (tests against a
+  stale binary present green results as evidence for code they never ran); an
+  up-to-date incremental build is a cheap no-op
 - `--reconfigure-build` - Force CMake reconfiguration
 - `--conan/--no-conan` - Use conan (default: enabled)
 - `--ccache/--no-ccache` - ccache with worktree cache sharing
