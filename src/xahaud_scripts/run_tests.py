@@ -870,9 +870,7 @@ def main(
             resolved_ccache_basedir = None
             if ccache_basedir:
                 resolved_ccache_basedir = os.path.abspath(ccache_basedir)
-                logger.debug(
-                    f"Resolved ccache_basedir to: {resolved_ccache_basedir}"
-                )
+                logger.debug(f"Resolved ccache_basedir to: {resolved_ccache_basedir}")
 
             # Zero ccache stats before build if requested
             if ccache_stats and ccache and not dry_run:
