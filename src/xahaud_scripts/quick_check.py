@@ -205,9 +205,9 @@ def run_one(entry: CompileEntry, root: Path, verbose: bool) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a fast compiler syntax check for dirty xahaud C/C++ files."
+        description="Run a fast compiler syntax check for dirty XRPL-family C/C++ files."
     )
-    parser.add_argument("--repo", type=Path, help="xahaud repository root")
+    parser.add_argument("--repo", type=Path, help="repository root")
     parser.add_argument(
         "--build-dir", type=Path, help="build directory with compile_commands.json"
     )
