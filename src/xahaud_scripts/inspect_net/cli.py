@@ -45,18 +45,33 @@ def _status_text(status: str) -> Text:
 def _cell(a: amd.Amendment | None) -> Text:
     """Compact, informative cell for the compare table.
 
-    Prefers a real number over the opaque status word: majority -> activation
-    date, active voting -> yes-votes/validators, else the status label.
+    Prefers a real number over the opaque status word, in this order:
+    activation date > vote tally > status label.
+
+    The tally is shown for *any* not-yet-enabled amendment that has one, not
+    only those bucketed PENDING. A vetoed amendment still has a network vote,
+    and that number is what tells you whether the veto is one node's opinion
+    or a settled outcome — which is the question the word "vetoed" cannot
+    answer. Veto is kept as colour (red) plus a trailing marker, so nothing is
+    lost by showing the count instead of the label.
     """
     if a is None:
         return Text("—", style="dim")
     status = a.status()
+    if status == amd.STATUS_ENABLED:
+        return _status_text(status)
     if status == amd.STATUS_MAJORITY:
         eta = a.activation_eta()
         return Text(f"→{eta:%b %d}" if eta else "majority", style="yellow")
-    if status == amd.STATUS_PENDING and a.vote_fraction:
-        passing = a.threshold is not None and (a.count or 0) >= a.threshold
-        return Text(f"{a.count}/{a.validations}", style="green" if passing else "cyan")
+    if a.vote_fraction and a.count is not None:
+        passing = a.threshold is not None and a.count >= a.threshold
+        if a.is_vetoed:
+            style, suffix = "red", "\u2298"      # this node votes against it
+        elif passing:
+            style, suffix = "green", ""
+        else:
+            style, suffix = "cyan", ""
+        return Text(f"{a.count}/{a.validations}{suffix}", style=style)
     return _status_text(status)
 
 

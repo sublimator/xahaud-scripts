@@ -19,7 +19,7 @@ table:
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -63,15 +63,22 @@ class Amendment:
         return bool(self.vetoed) and not self.is_obsolete
 
     def status(self) -> str:
-        """Coarse status bucket for tables/coloring."""
+        """Coarse status bucket for tables/coloring.
+
+        Majority outranks veto deliberately. A majority is a ledger fact — the
+        amendment activates on a known date whether or not the node you asked
+        votes for it — while ``vetoed`` is that node's own configuration.
+        Reporting "vetoed" for an amendment that is two weeks from activating
+        hides the only part a reader can act on.
+        """
         if self.enabled:
             return STATUS_ENABLED
         if self.is_obsolete:
             return STATUS_OBSOLETE
-        if self.is_vetoed:
-            return STATUS_VETOED
         if self.majority is not None:
             return STATUS_MAJORITY
+        if self.is_vetoed:
+            return STATUS_VETOED
         if not self.supported:
             return STATUS_UNSUPPORTED
         return STATUS_PENDING
@@ -221,26 +228,39 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
     fields varied is flagged in ``nodeview_varied`` (node-local noise).
     """
     enabled_vals: dict[str, list[bool]] = defaultdict(list)
+    majority_vals: dict[str, list[Any]] = defaultdict(list)
     nodeview_seen: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
     rep: dict[str, Amendment] = {}
     for sample in samples:
         for a in sample.amendments:
             rep.setdefault(a.name, a)
             enabled_vals[a.name].append(a.enabled)
+            # `majority` is a ledger property like `enabled`, so a
+            # disagreement about it means a backend is out of sync — not the
+            # node-local opinion that nodeview_varied is for.
             nodeview_seen[a.name].add(
-                (a.vetoed, a.count, a.validations, a.threshold, a.majority)
+                (a.vetoed, a.count, a.validations, a.threshold)
             )
+            majority_vals[a.name].append(a.majority)
 
-    for name, a in rep.items():
-        a.enabled = Counter(enabled_vals[name]).most_common(1)[0][0]
+    # replace() rather than assignment: `rep` holds references to the first
+    # sample's objects, and mutating them makes that sample silently disagree
+    # with what it actually read.
+    merged = {
+        name: replace(a, enabled=Counter(enabled_vals[name]).most_common(1)[0][0])
+        for name, a in rep.items()
+    }
 
     return NetworkAmendments(
-        amendments=sorted(rep.values(), key=lambda a: a.name.lower()),
+        amendments=sorted(merged.values(), key=lambda a: a.name.lower()),
         ledger_seq=samples[-1].ledger_seq,
         nodes=list(dict.fromkeys(s.node for s in samples if s.node)),
         builds=list(dict.fromkeys(s.build for s in samples if s.build)),
         samples=len(samples),
-        enabled_unstable={n for n, v in enabled_vals.items() if len(set(v)) > 1},
+        enabled_unstable=(
+            {n for n, v in enabled_vals.items() if len(set(v)) > 1}
+            | {n for n, v in majority_vals.items() if len(set(v)) > 1}
+        ),
         nodeview_varied={n for n, v in nodeview_seen.items() if len(v) > 1},
     )
 
@@ -253,6 +273,14 @@ def fetch_sampled(
     With samples > 1 a load-balanced endpoint will route to different nodes;
     aggregation then reveals which fields are network-truth vs node-local.
     Node identity is collected when ``want_seq`` is set or samples > 1.
+
+    Caveat worth knowing before trusting the attribution: identity comes from a
+    *second* call (``server_info``), and a load balancer is free to route it to
+    a different backend than answered ``server_definitions``. So the node/build
+    recorded against a sample is best-effort, and the set of nodes seen is more
+    reliable than any particular pairing. JSON-RPC offers no way to pin a
+    backend across calls, so this is a limit of the transport rather than
+    something to fix here.
     """
     samples = max(1, samples)
     readings: list[_Sample] = []

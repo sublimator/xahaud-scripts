@@ -275,3 +275,98 @@ def test_aggregate_dedupes_nodes_and_builds():
     assert agg.nodes == ["n1"]
     assert agg.builds == ["b1"]
     assert agg.samples == 2
+
+
+# --------------------------------------------------------------------------- #
+#  Network truth vs the queried node's opinion
+# --------------------------------------------------------------------------- #
+
+def test_majority_outranks_a_nodes_veto():
+    """A majority activates on a known date whatever one node votes.
+
+    Reporting "vetoed" for an amendment two weeks from activating hides the
+    only part a reader can act on — and `vetoed` is that node's own config,
+    not a network decision.
+    """
+    a = amd.normalize({"H": {"name": "M", "enabled": False, "vetoed": True,
+                             "majority": 835701281}})[0]
+    assert a.is_vetoed is True
+    assert a.status() == amd.STATUS_MAJORITY
+
+
+def test_veto_still_wins_without_a_majority():
+    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True}})[0]
+    assert a.status() == amd.STATUS_VETOED
+
+
+def test_enabled_outranks_everything():
+    a = amd.normalize({"H": {"name": "E", "enabled": True, "vetoed": True,
+                             "majority": 835701281}})[0]
+    assert a.status() == amd.STATUS_ENABLED
+
+
+def test_aggregate_does_not_mutate_the_samples_it_read():
+    """`rep` holds references to the first sample's objects."""
+    first = amd.normalize({"H": {"name": "A", "enabled": True}})
+    second = amd.normalize({"H": {"name": "A", "enabled": False}})
+    amd._aggregate([
+        amd._Sample(first, "n1", "b", 1),
+        amd._Sample(second, "n2", "b", 1),
+        amd._Sample(second, "n3", "b", 1),
+    ])
+    assert first[0].enabled is True, "the first sample was rewritten"
+
+
+def test_a_majority_disagreement_is_ledger_drift_not_node_opinion():
+    """`majority` comes from the ledger, so backends disagreeing means one is
+    out of sync — not the node-local noise nodeview_varied is for."""
+    a = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 100}})
+    b = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 200}})
+    agg = amd._aggregate([amd._Sample(a, "n1", "b", 1), amd._Sample(b, "n2", "b", 1)])
+    assert "A" in agg.enabled_unstable
+    assert "A" not in agg.nodeview_varied
+
+
+def test_a_veto_disagreement_is_node_opinion():
+    a = amd.normalize({"H": {"name": "A", "enabled": False, "vetoed": True}})
+    b = amd.normalize({"H": {"name": "A", "enabled": False, "vetoed": False}})
+    agg = amd._aggregate([amd._Sample(a, "n1", "b", 1), amd._Sample(b, "n2", "b", 1)])
+    assert "A" in agg.nodeview_varied
+    assert "A" not in agg.enabled_unstable
+
+
+# --------------------------------------------------------------------------- #
+#  The compare cell prefers a number to a word
+# --------------------------------------------------------------------------- #
+
+def test_compare_cell_shows_the_tally_for_a_vetoed_amendment():
+    """The number says whether a veto is one node's opinion or a settled
+    outcome; the word cannot."""
+    from xahaud_scripts.inspect_net.cli import _cell
+
+    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True,
+                             "count": 0, "validations": 4, "threshold": 3}})[0]
+    assert "0/4" in _cell(a).plain
+
+
+def test_compare_cell_marks_a_vetoed_tally(self=None):
+    from xahaud_scripts.inspect_net.cli import _cell
+
+    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True,
+                             "count": 0, "validations": 4, "threshold": 3}})[0]
+    assert _cell(a).plain.endswith("\u2298")
+
+
+def test_compare_cell_falls_back_to_the_word_without_a_tally(self=None):
+    from xahaud_scripts.inspect_net.cli import _cell
+
+    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True}})[0]
+    assert _cell(a).plain == "vetoed"
+
+
+def test_compare_cell_prefers_an_activation_date():
+    from xahaud_scripts.inspect_net.cli import _cell
+
+    a = amd.normalize({"H": {"name": "M", "enabled": False, "majority": 835701281,
+                             "count": 4, "validations": 4, "threshold": 3}})[0]
+    assert _cell(a).plain.startswith("\u2192")
