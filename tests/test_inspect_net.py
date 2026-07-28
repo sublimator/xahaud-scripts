@@ -554,3 +554,75 @@ def test_json_always_fetches_the_provenance_fields(monkeypatch, tmp_path):
     for entry in written.values():
         assert entry["network_id"] == 21337
         assert entry["ledger_seq"] == 99
+
+
+def test_a_disagreed_enabled_list_is_not_certified(monkeypatch, tmp_path):
+    """The merged `enabled` is a majority vote, and on an even split it is
+    whichever sample `Counter` saw first. A consumer pins everything to that
+    list, so the command fails rather than handing back a confident file."""
+    from click.testing import CliRunner
+
+    from xahaud_scripts.inspect_net import cli as inspect_cli
+
+    def fake_fetch(url, timeout, samples=1, *, want_seq=True):
+        return amd._aggregate([
+            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": True}}),
+                        "n1", "b", 1, network_id=21337),
+            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": False}}),
+                        "n2", "b", 1, network_id=21337),
+        ])
+
+    monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
+    out = tmp_path / "m.json"
+    result = CliRunner().invoke(
+        inspect_cli.amendments, ["--net", "mainnet", "--json", str(out), "--samples", "2"]
+    )
+
+    assert result.exit_code != 0
+    assert "Split" in result.output
+    assert out.exists(), "still written — it is the record of what disagreed"
+
+
+def test_force_writes_it_anyway(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from xahaud_scripts.inspect_net import cli as inspect_cli
+
+    def fake_fetch(url, timeout, samples=1, *, want_seq=True):
+        return amd._aggregate([
+            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": True}}),
+                        "n1", "b", 1, network_id=21337),
+            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": False}}),
+                        "n2", "b", 1, network_id=21337),
+        ])
+
+    monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
+    out = tmp_path / "m.json"
+    result = CliRunner().invoke(
+        inspect_cli.amendments,
+        ["--net", "mainnet", "--json", str(out), "--samples", "2", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+
+
+def test_an_agreed_manifest_is_certified(monkeypatch, tmp_path):
+    """The control — no disagreement, no failure."""
+    from click.testing import CliRunner
+
+    from xahaud_scripts.inspect_net import cli as inspect_cli
+
+    def fake_fetch(url, timeout, samples=1, *, want_seq=True):
+        return amd._aggregate([
+            amd._Sample(amd.normalize({"H": {"name": "Agreed", "enabled": True}}),
+                        "n1", "b", 1, network_id=21337),
+        ])
+
+    monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
+    out = tmp_path / "m.json"
+    result = CliRunner().invoke(
+        inspect_cli.amendments, ["--net", "mainnet", "--json", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output

@@ -115,6 +115,11 @@ def main() -> None:
     metavar="PATH",
     help="Write a manifest (network id, ledger, timestamp, enabled set) to PATH.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Write the manifest even if samples disagreed about what is enabled.",
+)
 def amendments(
     net: str | None,
     url: str | None,
@@ -124,6 +129,7 @@ def amendments(
     samples: int,
     timeout: float,
     json_path: str | None,
+    force: bool,
 ) -> None:
     """Show enabled/pending/vetoed amendments; diff mainnet vs testnet.
 
@@ -170,6 +176,24 @@ def amendments(
         }
         Path(json_path).write_text(amd.manifest_bytes(raw))
         err.print(f"  wrote raw data -> {json_path}")
+
+        # An `enabled` disagreement means the backends did not agree on what
+        # the ledger has. The merged value is then whichever reading was more
+        # common, and on an even split whichever `Counter` saw first — a coin
+        # flip. A consumer pins its whole behaviour to this list, so the file
+        # is still written (it names what disagreed) but the command fails,
+        # because a regen step that swallows this produces a confident manifest
+        # out of an unresolved question.
+        unstable = {n: sorted(d.enabled_unstable)
+                    for n, d in fetched.items() if d.enabled_unstable}
+        if unstable and not force:
+            for name, names in unstable.items():
+                err.print(f"[red]{name}[/red]: backends disagree on `enabled` for "
+                          f"{', '.join(names)}")
+            raise click.ClickException(
+                "refusing to certify a manifest whose `enabled` list is not "
+                "agreed across samples — re-run when the endpoint is "
+                "consistent, or pass --force to write it anyway")
 
 
 def _render_single(
