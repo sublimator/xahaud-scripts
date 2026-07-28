@@ -286,7 +286,7 @@ def _render_compare(
         "(network truth)."
     )
     console.print(
-        "[dim]Cells: ENABLED=live · →date=majority, activates then (2wk hold) · "
+        "[dim]Cells: ENABLED=live · →date=majority, activates then (5d hold) · "
         "N/M=yes-votes/validators · vetoed/pending are the queried node's view "
         "(only ENABLED is network-wide).[/dim]"
     )

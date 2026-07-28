@@ -1,15 +1,15 @@
 """Fetch and normalize amendment status from a network's public RPC.
 
 xahaud's ``doServerDefinitions`` calls the amendment table with ``isAdmin =
-true`` hardcoded, so an anonymous ``server_definitions`` call returns the full
-table:
+true`` hardcoded (xahaud:src/xrpld/rpc/handlers/ServerDefinitions.cpp:542), so
+an anonymous ``server_definitions`` call returns the full table:
 
     result.features = {
       "<AMENDMENT_HASH>": {
         "name": "NamedHooks", "supported": true, "enabled": false,
         "vetoed": true,            # bool, or "Obsolete"
         "count": 0, "validations": 4, "threshold": 3,   # vote tallies (opt)
-        "majority": <closeTime>    # reached majority, in 2wk hold (opt)
+        "majority": <closeTime>    # reached majority, in the hold (opt)
       }, ...
     }
 
@@ -26,9 +26,19 @@ from typing import Any
 import requests
 
 # Ripple epoch (2000-01-01 UTC) in unix seconds; amendment majority close times
-# are expressed in it. An amendment activates ~2 weeks after reaching majority.
+# are expressed in it.
 RIPPLE_EPOCH = 946684800
-AMENDMENT_HOLD = timedelta(weeks=2)
+
+# How long an amendment must hold a majority before validators enable it.
+# Xahau's compiled default is five days, not the two weeks XRPL uses:
+#   xahaud:include/xrpl/protocol/SystemParameters.h:81
+#     defaultAmendmentMajorityTime = std::chrono::days{5};
+# and it is applied as `(*majorityTime + majorityTime_) <= closeTime`
+# (xahaud:src/xrpld/app/misc/detail/AmendmentTable.cpp:916).
+#
+# A node may override it with `amendment_majority_time` in its config, so an
+# ETA computed here is the default-configuration answer rather than a promise.
+AMENDMENT_HOLD = timedelta(days=5)
 
 # Status buckets, ordered worst-to-best for stable rendering choices.
 STATUS_ENABLED = "enabled"
@@ -68,7 +78,7 @@ class Amendment:
         Majority outranks veto deliberately. A majority is a ledger fact — the
         amendment activates on a known date whether or not the node you asked
         votes for it — while ``vetoed`` is that node's own configuration.
-        Reporting "vetoed" for an amendment that is two weeks from activating
+        Reporting "vetoed" for an amendment that is days from activating
         hides the only part a reader can act on.
         """
         if self.enabled:
@@ -92,7 +102,7 @@ class Amendment:
         return f"{frac} (need {self.threshold})" if self.threshold else frac
 
     def activation_eta(self) -> datetime | None:
-        """When a majority amendment activates: majority close-time + 2wk hold.
+        """When a majority amendment activates: majority close-time + the hold.
 
         Only meaningful while not yet enabled; returns None if no majority
         timestamp is present (or it isn't a numeric close time).
@@ -112,7 +122,7 @@ class Amendment:
             bits.append(
                 f"majority → enables ~{eta:%Y-%m-%d}"
                 if eta
-                else "majority reached (2wk hold)"
+                else "majority reached (5d hold)"
             )
         if not self.supported:
             bits.append("unsupported-by-node")

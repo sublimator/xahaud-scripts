@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from xahaud_scripts.inspect_net import amendments as amd
 from xahaud_scripts.inspect_net.crawl import (
     Crawler,
@@ -183,12 +185,24 @@ def test_vote_fraction():
     assert recs["Live"].vote_fraction is None  # no tally reported
 
 
-def test_activation_eta_is_majority_plus_two_weeks():
+def test_activation_eta_is_majority_plus_the_xahau_hold():
+    """Xahau holds a majority for five days, not the two weeks XRPL uses.
+
+    xahaud:include/xrpl/protocol/SystemParameters.h:81 —
+    `defaultAmendmentMajorityTime = std::chrono::days{5}`. Assuming XRPL's
+    default put every activation date nine days late, which is the kind of
+    wrong an operator plans an upgrade window around.
+    """
     a = amd.normalize({"H": {"name": "M", "enabled": False, "majority": 835701281}})[0]
     eta = a.activation_eta()
     assert eta is not None
-    # 835701281 (ripple epoch) reached 2026-06-25 11:14Z, +14d -> 2026-07-09.
-    assert eta.strftime("%Y-%m-%d") == "2026-07-09"
+    # 835701281 (ripple epoch) reached 2026-06-25 11:14Z, +5d -> 2026-06-30.
+    assert eta.strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_the_hold_matches_xahaud_not_xrpl():
+    """Pinned as a value so a silent revert to `weeks=2` fails here."""
+    assert timedelta(days=5) == amd.AMENDMENT_HOLD
 
 
 def test_activation_eta_none_without_numeric_majority():
