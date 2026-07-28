@@ -109,7 +109,12 @@ def main() -> None:
     "and flag node-local veto/vote fields.",
 )
 @click.option("--timeout", type=float, default=25.0, show_default=True)
-@click.option("--json", "json_path", metavar="PATH", help="Dump raw features to JSON.")
+@click.option(
+    "--json",
+    "json_path",
+    metavar="PATH",
+    help="Write a manifest (network id, ledger, timestamp, enabled set) to PATH.",
+)
 def amendments(
     net: str | None,
     url: str | None,
@@ -153,20 +158,38 @@ def amendments(
         _render_compare(targets, fetched, check, diff_only)
 
     if json_path:
+        # A manifest, not just a dump: a consumer pinning its behaviour to this
+        # needs to know which network it describes, when it was true, and which
+        # ledger it was read at — otherwise it cannot tell a current answer from
+        # a year-old one. `enabled` is broken out because it is the only field
+        # that is network truth, and the only one worth depending on.
         raw = {
             name: {
                 "url": targets[name],
+                "network_id": data.network_id,
+                "queried_at": data.queried_at,
                 "ledger_seq": data.ledger_seq,
                 "samples": data.samples,
-                "backend_nodes": data.nodes,
-                "builds": data.builds,
+                "backend_nodes": sorted(data.nodes),
+                "builds": sorted(data.builds),
                 "enabled_unstable": sorted(data.enabled_unstable),
                 "nodeview_varied": sorted(data.nodeview_varied),
+                "enabled": sorted(a.name for a in data.amendments if a.enabled),
                 "amendments": [vars(a) for a in data.amendments],
             }
             for name, data in fetched.items()
         }
-        Path(json_path).write_text(json.dumps(raw, indent=2))
+        # Canonical: sorted keys throughout and a trailing newline, so a
+        # regenerated manifest diffs only where the network actually changed.
+        # `queried_at` and `ledger_seq` necessarily move every run — they are
+        # the provenance, and a manifest that hid them would be worse.
+        #
+        # Names are exactly what the network reports. A consumer with its own
+        # symbol convention normalises on import; this file does not know or
+        # care what anyone calls these downstream.
+        Path(json_path).write_text(
+            json.dumps(raw, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
         err.print(f"  wrote raw data -> {json_path}")
 
 

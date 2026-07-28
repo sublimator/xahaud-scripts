@@ -135,6 +135,10 @@ class NetworkAmendments:
     nodes: list[str] = field(default_factory=list)
     builds: list[str] = field(default_factory=list)
     samples: int = 1
+    network_id: int | None = None
+    # When the reading was taken. A manifest generated from this is only as
+    # current as its timestamp, and a consumer cannot tell staleness without it.
+    queried_at: str | None = None
     # Amendment names whose `enabled` disagreed across samples — a real problem
     # (an out-of-sync / amendment-blocked backend), not just node-local opinion.
     enabled_unstable: set[str] = field(default_factory=set)
@@ -157,6 +161,7 @@ class _Sample:
     node: str | None
     build: str | None
     ledger_seq: int | None
+    network_id: int | None = None
 
 
 def _rpc(url: str, method: str, timeout: float) -> dict[str, Any]:
@@ -202,21 +207,25 @@ def normalize(features: dict[str, Any]) -> list[Amendment]:
                 majority=v.get("majority"),
             )
         )
-    out.sort(key=lambda a: a.name.lower())
+    # name.lower() alone ties for names differing only in case; the hash
+    # breaks it, so the order is total and a manifest is reproducible.
+    out.sort(key=lambda a: (a.name.lower(), a.hash))
     return out
 
 
 def _node_identity(
     url: str, timeout: float
-) -> tuple[str | None, str | None, int | None]:
-    """Return (pubkey_node, build_version, validated_seq) for the queried node."""
+) -> tuple[str | None, str | None, int | None, int | None]:
+    """Return (pubkey_node, build_version, validated_seq, network_id)."""
     try:
         info = _rpc(url, "server_info", timeout).get("info") or {}
     except (requests.RequestException, ValueError):
-        return None, None, None
+        return None, None, None, None
     raw_seq = (info.get("validated_ledger") or {}).get("seq")
     seq = int(raw_seq) if isinstance(raw_seq, int) else None
-    return info.get("pubkey_node"), info.get("build_version"), seq
+    raw_net = info.get("network_id")
+    net_id = int(raw_net) if isinstance(raw_net, int) else None
+    return info.get("pubkey_node"), info.get("build_version"), seq, net_id
 
 
 def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
@@ -252,8 +261,10 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
     }
 
     return NetworkAmendments(
-        amendments=sorted(merged.values(), key=lambda a: a.name.lower()),
+        amendments=sorted(merged.values(), key=lambda a: (a.name.lower(), a.hash)),
         ledger_seq=samples[-1].ledger_seq,
+        network_id=next((s.network_id for s in samples if s.network_id), None),
+        queried_at=datetime.now(UTC).isoformat(timespec="seconds"),
         nodes=list(dict.fromkeys(s.node for s in samples if s.node)),
         builds=list(dict.fromkeys(s.build for s in samples if s.build)),
         samples=len(samples),
@@ -287,10 +298,10 @@ def fetch_sampled(
     for _ in range(samples):
         features = _server_definition_features(_rpc(url, "server_definitions", timeout))
         if want_seq or samples > 1:
-            node, build, seq = _node_identity(url, timeout)
+            node, build, seq, net_id = _node_identity(url, timeout)
         else:
-            node, build, seq = None, None, None
-        readings.append(_Sample(normalize(features), node, build, seq))
+            node, build, seq, net_id = None, None, None, None
+        readings.append(_Sample(normalize(features), node, build, seq, net_id))
     return _aggregate(readings)
 
 
