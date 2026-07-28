@@ -333,12 +333,48 @@ def test_aggregate_does_not_mutate_the_samples_it_read():
 
 def test_a_majority_disagreement_is_ledger_drift_not_node_opinion():
     """`majority` comes from the ledger, so backends disagreeing means one is
-    out of sync — not the node-local noise nodeview_varied is for."""
+    out of sync — not the node-local noise nodeview_varied is for.
+
+    Tracked apart from `enabled_unstable` because the two justify different
+    actions: one says "we are unsure whether this is live", the other says
+    "we are unsure when it goes live". Consumers treat the first as a reason
+    to require the amendment.
+    """
     a = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 100}})
     b = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 200}})
     agg = amd._aggregate([amd._Sample(a, "n1", "b", 1), amd._Sample(b, "n2", "b", 1)])
-    assert "A" in agg.enabled_unstable
+    assert "A" in agg.majority_unstable
+    assert "A" not in agg.enabled_unstable
     assert "A" not in agg.nodeview_varied
+
+
+def test_majority_drift_does_not_make_an_amendment_a_requirement():
+    """zombies calls a version incompatible when it cannot support an amendment
+    that is *live*. An amendment nobody has enabled yet is not one.
+
+    Folding majority drift into `enabled_unstable` made every version missing
+    it INCOMPATIBLE for an amendment no ledger has activated.
+    """
+    from xahaud_scripts.inspect_net import zombies as zmb
+
+    a = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 100}})
+    b = amd.normalize({"H": {"name": "A", "enabled": False, "majority": 200}})
+    agg = amd._aggregate([amd._Sample(a, "n1", "b", 1), amd._Sample(b, "n2", "b", 1)])
+
+    assert [x.name for x in zmb.enabled_amendments(agg)] == []
+
+
+def test_an_enabled_flip_still_makes_it_a_requirement():
+    """The safety net that split is not allowed to drop: if the samples cannot
+    agree whether it is live, requiring it is the side that fails safe."""
+    from xahaud_scripts.inspect_net import zombies as zmb
+
+    a = amd.normalize({"H": {"name": "A", "enabled": True}})
+    b = amd.normalize({"H": {"name": "A", "enabled": False}})
+    agg = amd._aggregate([amd._Sample(a, "n1", "b", 1), amd._Sample(b, "n2", "b", 1)])
+
+    assert "A" in agg.enabled_unstable
+    assert [x.name for x in zmb.enabled_amendments(agg)] == ["A"]
 
 
 def test_a_veto_disagreement_is_node_opinion():
@@ -384,3 +420,137 @@ def test_compare_cell_prefers_an_activation_date():
     a = amd.normalize({"H": {"name": "M", "enabled": False, "majority": 835701281,
                              "count": 4, "validations": 4, "threshold": 3}})[0]
     assert _cell(a).plain.startswith("\u2192")
+
+
+# --------------------------------------------------------------------------- #
+#  The --json manifest, as a contract a consumer pins to
+# --------------------------------------------------------------------------- #
+
+def _agg(**flags):
+    return amd._aggregate([_sample("n1", **flags)])
+
+
+def test_a_manifest_carries_the_provenance_it_is_for():
+    """Without these a pin cannot say which network or ledger it described."""
+    agg = amd._aggregate(
+        [amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
+                     node="n1", build="b1", ledger_seq=4242, network_id=21337)]
+    )
+    entry = amd.as_manifest("https://example.invalid", agg)
+
+    assert entry["network_id"] == 21337
+    assert entry["ledger_seq"] == 4242
+    assert entry["queried_at"]
+    assert entry["url"] == "https://example.invalid"
+
+
+def test_top_level_enabled_matches_the_per_amendment_flags():
+    """The field a consumer actually reads must not drift from the rows."""
+    agg = _agg(Live={"enabled": True}, Off={"enabled": False},
+               Also={"enabled": True})
+    entry = amd.as_manifest("u", agg)
+
+    assert entry["enabled"] == ["Also", "Live"]
+    assert entry["enabled"] == sorted(
+        a["name"] for a in entry["amendments"] if a["enabled"]
+    )
+
+
+def test_the_same_reading_serializes_to_the_same_bytes():
+    """Canonical output, so a regenerated manifest diffs only on real change."""
+    agg = _agg(B={"enabled": True}, A={"enabled": False})
+    first = amd.manifest_bytes({"mainnet": amd.as_manifest("u", agg)})
+    second = amd.manifest_bytes({"mainnet": amd.as_manifest("u", agg)})
+
+    assert first == second
+    assert first.endswith("\n"), "a missing trailing newline diffs the last line"
+
+
+def test_keys_are_sorted_throughout():
+    agg = _agg(A={"enabled": True})
+    text = amd.manifest_bytes({"z": amd.as_manifest("u", agg),
+                               "a": amd.as_manifest("u", agg)})
+    import json
+
+    parsed = json.loads(text)
+    assert list(parsed) == ["a", "z"]
+    assert text.index('"a"') < text.index('"z"'), "written in sorted order too"
+    assert list(parsed["a"]) == sorted(parsed["a"])
+
+
+def test_node_and_build_lists_are_ordered():
+    """They come from a set-like dedupe, so their order is otherwise arbitrary."""
+    agg = amd._aggregate([
+        amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
+                    node=n, build=b, ledger_seq=1)
+        for n, b in (("n2", "b2"), ("n1", "b1"))
+    ])
+    entry = amd.as_manifest("u", agg)
+
+    assert entry["backend_nodes"] == ["n1", "n2"]
+    assert entry["builds"] == ["b1", "b2"]
+
+
+def test_amendments_are_ordered_by_name_then_hash():
+    """Names are not unique in principle; the hash breaks the tie so two runs
+    against one ledger cannot order the list differently."""
+    agg = amd._aggregate([amd._Sample(
+        amd.normalize({
+            "FF": {"name": "Same", "enabled": True},
+            "AA": {"name": "Same", "enabled": True},
+            "BB": {"name": "Other", "enabled": True},
+        }), node="n", build="b", ledger_seq=1)])
+    entry = amd.as_manifest("u", agg)
+
+    assert [(a["name"], a["hash"]) for a in entry["amendments"]] == [
+        ("Other", "BB"), ("Same", "AA"), ("Same", "FF"),
+    ]
+
+
+def test_two_amendments_the_build_cannot_name_both_survive():
+    """Aggregation is keyed by hash, not by the label a build puts on it.
+
+    A node reports an amendment it does not know with no name, and `normalize`
+    calls every one of those "(unknown <hash>…)". Keyed by name they would be
+    distinct only by accident of that string; keyed by hash they are distinct
+    because they are.
+    """
+    feats = {"AA" + "0" * 62: {"enabled": True}, "BB" + "0" * 62: {"enabled": False}}
+    agg = amd._aggregate([amd._Sample(amd.normalize(feats), "n", "b", 1)])
+
+    assert len(agg.amendments) == 2
+    assert {a.hash for a in agg.amendments} == set(feats)
+
+
+def test_json_always_fetches_the_provenance_fields(monkeypatch, tmp_path):
+    """`--json` without `--net` queries two networks, and the cheap path skips
+    server_info — which is where network_id and ledger_seq come from.
+
+    A manifest written that way says `network_id: null`, and a consumer pinned
+    to it cannot tell which network it describes.
+    """
+    import json as _json
+
+    from click.testing import CliRunner
+
+    from xahaud_scripts.inspect_net import cli as inspect_cli
+
+    seen: list[bool] = []
+
+    def fake_fetch(url, timeout, samples=1, *, want_seq=True):
+        seen.append(want_seq)
+        return amd._aggregate([
+            amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
+                        node="n", build="b", ledger_seq=99, network_id=21337)
+        ])
+
+    monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
+    out = tmp_path / "m.json"
+    result = CliRunner().invoke(inspect_cli.amendments, ["--json", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert seen and all(seen), "every network must be asked for its ledger/network id"
+    written = _json.loads(out.read_text())
+    for entry in written.values():
+        assert entry["network_id"] == 21337
+        assert entry["ledger_seq"] == 99

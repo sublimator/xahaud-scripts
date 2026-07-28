@@ -139,11 +139,17 @@ def amendments(
     else:
         targets = {n: NETWORKS[n].rpc_url for n in AMENDMENT_NETWORKS}
 
+    # `server_info` is the only source of network_id / ledger_seq, and those are
+    # what makes a --json dump a pin rather than a list. The compare view can do
+    # without them; a file someone else will read cannot say which network and
+    # which ledger it described.
+    want_seq = bool(json_path) or len(targets) == 1 or samples > 1
+
     fetched: dict[str, amd.NetworkAmendments] = {}
     for name, endpoint in targets.items():
         try:
             fetched[name] = amd.fetch_sampled(
-                endpoint, timeout, samples, want_seq=len(targets) == 1 or samples > 1
+                endpoint, timeout, samples, want_seq=want_seq
             )
         except requests.RequestException as exc:
             err.print(f"[red]{name}[/red] ({endpoint}): request failed: {exc}")
@@ -158,38 +164,11 @@ def amendments(
         _render_compare(targets, fetched, check, diff_only)
 
     if json_path:
-        # A manifest, not just a dump: a consumer pinning its behaviour to this
-        # needs to know which network it describes, when it was true, and which
-        # ledger it was read at — otherwise it cannot tell a current answer from
-        # a year-old one. `enabled` is broken out because it is the only field
-        # that is network truth, and the only one worth depending on.
         raw = {
-            name: {
-                "url": targets[name],
-                "network_id": data.network_id,
-                "queried_at": data.queried_at,
-                "ledger_seq": data.ledger_seq,
-                "samples": data.samples,
-                "backend_nodes": sorted(data.nodes),
-                "builds": sorted(data.builds),
-                "enabled_unstable": sorted(data.enabled_unstable),
-                "nodeview_varied": sorted(data.nodeview_varied),
-                "enabled": sorted(a.name for a in data.amendments if a.enabled),
-                "amendments": [vars(a) for a in data.amendments],
-            }
+            name: amd.as_manifest(targets[name], data)
             for name, data in fetched.items()
         }
-        # Canonical: sorted keys throughout and a trailing newline, so a
-        # regenerated manifest diffs only where the network actually changed.
-        # `queried_at` and `ledger_seq` necessarily move every run — they are
-        # the provenance, and a manifest that hid them would be worse.
-        #
-        # Names are exactly what the network reports. A consumer with its own
-        # symbol convention normalises on import; this file does not know or
-        # care what anyone calls these downstream.
-        Path(json_path).write_text(
-            json.dumps(raw, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-        )
+        Path(json_path).write_text(amd.manifest_bytes(raw))
         err.print(f"  wrote raw data -> {json_path}")
 
 
@@ -851,6 +830,7 @@ def _dump_zombies_json(
         "public_definitions_url": zmb.PUBLIC_DEFINITIONS_URL,
         "ledger_seq": amendments.ledger_seq,
         "enabled_unstable": sorted(amendments.enabled_unstable),
+        "majority_unstable": sorted(amendments.majority_unstable),
         "enabled_amendments": [
             {"name": a.name, "amendment_id": a.amendment_id} for a in enabled
         ],

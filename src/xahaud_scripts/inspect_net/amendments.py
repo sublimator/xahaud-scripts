@@ -133,10 +133,12 @@ class Amendment:
 class NetworkAmendments:
     """Amendment state for one network, aggregated across one or more samples.
 
-    Only ``enabled`` is network truth (a ledger property — every synced node
-    agrees). ``vetoed``/``count``/``majority`` are the queried node's view, so
-    on a load-balanced endpoint they can vary between samples. The two
-    ``*_varied`` / ``*_unstable`` sets capture that, surfaced from --samples.
+    ``enabled`` and ``majority`` are both ledger properties — every synced node
+    agrees on them — so a disagreement across samples means a backend is out of
+    sync, and each is tracked separately because they mean different things.
+    ``vetoed``/``count``/``validations``/``threshold`` are the queried node's
+    own view and vary legitimately on a load-balanced endpoint; that is
+    ``nodeview_varied``. All three are surfaced from --samples.
     """
 
     amendments: list[Amendment]
@@ -152,6 +154,11 @@ class NetworkAmendments:
     # Amendment names whose `enabled` disagreed across samples — a real problem
     # (an out-of-sync / amendment-blocked backend), not just node-local opinion.
     enabled_unstable: set[str] = field(default_factory=set)
+    # Names whose `majority` disagreed. Also a ledger property, so also a
+    # backend being out of step — but it says nothing about whether the
+    # amendment is live, and a consumer that conflates the two turns an
+    # amendment days away from activating into a requirement today.
+    majority_unstable: set[str] = field(default_factory=set)
     # Names whose veto/vote fields varied across samples — node-local noise.
     nodeview_varied: set[str] = field(default_factory=set)
 
@@ -242,33 +249,48 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
     """Fold N samples into one view, recording enabled/node-local variance.
 
     The representative ``enabled`` per amendment is the most common across
-    samples; an amendment whose ``enabled`` was not unanimous is flagged in
-    ``enabled_unstable`` (an out-of-sync backend), and one whose veto/vote
-    fields varied is flagged in ``nodeview_varied`` (node-local noise).
+    samples. Three kinds of disagreement are recorded separately, because a
+    consumer acts on them differently:
+
+    * ``enabled_unstable`` — the samples disagreed about whether it is live.
+    * ``majority_unstable`` — they disagreed about its majority close time.
+      Also a ledger property, so also a backend out of step, but it is not
+      evidence the amendment is live.
+    * ``nodeview_varied`` — veto/vote fields differed, which is ordinary
+      node-local opinion on a load-balanced endpoint.
     """
+    # Keyed by hash, which is what identifies an amendment. The name is a label
+    # the binary attaches to it, and an amendment the queried build has never
+    # heard of has no name at all — keying by name would fold two of those into
+    # one row and drop whichever was read second.
     enabled_vals: dict[str, list[bool]] = defaultdict(list)
     majority_vals: dict[str, list[Any]] = defaultdict(list)
     nodeview_seen: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
     rep: dict[str, Amendment] = {}
     for sample in samples:
         for a in sample.amendments:
-            rep.setdefault(a.name, a)
-            enabled_vals[a.name].append(a.enabled)
+            rep.setdefault(a.hash, a)
+            enabled_vals[a.hash].append(a.enabled)
             # `majority` is a ledger property like `enabled`, so a
             # disagreement about it means a backend is out of sync — not the
             # node-local opinion that nodeview_varied is for.
-            nodeview_seen[a.name].add(
+            nodeview_seen[a.hash].add(
                 (a.vetoed, a.count, a.validations, a.threshold)
             )
-            majority_vals[a.name].append(a.majority)
+            majority_vals[a.hash].append(a.majority)
 
     # replace() rather than assignment: `rep` holds references to the first
     # sample's objects, and mutating them makes that sample silently disagree
     # with what it actually read.
     merged = {
-        name: replace(a, enabled=Counter(enabled_vals[name]).most_common(1)[0][0])
-        for name, a in rep.items()
+        h: replace(a, enabled=Counter(enabled_vals[h]).most_common(1)[0][0])
+        for h, a in rep.items()
     }
+
+    def _names(varied: dict[str, Any]) -> set[str]:
+        """Report the disagreements by name — that is what consumers match on."""
+        return {rep[h].name for h, v in varied.items()
+                if len(v if isinstance(v, set) else set(v)) > 1}
 
     return NetworkAmendments(
         amendments=sorted(merged.values(), key=lambda a: (a.name.lower(), a.hash)),
@@ -278,12 +300,52 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
         nodes=list(dict.fromkeys(s.node for s in samples if s.node)),
         builds=list(dict.fromkeys(s.build for s in samples if s.build)),
         samples=len(samples),
-        enabled_unstable=(
-            {n for n, v in enabled_vals.items() if len(set(v)) > 1}
-            | {n for n, v in majority_vals.items() if len(set(v)) > 1}
-        ),
-        nodeview_varied={n for n, v in nodeview_seen.items() if len(v) > 1},
+        enabled_unstable=_names(enabled_vals),
+        majority_unstable=_names(majority_vals),
+        nodeview_varied=_names(nodeview_seen),
     )
+
+
+def as_manifest(url: str, data: NetworkAmendments) -> dict[str, Any]:
+    """One network's entry in a ``--json`` manifest.
+
+    A manifest, not just a dump: a consumer pinning its behaviour to this needs
+    to know which network it describes, when it was true, and which ledger it
+    was read at — otherwise it cannot tell a current answer from a year-old
+    one. ``enabled`` is broken out because it is the only field that is network
+    truth, and the only one worth depending on.
+
+    Names are exactly what the network reports. A consumer with its own symbol
+    convention normalises on import; this file does not know or care what
+    anyone calls these downstream.
+    """
+    return {
+        "url": url,
+        "network_id": data.network_id,
+        "queried_at": data.queried_at,
+        "ledger_seq": data.ledger_seq,
+        "samples": data.samples,
+        "backend_nodes": sorted(data.nodes),
+        "builds": sorted(data.builds),
+        "enabled_unstable": sorted(data.enabled_unstable),
+        "majority_unstable": sorted(data.majority_unstable),
+        "nodeview_varied": sorted(data.nodeview_varied),
+        "enabled": sorted(a.name for a in data.amendments if a.enabled),
+        "amendments": [vars(a) for a in data.amendments],
+    }
+
+
+def manifest_bytes(raw: dict[str, Any]) -> str:
+    """Canonical text for a manifest.
+
+    Sorted keys throughout and a trailing newline, so a regenerated manifest
+    diffs only where the network actually changed. ``queried_at`` and
+    ``ledger_seq`` necessarily move every run — they are the provenance, and a
+    manifest that hid them to keep the bytes still would be worse.
+    """
+    import json
+
+    return json.dumps(raw, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def fetch_sampled(
