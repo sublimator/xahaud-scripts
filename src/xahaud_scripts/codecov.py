@@ -152,9 +152,10 @@ def _uncovered_lines(data: dict) -> list[tuple[str, int, str]]:
             if not (ln.get("is_diff") and ln.get("added")):
                 continue
             cov = (ln.get("coverage") or {}).get("head")
-            # 0 = miss; treat partial (list/dict/non-int) as miss too — keeps
-            # things conservative and matches what the user wants to fix.
-            if cov == 0 or (cov is not None and not isinstance(cov, int)):
+            # Codecov's compare API uses 0 = hit, 1 = miss, 2 = partial.
+            # Older/alternate responses may encode partial coverage as a
+            # non-integer value, which is also actionable and kept here.
+            if cov in (1, 2) or (cov is not None and not isinstance(cov, int)):
                 num = (ln.get("number") or {}).get("head")
                 value = ln.get("value") or ""
                 if num is not None:
