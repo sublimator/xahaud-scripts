@@ -34,6 +34,7 @@ from xahaud_scripts.build import (
 from xahaud_scripts.build import (
     ccache_show_config as _ccache_show_config,
 )
+from xahaud_scripts.hook_toolchain import require_test_hook_toolchain
 from xahaud_scripts.utils.lldb import create_lldb_script
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
@@ -50,6 +51,20 @@ logger = make_logger(__name__)
 
 
 BUILD_LOCK_NAME = ".x-build-lock"
+FITH_BETA_ENV = "XAHAU_SCRIPTS_FITH_BETA"
+
+
+def env_flag_enabled(name: str) -> bool:
+    """Return True when an opt-in environment flag is explicitly truthy."""
+    value = os.environ.get(name)
+    return value is not None and value.lower() not in {"", "0", "false", "no", "off"}
+
+
+def fith_enabled(selection: bool | None) -> bool:
+    """Resolve the explicit CLI selection, then the legacy beta environment."""
+    if selection is not None:
+        return selection
+    return env_flag_enabled(FITH_BETA_ENV)
 
 
 @contextlib.contextmanager
@@ -119,22 +134,66 @@ def find_rippled_binary(build_dir: str | Path) -> Path | None:
     return None
 
 
+def run_fith_preflight(
+    *,
+    xahaud_root: str,
+    build_dir: str,
+    base: str,
+    strict: bool,
+    dry_run: bool,
+    jobs: int | None,
+    tee_file: Path | None = None,
+) -> bool:
+    """Run the cppt FITH compile fan-out check for the current build dir."""
+    compile_commands = Path(build_dir) / "compile_commands.json"
+    if not compile_commands.is_file() and not dry_run:
+        logger.error(
+            f"FITH is enabled but compile_commands.json is missing: {compile_commands}"
+        )
+        logger.error(
+            "Fix: configure the build dir first, or disable this beta path with "
+            f"--no-fith / unset {FITH_BETA_ENV}."
+        )
+        return False
+
+    cppt = shutil.which("cppt")
+    if cppt is None:
+        logger.error("FITH is enabled but cppt was not found on PATH")
+        logger.error(
+            "Fix: install cpp-tools into this environment, or disable this beta path "
+            f"with --no-fith / unset {FITH_BETA_ENV}."
+        )
+        return False
+
+    cmd = [
+        cppt,
+        "beta",
+        "fith",
+        "--workspace",
+        xahaud_root,
+        "--compile-commands",
+        str(compile_commands),
+        f"base={base}",
+        f"strict={str(strict).lower()}",
+    ]
+    if dry_run:
+        cmd.append("dry-run=true")
+    if jobs is not None:
+        cmd.append(f"jobs={jobs}")
+
+    logger.info(f"Running FITH beta compile fan-out preflight with {cppt}...")
+    try:
+        run_command(cmd, tee_file=tee_file)
+    except subprocess.CalledProcessError:
+        logger.error("FITH preflight failed; fix cppt/fith evidence or use --no-fith")
+        raise
+    return True
+
+
 def get_build_output_path(xahaud_root: str, build_type: str) -> Path:
     """Return the tee file path for this worktree + build type."""
     slug = f"{Path(xahaud_root).name}-{build_type.lower()}"
     return OUTPUTS_DIR / f"{slug}.txt"
-
-
-def do_build_jshooks_header(tee_file: Path | None = None) -> None:
-    """Build the JS hooks header."""
-    logger.info("Building JS hooks header...")
-
-    try:
-        run_command(["build-jshooks-header", "--canonical"], tee_file=tee_file)
-        logger.info("JS hooks header built successfully")
-    except Exception as e:
-        logger.error(f"Failed to build JS hooks header: {e}")
-        raise
 
 
 def build_rippled(
@@ -157,6 +216,9 @@ def build_rippled(
     build_dir: str | None = None,
     tee_file: Path | None = None,
     jobs: int | None = None,
+    use_fith: bool = False,
+    fith_base: str = "HEAD",
+    fith_strict: bool = True,
 ) -> bool:
     """Build the rippled executable.
 
@@ -177,6 +239,9 @@ def build_rippled(
         dry_run: If True, print commands without executing
         unity: If True, enable unity builds (faster clean builds, slower incremental)
         build_dir: Build directory (default: build-debug for Debug, build for Release)
+        use_fith: If True, run cppt beta fith before the ordinary target build
+        fith_base: Git base commitish for FITH
+        fith_strict: If True, require complete FITH dependency coverage
 
     Returns:
         bool: True if build was successful, False otherwise
@@ -269,6 +334,17 @@ def build_rippled(
                 build_dir, options, dry_run=dry_run, tee_file=tee_file
             ):
                 return False
+
+        if use_fith and not run_fith_preflight(
+            xahaud_root=xahaud_root,
+            build_dir=build_dir,
+            base=fith_base,
+            strict=fith_strict,
+            dry_run=dry_run,
+            jobs=jobs,
+            tee_file=tee_file,
+        ):
+            return False
 
         # Build the target
         built = cmake_build(
@@ -399,12 +475,6 @@ def run_rippled(
     ),
     default="info",
     help="Set the logging level",
-)
-@click.option(
-    "--build-jshooks-header/--no-build-jshooks-header",
-    is_flag=True,
-    default=False,
-    help="Build JS hooks header",
 )
 @click.option(
     "--compile-hooks",
@@ -587,6 +657,25 @@ def run_rippled(
     help="Parallel build jobs (default: CPU count).",
 )
 @click.option(
+    "--fith/--no-fith",
+    default=None,
+    help=(
+        "Run/skip cppt beta fith before the ordinary build. When omitted, "
+        f"{FITH_BETA_ENV}=1 remains a compatibility opt-in."
+    ),
+)
+@click.option(
+    "--fith-base",
+    default="HEAD",
+    help="Git base commitish for cppt beta fith (default: HEAD / dirty worktree).",
+)
+@click.option(
+    "--fith-strict/--no-fith-strict",
+    is_flag=True,
+    default=True,
+    help="Require complete FITH dependency coverage when the beta path is enabled.",
+)
+@click.option(
     "--keep-gcda/--no-keep-gcda",
     is_flag=True,
     default=False,
@@ -612,7 +701,6 @@ def run_rippled(
 @click.argument("rippled_args", nargs=-1, type=click.UNPROCESSED)
 def main(
     log_level,
-    build_jshooks_header,
     compile_hooks,
     hooks_c_dir,
     hook_coverage,
@@ -643,6 +731,9 @@ def main(
     build_dir,
     save_binary,
     jobs,
+    fith,
+    fith_base,
+    fith_strict,
     keep_gcda,
     diff_cover,
     diff_cover_since,
@@ -700,6 +791,9 @@ def main(
 
         # Build with Release build type
         x-run-tests --build-type Release -- unit_test_hook
+
+        # Enable the beta precise compile fan-out preflight locally
+        x-run-tests --fith -- unit_test_hook
 
         # Dry run - show all commands without executing
         x-run-tests --dry-run --reconfigure-build -- unit_test_hook
@@ -838,17 +932,19 @@ def main(
         tee_file.parent.mkdir(parents=True, exist_ok=True)
         tee_file.write_text("")  # truncate at session start
         logger.info(f"Output tee: {tee_file}")
+        use_fith = fith_enabled(fith)
+        if use_fith:
+            source = "--fith" if fith is True else f"{FITH_BETA_ENV}=1"
+            logger.info(f"{source}: cppt beta fith will run before the ordinary build")
+        elif fith is False:
+            logger.info("Skipping FITH beta preflight because --no-fith was supplied")
 
         with change_directory(xahaud_root):
-            # Build JS hooks header if needed
-            if build_jshooks_header:
-                logger.info("Building JS hooks header...")
-                do_build_jshooks_header(tee_file=tee_file)
-
             # Compile WASM hooks from test file if requested
             if compile_hooks:
                 logger.info(f"Compiling WASM hooks from {compile_hooks}...")
                 try:
+                    require_test_hook_toolchain(compile_hooks)
                     cmd = ["hookz", "build-test-hooks", str(compile_hooks)]
                     for entry in hooks_c_dir:
                         cmd.extend(["--hooks-c-dir", entry])
@@ -897,6 +993,9 @@ def main(
                 build_dir=build_dir,
                 tee_file=tee_file,
                 jobs=jobs,
+                use_fith=use_fith,
+                fith_base=fith_base,
+                fith_strict=fith_strict,
             )
             recorder.build_finished(build_successful)
 

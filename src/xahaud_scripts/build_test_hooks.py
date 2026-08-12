@@ -7,9 +7,11 @@ defaults to SetHook_test.cpp (hookz itself requires an explicit file).
 
 import os
 import sys
+from pathlib import Path
 
 import click
 
+from xahaud_scripts.hook_toolchain import require_test_hook_toolchain
 from xahaud_scripts.utils.paths import get_xahaud_root
 
 
@@ -50,6 +52,16 @@ def main(ctx: click.Context, args: tuple[str, ...]) -> None:
             sys.exit(1)
 
     cmd.extend(args_list)
+    input_file = next(
+        (
+            Path(arg)
+            for arg in args_list
+            if not arg.startswith("-") and Path(arg).is_file()
+        ),
+        None,
+    )
+    if input_file is not None:
+        require_test_hook_toolchain(input_file)
     os.execvp("hookz", cmd)
 
 

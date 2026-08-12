@@ -20,6 +20,7 @@ from rich.syntax import Syntax
 
 console = Console()
 VERBOSE = False
+EXPECTED_CMAKE_GENERATOR = "Ninja"
 
 
 def _find_root() -> Path:
@@ -35,6 +36,30 @@ def _find_root() -> Path:
 def debug(msg: str) -> None:
     if VERBOSE:
         console.print(f"[dim cyan]\\[debug] {msg}[/dim cyan]")
+
+
+def _is_xahau_repo(root: Path) -> bool:
+    """Detect a Xahau (xahaud) checkout by its hooks trees.
+
+    Xahau keeps the pre-2.x src/ripple layout plus hooks sources; xrpld
+    repos (src/xrpld, include/xrpl) have neither marker.
+    """
+    return (root / "src" / "ripple" / "app" / "hook").is_dir() or (
+        root / "hook" / "hookapi.h"
+    ).is_file()
+
+
+def _refuse_xahau_repo(root: Path) -> None:
+    """Refuse to run against a Xahau checkout — that's x-run-tests territory."""
+    if not _is_xahau_repo(root):
+        return
+    console.print(
+        f"[bold red]{root} is a Xahau (xahaud) checkout — xr-build targets "
+        "xrpld and would pollute it with the wrong build tree, patches, and "
+        "conan state.[/bold red]\n"
+        "[yellow]Use x-run-tests for xahaud builds.[/yellow]"
+    )
+    raise click.ClickException("refusing to run xr-build in a Xahau repo")
 
 
 def _patch_already_applied(patch_content: str, root: Path) -> bool:
@@ -375,6 +400,39 @@ def _check_stale_cmake_caches(build_path: Path, cmake_defines: tuple[str, ...]) 
             cache_file.unlink()
 
 
+def _cached_cmake_generator(cache_file: Path) -> str | None:
+    """Return the configured generator from one main CMake cache."""
+    if not cache_file.is_file():
+        return None
+    match = re.search(
+        r"^CMAKE_GENERATOR:INTERNAL=(.+)$",
+        cache_file.read_text(),
+        re.MULTILINE,
+    )
+    return None if match is None else match.group(1).strip()
+
+
+def _require_ninja_cache(
+    build_path: Path,
+    build_type: str,
+    *,
+    use_preset: bool,
+) -> None:
+    """Refuse to reuse a main build directory configured by another generator."""
+    binary_dir = build_path / "build" / build_type if use_preset else build_path
+    cache_file = binary_dir / "CMakeCache.txt"
+    generator = _cached_cmake_generator(cache_file)
+    if generator is None or generator == EXPECTED_CMAKE_GENERATOR:
+        return
+    console.print(
+        f"[bold red]xr-build requires {EXPECTED_CMAKE_GENERATOR}, but "
+        f"{cache_file} uses {generator}.[/bold red]\n"
+        "[yellow]Use `xr-build --clean --conan ...` to regenerate the Conan "
+        "preset and build tree, or choose a fresh --build-dir.[/yellow]"
+    )
+    raise click.ClickException("refusing non-Ninja CMake cache")
+
+
 def _find_gtest_binary(build_path: Path, target: str, build_type: str) -> Path:
     """Find a gtest binary in the build tree.
 
@@ -579,6 +637,7 @@ def main(
         debug(f"Added {venv_bin} to PATH")
 
     root = _find_root()
+    _refuse_xahau_repo(root)
     build_path = root / build_dir
     build_type = "Debug" if (is_debug or coverage) else "Release"
 
@@ -709,6 +768,8 @@ def main(
             f"build_type={build_type}",
             "--conf",
             "tools.build:cxxflags=['-Wno-missing-template-arg-list-after-template-kw']",
+            "--conf",
+            "tools.cmake.cmaketoolchain:generator=Ninja",
             "..",
         ]
         try:
@@ -806,11 +867,25 @@ def main(
     # all the toolchain/path wiring correctly regardless of cmake_layout nesting)
     preset_name = f"conan-{build_type.lower()}"
     use_preset = use_cmake_preset and (root / "CMakeUserPresets.json").exists()
+    if not shutil.which("ninja"):
+        raise click.ClickException("xr-build requires ninja on PATH")
+    _require_ninja_cache(
+        build_path,
+        build_type,
+        use_preset=use_preset,
+    )
 
     if use_preset:
         debug(f"Using cmake preset: {preset_name}")
         run_cmd(
-            ["cmake", "--preset", preset_name, *cmake_args],
+            [
+                "cmake",
+                "--preset",
+                preset_name,
+                "-G",
+                EXPECTED_CMAKE_GENERATOR,
+                *cmake_args,
+            ],
             cwd=root,
         )
     else:
@@ -830,7 +905,7 @@ def main(
             [
                 "cmake",
                 "-G",
-                "Ninja",
+                EXPECTED_CMAKE_GENERATOR,
                 f"-DCMAKE_BUILD_TYPE={build_type}",
                 *cmake_args,
                 "-B",
@@ -1079,6 +1154,7 @@ def coverage_diff(since: str, build_dir: str, verbose: bool) -> None:
     VERBOSE = verbose
 
     root = _find_root()
+    _refuse_xahau_repo(root)
     build_path = root / build_dir
     json_report = build_path / "coverage" / "coverage.json"
 

@@ -22,12 +22,18 @@ x-run-tests --lldb -- ripple.app.Import                   # debug with lldb
 x-run-tests --ccache --build-type Release -- unit_test_hook
 x-run-tests --coverage --diff-cover -- unit_test_hook      # coverage + diff
 x-run-tests --dry-run --reconfigure-build                 # preview commands
+x-run-tests --fith -- unit_test_hook                        # dirty-worktree FITH + build + run
+x-run-tests --fith --fith-base origin/dev -- unit_test_hook # full branch FITH + build + run
 ```
 
 Key options:
 - Always builds first — `--no-build` was removed deliberately (tests against a
   stale binary present green results as evidence for code they never ran); an
   up-to-date incremental build is a cheap no-op
+- `--fith` enables the `cppt beta fith` compile fan-out preflight before the
+  ordinary target build. It is deliberately strict beta plumbing: failures
+  stop the run; use `--no-fith` to override the legacy
+  `XAHAU_SCRIPTS_FITH_BETA=1` opt-in.
 - Builds hold an exclusive per-build-dir lock (`build*/.x-build-lock`) and
   recompact ninja's databases after success — overlapping/killed ninja
   invocations corrupt `.ninja_deps`, which ninja never self-repairs (the
@@ -44,7 +50,6 @@ Key options:
 - `--diff-cover` - Show uncovered lines in git diff
 - `--lldb` - Run under lldb debugger
 - `--compile-hooks FILE` - Compile WASM hooks from test file first
-- `--build-jshooks-header` - Build JS hooks header first
 - `--unity/--no-unity` - Unity builds
 - Test names use dotted suite format after `--`: `ripple.app.Import`
 
@@ -59,6 +64,10 @@ xr-build --ccache --release                                # release with ccache
 xr-build --clean-build                                     # fresh build
 xr-build --skip-test                                       # build only
 ```
+
+Refuses to run inside a Xahau (xahaud) checkout (detected via its hooks
+trees) — use `x-run-tests` there; xr-build would pollute the repo with the
+wrong build tree, patches, and conan state.
 
 Key options:
 - `--coverage` - Enable gcov coverage
@@ -210,15 +219,6 @@ x-get-job <url> --no-logs             # steps only, no log output
 x-get-job <url> --raw-logs            # unformatted log output
 ```
 
-### x-build-jshooks-header
-
-Build the JS hooks header file using qjsc (QuickJS compiler).
-
-```bash
-x-build-jshooks-header --canonical
-x-build-jshooks-header --qjsc-binary /path/to/qjsc
-```
-
 ### x-build-test-hooks
 
 Extract WASM test blocks from C++ source, compile to WASM, generate header.
@@ -266,7 +266,6 @@ src/xahaud_scripts/
 ├── run_tests.py ............... x-run-tests entrypoint
 ├── build_xrpld.py ............. xr-build + xr-coverage-diff entrypoints
 ├── get_job.py ................. x-get-job entrypoint (GitHubActionsFetcher)
-├── build_jshooks_header.py .... x-build-jshooks-header entrypoint
 ├── build_test_hooks.py ........ x-build-test-hooks entrypoint
 ├── format_changed.py .......... x-format-changed entrypoint
 ├── quick_check.py ............. x-quick-check entrypoint
