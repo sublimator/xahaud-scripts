@@ -66,7 +66,7 @@ def _cell(a: amd.Amendment | None) -> Text:
     if a.vote_fraction and a.count is not None:
         passing = a.threshold is not None and a.count >= a.threshold
         if a.is_vetoed:
-            style, suffix = "red", "\u2298"      # this node votes against it
+            style, suffix = "red", "\u2298"  # this node votes against it
         elif passing:
             style, suffix = "green", ""
         else:
@@ -171,8 +171,7 @@ def amendments(
 
     if json_path:
         raw = {
-            name: amd.as_manifest(targets[name], data)
-            for name, data in fetched.items()
+            name: amd.as_manifest(targets[name], data) for name, data in fetched.items()
         }
         Path(json_path).write_text(amd.manifest_bytes(raw))
         err.print(f"  wrote raw data -> {json_path}")
@@ -184,16 +183,22 @@ def amendments(
         # is still written (it names what disagreed) but the command fails,
         # because a regen step that swallows this produces a confident manifest
         # out of an unresolved question.
-        unstable = {n: sorted(d.enabled_unstable)
-                    for n, d in fetched.items() if d.enabled_unstable}
+        unstable = {
+            n: sorted(d.enabled_unstable)
+            for n, d in fetched.items()
+            if d.enabled_unstable
+        }
         if unstable and not force:
             for name, names in unstable.items():
-                err.print(f"[red]{name}[/red]: backends disagree on `enabled` for "
-                          f"{', '.join(names)}")
+                err.print(
+                    f"[red]{name}[/red]: backends disagree on `enabled` for "
+                    f"{', '.join(names)}"
+                )
             raise click.ClickException(
                 "refusing to certify a manifest whose `enabled` list is not "
                 "agreed across samples — re-run when the endpoint is "
-                "consistent, or pass --force to write it anyway")
+                "consistent, or pass --force to write it anyway"
+            )
 
 
 def _render_single(

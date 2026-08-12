@@ -295,6 +295,7 @@ def test_aggregate_dedupes_nodes_and_builds():
 #  Network truth vs the queried node's opinion
 # --------------------------------------------------------------------------- #
 
+
 def test_majority_outranks_a_nodes_veto():
     """A majority activates on a known date whatever one node votes.
 
@@ -302,8 +303,9 @@ def test_majority_outranks_a_nodes_veto():
     only part a reader can act on — and `vetoed` is that node's own config,
     not a network decision.
     """
-    a = amd.normalize({"H": {"name": "M", "enabled": False, "vetoed": True,
-                             "majority": 835701281}})[0]
+    a = amd.normalize(
+        {"H": {"name": "M", "enabled": False, "vetoed": True, "majority": 835701281}}
+    )[0]
     assert a.is_vetoed is True
     assert a.status() == amd.STATUS_MAJORITY
 
@@ -314,8 +316,9 @@ def test_veto_still_wins_without_a_majority():
 
 
 def test_enabled_outranks_everything():
-    a = amd.normalize({"H": {"name": "E", "enabled": True, "vetoed": True,
-                             "majority": 835701281}})[0]
+    a = amd.normalize(
+        {"H": {"name": "E", "enabled": True, "vetoed": True, "majority": 835701281}}
+    )[0]
     assert a.status() == amd.STATUS_ENABLED
 
 
@@ -323,11 +326,13 @@ def test_aggregate_does_not_mutate_the_samples_it_read():
     """`rep` holds references to the first sample's objects."""
     first = amd.normalize({"H": {"name": "A", "enabled": True}})
     second = amd.normalize({"H": {"name": "A", "enabled": False}})
-    amd._aggregate([
-        amd._Sample(first, "n1", "b", 1),
-        amd._Sample(second, "n2", "b", 1),
-        amd._Sample(second, "n3", "b", 1),
-    ])
+    amd._aggregate(
+        [
+            amd._Sample(first, "n1", "b", 1),
+            amd._Sample(second, "n2", "b", 1),
+            amd._Sample(second, "n3", "b", 1),
+        ]
+    )
     assert first[0].enabled is True, "the first sample was rewritten"
 
 
@@ -389,21 +394,42 @@ def test_a_veto_disagreement_is_node_opinion():
 #  The compare cell prefers a number to a word
 # --------------------------------------------------------------------------- #
 
+
 def test_compare_cell_shows_the_tally_for_a_vetoed_amendment():
     """The number says whether a veto is one node's opinion or a settled
     outcome; the word cannot."""
     from xahaud_scripts.inspect_net.cli import _cell
 
-    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True,
-                             "count": 0, "validations": 4, "threshold": 3}})[0]
+    a = amd.normalize(
+        {
+            "H": {
+                "name": "V",
+                "enabled": False,
+                "vetoed": True,
+                "count": 0,
+                "validations": 4,
+                "threshold": 3,
+            }
+        }
+    )[0]
     assert "0/4" in _cell(a).plain
 
 
 def test_compare_cell_marks_a_vetoed_tally(self=None):
     from xahaud_scripts.inspect_net.cli import _cell
 
-    a = amd.normalize({"H": {"name": "V", "enabled": False, "vetoed": True,
-                             "count": 0, "validations": 4, "threshold": 3}})[0]
+    a = amd.normalize(
+        {
+            "H": {
+                "name": "V",
+                "enabled": False,
+                "vetoed": True,
+                "count": 0,
+                "validations": 4,
+                "threshold": 3,
+            }
+        }
+    )[0]
     assert _cell(a).plain.endswith("\u2298")
 
 
@@ -417,14 +443,25 @@ def test_compare_cell_falls_back_to_the_word_without_a_tally(self=None):
 def test_compare_cell_prefers_an_activation_date():
     from xahaud_scripts.inspect_net.cli import _cell
 
-    a = amd.normalize({"H": {"name": "M", "enabled": False, "majority": 835701281,
-                             "count": 4, "validations": 4, "threshold": 3}})[0]
+    a = amd.normalize(
+        {
+            "H": {
+                "name": "M",
+                "enabled": False,
+                "majority": 835701281,
+                "count": 4,
+                "validations": 4,
+                "threshold": 3,
+            }
+        }
+    )[0]
     assert _cell(a).plain.startswith("\u2192")
 
 
 # --------------------------------------------------------------------------- #
 #  The --json manifest, as a contract a consumer pins to
 # --------------------------------------------------------------------------- #
+
 
 def _agg(**flags):
     return amd._aggregate([_sample("n1", **flags)])
@@ -433,8 +470,15 @@ def _agg(**flags):
 def test_a_manifest_carries_the_provenance_it_is_for():
     """Without these a pin cannot say which network or ledger it described."""
     agg = amd._aggregate(
-        [amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
-                     node="n1", build="b1", ledger_seq=4242, network_id=21337)]
+        [
+            amd._Sample(
+                amd.normalize({"H": {"name": "A", "enabled": True}}),
+                node="n1",
+                build="b1",
+                ledger_seq=4242,
+                network_id=21337,
+            )
+        ]
     )
     entry = amd.as_manifest("https://example.invalid", agg)
 
@@ -446,8 +490,7 @@ def test_a_manifest_carries_the_provenance_it_is_for():
 
 def test_top_level_enabled_matches_the_per_amendment_flags():
     """The field a consumer actually reads must not drift from the rows."""
-    agg = _agg(Live={"enabled": True}, Off={"enabled": False},
-               Also={"enabled": True})
+    agg = _agg(Live={"enabled": True}, Off={"enabled": False}, Also={"enabled": True})
     entry = amd.as_manifest("u", agg)
 
     assert entry["enabled"] == ["Also", "Live"]
@@ -468,8 +511,9 @@ def test_the_same_reading_serializes_to_the_same_bytes():
 
 def test_keys_are_sorted_throughout():
     agg = _agg(A={"enabled": True})
-    text = amd.manifest_bytes({"z": amd.as_manifest("u", agg),
-                               "a": amd.as_manifest("u", agg)})
+    text = amd.manifest_bytes(
+        {"z": amd.as_manifest("u", agg), "a": amd.as_manifest("u", agg)}
+    )
     import json
 
     parsed = json.loads(text)
@@ -480,11 +524,17 @@ def test_keys_are_sorted_throughout():
 
 def test_node_and_build_lists_are_ordered():
     """They come from a set-like dedupe, so their order is otherwise arbitrary."""
-    agg = amd._aggregate([
-        amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
-                    node=n, build=b, ledger_seq=1)
-        for n, b in (("n2", "b2"), ("n1", "b1"))
-    ])
+    agg = amd._aggregate(
+        [
+            amd._Sample(
+                amd.normalize({"H": {"name": "A", "enabled": True}}),
+                node=n,
+                build=b,
+                ledger_seq=1,
+            )
+            for n, b in (("n2", "b2"), ("n1", "b1"))
+        ]
+    )
     entry = amd.as_manifest("u", agg)
 
     assert entry["backend_nodes"] == ["n1", "n2"]
@@ -494,16 +544,28 @@ def test_node_and_build_lists_are_ordered():
 def test_amendments_are_ordered_by_name_then_hash():
     """Names are not unique in principle; the hash breaks the tie so two runs
     against one ledger cannot order the list differently."""
-    agg = amd._aggregate([amd._Sample(
-        amd.normalize({
-            "FF": {"name": "Same", "enabled": True},
-            "AA": {"name": "Same", "enabled": True},
-            "BB": {"name": "Other", "enabled": True},
-        }), node="n", build="b", ledger_seq=1)])
+    agg = amd._aggregate(
+        [
+            amd._Sample(
+                amd.normalize(
+                    {
+                        "FF": {"name": "Same", "enabled": True},
+                        "AA": {"name": "Same", "enabled": True},
+                        "BB": {"name": "Other", "enabled": True},
+                    }
+                ),
+                node="n",
+                build="b",
+                ledger_seq=1,
+            )
+        ]
+    )
     entry = amd.as_manifest("u", agg)
 
     assert [(a["name"], a["hash"]) for a in entry["amendments"]] == [
-        ("Other", "BB"), ("Same", "AA"), ("Same", "FF"),
+        ("Other", "BB"),
+        ("Same", "AA"),
+        ("Same", "FF"),
     ]
 
 
@@ -539,10 +601,17 @@ def test_json_always_fetches_the_provenance_fields(monkeypatch, tmp_path):
 
     def fake_fetch(url, timeout, samples=1, *, want_seq=True):
         seen.append(want_seq)
-        return amd._aggregate([
-            amd._Sample(amd.normalize({"H": {"name": "A", "enabled": True}}),
-                        node="n", build="b", ledger_seq=99, network_id=21337)
-        ])
+        return amd._aggregate(
+            [
+                amd._Sample(
+                    amd.normalize({"H": {"name": "A", "enabled": True}}),
+                    node="n",
+                    build="b",
+                    ledger_seq=99,
+                    network_id=21337,
+                )
+            ]
+        )
 
     monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
     out = tmp_path / "m.json"
@@ -565,17 +634,30 @@ def test_a_disagreed_enabled_list_is_not_certified(monkeypatch, tmp_path):
     from xahaud_scripts.inspect_net import cli as inspect_cli
 
     def fake_fetch(url, timeout, samples=1, *, want_seq=True):
-        return amd._aggregate([
-            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": True}}),
-                        "n1", "b", 1, network_id=21337),
-            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": False}}),
-                        "n2", "b", 1, network_id=21337),
-        ])
+        return amd._aggregate(
+            [
+                amd._Sample(
+                    amd.normalize({"H": {"name": "Split", "enabled": True}}),
+                    "n1",
+                    "b",
+                    1,
+                    network_id=21337,
+                ),
+                amd._Sample(
+                    amd.normalize({"H": {"name": "Split", "enabled": False}}),
+                    "n2",
+                    "b",
+                    1,
+                    network_id=21337,
+                ),
+            ]
+        )
 
     monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
     out = tmp_path / "m.json"
     result = CliRunner().invoke(
-        inspect_cli.amendments, ["--net", "mainnet", "--json", str(out), "--samples", "2"]
+        inspect_cli.amendments,
+        ["--net", "mainnet", "--json", str(out), "--samples", "2"],
     )
 
     assert result.exit_code != 0
@@ -589,12 +671,24 @@ def test_force_writes_it_anyway(monkeypatch, tmp_path):
     from xahaud_scripts.inspect_net import cli as inspect_cli
 
     def fake_fetch(url, timeout, samples=1, *, want_seq=True):
-        return amd._aggregate([
-            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": True}}),
-                        "n1", "b", 1, network_id=21337),
-            amd._Sample(amd.normalize({"H": {"name": "Split", "enabled": False}}),
-                        "n2", "b", 1, network_id=21337),
-        ])
+        return amd._aggregate(
+            [
+                amd._Sample(
+                    amd.normalize({"H": {"name": "Split", "enabled": True}}),
+                    "n1",
+                    "b",
+                    1,
+                    network_id=21337,
+                ),
+                amd._Sample(
+                    amd.normalize({"H": {"name": "Split", "enabled": False}}),
+                    "n2",
+                    "b",
+                    1,
+                    network_id=21337,
+                ),
+            ]
+        )
 
     monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
     out = tmp_path / "m.json"
@@ -614,10 +708,17 @@ def test_an_agreed_manifest_is_certified(monkeypatch, tmp_path):
     from xahaud_scripts.inspect_net import cli as inspect_cli
 
     def fake_fetch(url, timeout, samples=1, *, want_seq=True):
-        return amd._aggregate([
-            amd._Sample(amd.normalize({"H": {"name": "Agreed", "enabled": True}}),
-                        "n1", "b", 1, network_id=21337),
-        ])
+        return amd._aggregate(
+            [
+                amd._Sample(
+                    amd.normalize({"H": {"name": "Agreed", "enabled": True}}),
+                    "n1",
+                    "b",
+                    1,
+                    network_id=21337,
+                ),
+            ]
+        )
 
     monkeypatch.setattr(inspect_cli.amd, "fetch_sampled", fake_fetch)
     out = tmp_path / "m.json"

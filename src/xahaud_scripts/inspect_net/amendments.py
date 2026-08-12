@@ -274,9 +274,7 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
             # `majority` is a ledger property like `enabled`, so a
             # disagreement about it means a backend is out of sync — not the
             # node-local opinion that nodeview_varied is for.
-            nodeview_seen[a.hash].add(
-                (a.vetoed, a.count, a.validations, a.threshold)
-            )
+            nodeview_seen[a.hash].add((a.vetoed, a.count, a.validations, a.threshold))
             majority_vals[a.hash].append(a.majority)
 
     # replace() rather than assignment: `rep` holds references to the first
@@ -289,8 +287,11 @@ def _aggregate(samples: list[_Sample]) -> NetworkAmendments:
 
     def _names(varied: dict[str, Any]) -> set[str]:
         """Report the disagreements by name — that is what consumers match on."""
-        return {rep[h].name for h, v in varied.items()
-                if len(v if isinstance(v, set) else set(v)) > 1}
+        return {
+            rep[h].name
+            for h, v in varied.items()
+            if len(v if isinstance(v, set) else set(v)) > 1
+        }
 
     return NetworkAmendments(
         amendments=sorted(merged.values(), key=lambda a: (a.name.lower(), a.hash)),
