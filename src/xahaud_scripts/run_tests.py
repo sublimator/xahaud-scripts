@@ -134,7 +134,7 @@ def find_rippled_binary(build_dir: str | Path) -> Path | None:
     return None
 
 
-def run_fith_preflight(
+def run_fith_quick_build(
     *,
     xahaud_root: str,
     build_dir: str,
@@ -142,9 +142,10 @@ def run_fith_preflight(
     strict: bool,
     dry_run: bool,
     jobs: int | None,
+    target: str,
     tee_file: Path | None = None,
 ) -> bool:
-    """Run the cppt FITH compile fan-out check for the current build dir."""
+    """Build a heuristic compile slice and directly quick-link the target."""
     compile_commands = Path(build_dir) / "compile_commands.json"
     if not compile_commands.is_file() and not dry_run:
         logger.error(
@@ -175,19 +176,27 @@ def run_fith_preflight(
         str(compile_commands),
         f"base={base}",
         f"strict={str(strict).lower()}",
+        f"link-target={target}",
     ]
     if dry_run:
         cmd.append("dry-run=true")
     if jobs is not None:
         cmd.append(f"jobs={jobs}")
 
-    logger.info(f"Running FITH beta compile fan-out preflight with {cppt}...")
+    logger.info(f"Quick-building {target} with FITH ({cppt})...")
     try:
         run_command(cmd, tee_file=tee_file)
     except subprocess.CalledProcessError:
-        logger.error("FITH preflight failed; fix cppt/fith evidence or use --no-fith")
+        logger.error("FITH quick build failed; use --no-fith for the ordinary build")
         raise
     return True
+
+
+def fith_receipt_path(build_dir: str | Path, target: str) -> Path:
+    output = Path(target)
+    if not output.is_absolute():
+        output = Path(build_dir) / output
+    return output.with_name(f".{output.name}.fith-receipt.json")
 
 
 def get_build_output_path(xahaud_root: str, build_type: str) -> Path:
@@ -218,7 +227,7 @@ def build_rippled(
     jobs: int | None = None,
     use_fith: bool = False,
     fith_base: str = "HEAD",
-    fith_strict: bool = True,
+    fith_strict: bool = False,
 ) -> bool:
     """Build the rippled executable.
 
@@ -239,7 +248,7 @@ def build_rippled(
         dry_run: If True, print commands without executing
         unity: If True, enable unity builds (faster clean builds, slower incremental)
         build_dir: Build directory (default: build-debug for Debug, build for Release)
-        use_fith: If True, run cppt beta fith before the ordinary target build
+        use_fith: If True, use cppt beta fith as the heuristic quick build
         fith_base: Git base commitish for FITH
         fith_strict: If True, require complete FITH dependency coverage
 
@@ -335,16 +344,21 @@ def build_rippled(
             ):
                 return False
 
-        if use_fith and not run_fith_preflight(
-            xahaud_root=xahaud_root,
-            build_dir=build_dir,
-            base=fith_base,
-            strict=fith_strict,
-            dry_run=dry_run,
-            jobs=jobs,
-            tee_file=tee_file,
-        ):
-            return False
+        if use_fith:
+            if not run_fith_quick_build(
+                xahaud_root=xahaud_root,
+                build_dir=build_dir,
+                base=fith_base,
+                strict=fith_strict,
+                dry_run=dry_run,
+                jobs=jobs,
+                target=target,
+                tee_file=tee_file,
+            ):
+                return False
+            if not dry_run:
+                recompact_ninja_dbs(build_dir)
+            return True
 
         # Build the target
         built = cmake_build(
@@ -360,6 +374,7 @@ def build_rippled(
         )
         if built and not dry_run:
             recompact_ninja_dbs(build_dir)
+            fith_receipt_path(build_dir, target).unlink(missing_ok=True)
         return built
 
 
@@ -660,7 +675,7 @@ def run_rippled(
     "--fith/--no-fith",
     default=None,
     help=(
-        "Run/skip cppt beta fith before the ordinary build. When omitted, "
+        "Use/skip the heuristic cppt FITH quick build. When omitted, "
         f"{FITH_BETA_ENV}=1 remains a compatibility opt-in."
     ),
 )
@@ -672,8 +687,8 @@ def run_rippled(
 @click.option(
     "--fith-strict/--no-fith-strict",
     is_flag=True,
-    default=True,
-    help="Require complete FITH dependency coverage when the beta path is enabled.",
+    default=False,
+    help="Opt in to refusing incomplete FITH dependency coverage.",
 )
 @click.option(
     "--keep-gcda/--no-keep-gcda",
@@ -792,7 +807,7 @@ def main(
         # Build with Release build type
         x-run-tests --build-type Release -- unit_test_hook
 
-        # Enable the beta precise compile fan-out preflight locally
+        # Use the heuristic quick compile-and-link path locally
         x-run-tests --fith -- unit_test_hook
 
         # Dry run - show all commands without executing
@@ -935,9 +950,9 @@ def main(
         use_fith = fith_enabled(fith)
         if use_fith:
             source = "--fith" if fith is True else f"{FITH_BETA_ENV}=1"
-            logger.info(f"{source}: cppt beta fith will run before the ordinary build")
+            logger.info(f"{source}: using cppt FITH instead of the ordinary build")
         elif fith is False:
-            logger.info("Skipping FITH beta preflight because --no-fith was supplied")
+            logger.info("Using the ordinary build because --no-fith was supplied")
 
         with change_directory(xahaud_root):
             # Compile WASM hooks from test file if requested

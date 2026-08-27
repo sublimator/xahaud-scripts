@@ -10,7 +10,7 @@ from xahaud_scripts.run_tests import (
     build_rippled,
     env_flag_enabled,
     fith_enabled,
-    run_fith_preflight,
+    run_fith_quick_build,
 )
 
 
@@ -33,7 +33,7 @@ def test_fith_requires_beta_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not fith_enabled(False)
 
 
-def test_run_fith_preflight_invokes_cppt_with_build_database(
+def test_run_fith_quick_build_invokes_cppt_with_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -55,13 +55,14 @@ def test_run_fith_preflight_invokes_cppt_with_build_database(
         or subprocess.CompletedProcess(cmd, 0),
     )
 
-    assert run_fith_preflight(
+    assert run_fith_quick_build(
         xahaud_root=str(root),
         build_dir=str(build_dir),
         base="origin/dev",
         strict=True,
         dry_run=False,
         jobs=8,
+        target="rippled",
         tee_file=tee_file,
     )
 
@@ -77,6 +78,7 @@ def test_run_fith_preflight_invokes_cppt_with_build_database(
                 str(compile_commands),
                 "base=origin/dev",
                 "strict=true",
+                "link-target=rippled",
                 "jobs=8",
             ],
             tee_file,
@@ -84,7 +86,7 @@ def test_run_fith_preflight_invokes_cppt_with_build_database(
     ]
 
 
-def test_run_fith_preflight_fails_closed_without_compile_database(
+def test_run_fith_quick_build_fails_without_compile_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -97,18 +99,19 @@ def test_run_fith_preflight_fails_closed_without_compile_database(
         lambda name: calls.append(name) or "/fake/cppt",
     )
 
-    assert not run_fith_preflight(
+    assert not run_fith_quick_build(
         xahaud_root=str(root),
         build_dir=str(build_dir),
         base="HEAD",
         strict=True,
         dry_run=False,
         jobs=None,
+        target="rippled",
     )
     assert calls == []
 
 
-def test_build_runs_fith_before_ordinary_target_build(
+def test_build_uses_fith_instead_of_ordinary_target_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,13 +130,49 @@ def test_build_runs_fith_before_ordinary_target_build(
         lambda **_kwargs: calls.append("check"),
     )
     monkeypatch.setattr(
-        "xahaud_scripts.run_tests.run_fith_preflight",
-        lambda **_kwargs: calls.append("fith") or True,
+        "xahaud_scripts.run_tests.run_fith_quick_build",
+        lambda **kwargs: calls.append(
+            f"fith:strict={str(kwargs['strict']).lower()}:target={kwargs['target']}"
+        )
+        or True,
     )
     monkeypatch.setattr(
         "xahaud_scripts.run_tests.cmake_build",
         lambda *_args, **_kwargs: calls.append("build") or True,
     )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.recompact_ninja_dbs",
+        lambda _build_dir: calls.append("recompact"),
+    )
 
     assert build_rippled(build_dir=str(build_dir), use_fith=True)
-    assert calls == ["check", "fith", "build"]
+    assert calls == ["check", "fith:strict=false:target=rippled", "recompact"]
+
+
+def test_ordinary_build_removes_matching_fith_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    build_dir = root / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "CMakeCache.txt").write_text("# configured\n")
+    receipt = build_dir / ".rippled.fith-receipt.json"
+    receipt.write_text("{}\n")
+
+    monkeypatch.setattr("xahaud_scripts.run_tests.get_xahaud_root", lambda: str(root))
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.conan_toolchain_present", lambda _build_dir: True
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.check_config_mismatch", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.cmake_build", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.recompact_ninja_dbs", lambda _build_dir: None
+    )
+
+    assert build_rippled(build_dir=str(build_dir), use_fith=False)
+    assert not receipt.exists()

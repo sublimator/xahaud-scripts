@@ -40,14 +40,20 @@ commands on `PATH` when a test contains `[test.tshook]`, `[test.jshook]`, or a
 `.ts`/`.js` file reference. `JSHOOKZ_HOOK_COMPILER` may select another jshookz
 command; `QJS_HOOK_COMPILER` remains a compatibility fallback.
 
-### FITH beta preflight
+### FITH quick build
 
-Pass `--fith` to make `x-run-tests` run `cppt beta fith` before the ordinary
-build. By default FITH selects the object fan-out for modified and untracked
-files (`--fith-base HEAD`), then the normal target build/link still runs before
-tests. Use `--fith-base origin/dev` deliberately for the full branch delta.
-`XAHAU_SCRIPTS_FITH_BETA=1` remains a compatibility opt-in and `--no-fith`
-overrides it for one run.
+Pass `--fith` to make `x-run-tests` use `cppt beta fith` as the build: it
+heuristically selects the objects that need the current diff, compiles only
+that slice, and directly relinks the test binary without asking Ninja to wake
+the full header fan-out. Incomplete graph evidence warns and proceeds by
+default; `--fith-strict` opts into refusal. Use `--no-fith` when you deliberately
+want the ordinary/release-authoritative build.
+
+The default diff is the dirty worktree (`--fith-base HEAD`). Use
+`--fith-base origin/dev` deliberately for the full branch delta.
+`XAHAU_SCRIPTS_FITH_BETA=1` remains a compatibility opt-in. A quick-linked
+binary stays at the ordinary target path and carries an adjacent hidden FITH
+receipt; a successful ordinary build removes that receipt.
 
 ## Saved Test Binaries
 
