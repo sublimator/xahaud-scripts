@@ -133,20 +133,31 @@ hook compilation, and similar integration scenarios.
 
 ## Running
 
-    x-testnet run --scenario-script my_scenario.py
-    x-testnet run --scenario-script my_scenario.py --teardown
+Scenarios run via a **suite** — a YAML file listing tests and their network
+config. There is no other entry point.
 
-Flags:
-- `--scenario-script PATH` — Run a scenario script after network launch
-- `--teardown` — Kill nodes after the scenario finishes
-- `--feature HASH` — Enable/disable amendments (prefix `-` to disable)
-- `--launcher tmux` — Use tmux (required for node lifecycle control)
+    x-testnet suite .testnet/scenarios/suite.yml
+    x-testnet suite .testnet/scenarios/suite.yml --test my_scenario
+    x-testnet suite .testnet/scenarios/suite.yml --list-tests
+    x-testnet suite .testnet/scenarios/suite.yml --dry-run
 
-The scenario runner:
-1. Launches the network and waits for the first ledger
-2. Calls your `async def scenario(ctx, log)` function
-3. Reports pass/fail and exits (non-zero on failure)
-4. Logs to `.testnet/output/logs/scenario-test.log`
+Useful flags:
+- `--test NAME` — Run one test (or one variant: `NAME@label`); repeatable
+- `--test-n N` — Run each test N times (flaky-test hunting)
+- `--params-json '{...}'` — Override scenario kwargs (skips variants)
+- `--env NAME=VALUE` — Merge an env var into every test's config
+- `--with-py-logs xahaud_scripts.testnet=DEBUG` — Extra Python logs to file
+- `--no-stop-on-fail` — Keep going after the first failure
+
+Each test gets a **fresh network**: teardown -> generate -> launch -> scenario.
+The runner then:
+1. Waits for the network, then calls your `async def scenario(ctx, log)`
+2. Reports pass/fail per test and exits non-zero if any failed
+3. Logs to `.testnet/output/logs/scenario-test.log` (combined) and
+   `.testnet/output/runs/latest/<test>/scenario.log` (per test)
+4. On failure, archives node dirs + logs to
+   `.testnet/output/runs/<timestamp>-<test>/` so they survive teardown —
+   search them with `x-testnet logs-search --run latest/<test> PATTERN`
 
 ## Script Format
 
@@ -228,7 +239,7 @@ When neither is given, all nodes in the network are targeted.
 Votes ConsensusEntropy accept on all nodes except n4, then waits for n4
 to crash as the amendment activates without its support.
 
-    x-testnet run --scenario-script consensus_entropy_crash.py
+    x-testnet suite .testnet/scenarios/suite.yml --test consensus_entropy_crash
 \"\"\"
 
 
@@ -348,10 +359,6 @@ x-testnet suite suite.yml --test entropy_with_transactions@heavy
 # Override params from CLI (skips variants)
 x-testnet suite suite.yml --test entropy_with_transactions \\
     --params-json '{"min_txns": 100, "max_txns": 200}'
-
-# Single script with params
-x-testnet run --scenario-script my_test.py \\
-    --params-json '{"min_txns": 100}'
 ```
 
 ### Suite YAML structure

@@ -816,10 +816,18 @@ class _RunScenarioProcessManager:
         pass
 
 
-def test_run_scenario_failure_archives_logs_before_teardown(
+def test_suite_scenario_failure_archives_logs_before_teardown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A failed suite test archives node dirs + logs before killing the network.
+
+    Guards the diagnose-a-failure path: debug.log and network.json must survive
+    into both ``runs/latest/<name>/`` and a timestamped ``runs/<ts>-<name>/``,
+    while the bulky ``db/`` is excluded.
+    """
+    from xahaud_scripts.testnet.suite import SuiteConfig, _run_one_test
+
     base_dir = tmp_path / "testnet"
     node_dir = base_dir / "n0"
     node_dir.mkdir(parents=True)
@@ -847,9 +855,16 @@ def test_run_scenario_failure_archives_logs_before_teardown(
             port_ws=DEFAULT_BASE_PORT_WS,
         )
     ]
+    # Keep the prepared node dirs: real generate() would shell out to
+    # validator-keys, and real run() would launch processes. generate() still
+    # has to leave network.json behind — the archive copies it.
+    monkeypatch.setattr(
+        network, "generate", lambda **_kwargs: network._save_network_info()
+    )
+    monkeypatch.setattr(network, "run", lambda _launch_config: None)
 
     monkeypatch.setattr(
-        "xahaud_scripts.testnet.cli._create_network",
+        "xahaud_scripts.testnet.suite._create_network",
         lambda *_args, **_kwargs: network,
     )
 
@@ -857,29 +872,27 @@ def test_run_scenario_failure_archives_logs_before_teardown(
         return False
 
     monkeypatch.setattr(
-        "xahaud_scripts.testnet.scenario.run_scenario_with_monitor",
+        "xahaud_scripts.testnet.suite.run_scenario_with_monitor",
         fail_scenario,
     )
 
     script = tmp_path / "bad_scenario.py"
     script.write_text("async def scenario(ctx, log):\n    pass\n")
 
-    result = CliRunner().invoke(
-        testnet,
-        [
-            "--xahaud-root",
-            str(tmp_path),
-            "run",
-            "--node-count",
-            "1",
-            "--scenario-script",
-            str(script),
-            "--teardown",
-        ],
+    # run_suite() creates this parent before calling _run_one_test; do the same
+    # so the scenario reaches its own failure instead of dying in the logger.
+    combined_log = tmp_path / ".testnet" / "output" / "logs" / "scenario-test.log"
+    combined_log.parent.mkdir(parents=True, exist_ok=True)
+
+    result = _run_one_test(
+        tmp_path,
+        SuiteConfig(defaults={"network": {"node_count": 1}}, tests=[]),
+        {"name": "bad_scenario", "script": str(script)},
+        combined_log=combined_log,
     )
 
-    assert result.exit_code == 1, result.output
-    assert not node_dir.exists()
+    assert result.passed is False
+    assert result.error == "Scenario failed", result.error
     latest = tmp_path / ".testnet" / "output" / "runs" / "latest" / "bad_scenario"
     assert (latest / "n0" / "debug.log").read_text() == (
         "N0 01:02:03 +00 failure clue\n"
@@ -892,6 +905,7 @@ def test_run_scenario_failure_archives_logs_before_teardown(
     )
     assert len(failures) == 1
     assert (failures[0] / "n0" / "debug.log").exists()
+    assert result.snapshot_dir == failures[0]
 
 
 class _TopologyRPC:

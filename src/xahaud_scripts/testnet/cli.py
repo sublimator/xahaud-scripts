@@ -38,6 +38,7 @@ from xahaud_scripts.testnet.config import (
     resolve_feature_name,
 )
 from xahaud_scripts.testnet.launcher import get_launcher
+from xahaud_scripts.testnet.loopback import LoopbackAliasError
 from xahaud_scripts.testnet.monitor import (
     display_amendment_status,
     display_port_status,
@@ -47,7 +48,10 @@ from xahaud_scripts.testnet.monitor import (
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
-from xahaud_scripts.testnet.topology import disconnect_managed_peer
+from xahaud_scripts.testnet.topology import (
+    connect_managed_peer,
+    disconnect_managed_peer,
+)
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.quoting import validate_shell_identifier
 
@@ -419,25 +423,6 @@ def generate(
     help="Reconnect to existing network (skip launching, just monitor)",
 )
 @click.option(
-    "--scenario-script",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to scenario script to run (gets ScenarioContext with RPC + log assertions)",
-)
-@click.option(
-    "--params-json",
-    "params_json",
-    default=None,
-    help="JSON object of params to pass to scenario function as kwargs.",
-)
-@click.option(
-    "--teardown",
-    is_flag=True,
-    default=False,
-    help="Kill all nodes AND delete their node dirs (configs + logs) when the "
-    "scenario/txn-gen finishes. Omit to keep the net + logs up (or use `snapshot`).",
-)
-@click.option(
     "--rc",
     "rc_specs",
     multiple=True,
@@ -502,13 +487,6 @@ def generate(
     "will be cleared. Use with --start-ledger 255. Supports @Name or hex hash.",
 )
 @click.option(
-    "--with-py-logs",
-    "py_log_specs",
-    multiple=True,
-    help="Enable extra Python logging to scenario-test.log. "
-    "Format: logger.name=LEVEL (e.g. xahaud_scripts.testnet=DEBUG). Repeatable.",
-)
-@click.option(
     "--fast-bootstrap/--no-fast-bootstrap",
     "fast_bootstrap",
     default=True,
@@ -529,9 +507,6 @@ def run(
     launcher: str | None,
     desktop: int | None,
     reconnect: bool,
-    scenario_script: Path | None,
-    params_json: str | None,
-    teardown: bool,
     rc_specs: tuple[str, ...],
     rc_clear: bool,
     generate_txns: str | None,
@@ -542,7 +517,6 @@ def run(
     lldb_spec: str | None,
     start_ledger: int | None,
     majority_features: tuple[str, ...],
-    py_log_specs: tuple[str, ...],
     fast_bootstrap: bool,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -782,12 +756,6 @@ def run(
         lldb_nodes=lldb_nodes,
     )
 
-    # Mutual exclusion: --scenario-script and --generate-txns
-    if scenario_script and generate_txns:
-        raise click.UsageError(
-            "--scenario-script and --generate-txns are mutually exclusive."
-        )
-
     # Parse --generate-txns
     min_txns = max_txns = 0
     if generate_txns:
@@ -827,76 +795,6 @@ def run(
             )
         except KeyboardInterrupt:
             logger.info("Txn generator stopped")
-    elif scenario_script:
-        import asyncio
-
-        from xahaud_scripts.testnet.scenario import run_scenario_with_monitor
-        from xahaud_scripts.utils.logging import scenario_file_logging
-
-        # Parse --params-json if provided
-        scenario_params: dict[str, Any] | None = None
-        if params_json:
-            import json as _json
-
-            scenario_params = _json.loads(params_json)
-
-        log_file = (
-            network.base_dir.parent
-            / ".testnet"
-            / "output"
-            / "logs"
-            / "scenario-test.log"
-        )
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Scenario log: {log_file}")
-
-        scenario_passed = False
-        with scenario_file_logging(
-            (log_file, "w"),
-            py_log_specs=list(py_log_specs) if py_log_specs else None,
-        ):
-            try:
-                scenario_passed = asyncio.run(
-                    run_scenario_with_monitor(
-                        script_path=scenario_script,
-                        network=network,
-                        tracked_features=tracked,
-                        params=scenario_params,
-                    )
-                )
-            except KeyboardInterrupt:
-                logger.info("Scenario interrupted")
-
-        if not scenario_passed:
-            from xahaud_scripts.testnet.suite import archive_failed_run
-
-            archive_name = scenario_script.stem or "scenario"
-            runs_dir = xahaud_root / ".testnet" / "output" / "runs"
-            try:
-                snapshot_dir = archive_failed_run(
-                    network,
-                    archive_name,
-                    runs_dir=runs_dir,
-                    scenario_log=log_file,
-                )
-                logger.info(f"Archived failed scenario run: {snapshot_dir}")
-                logger.info(
-                    "Search archived logs with: "
-                    f"x-testnet logs-search --run latest/{archive_name} PATTERN"
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to archive scenario logs before teardown; "
-                    "skipping teardown to preserve live node dirs"
-                )
-                teardown = False
-
-        if teardown:
-            count = network.teardown()
-            logger.info(f"Teardown: killed {count} processes")
-
-        if not scenario_passed:
-            sys.exit(1)
     else:
         network.monitor(tracked_features=tracked, teardown_on_exit=not no_teardown)
 
@@ -1380,13 +1278,16 @@ def connect(ctx: click.Context, source: str, target: str, bi: bool) -> None:
     for src, tgt in pairs:
         src_id = _parse_node_spec(src)
         tgt_id = _parse_node_spec(tgt)
-        tgt_node = next((n for n in network.nodes if n.id == tgt_id), None)
-        if tgt_node is None:
-            raise click.ClickException(f"Unknown node: n{tgt_id}")
 
-        result = network.rpc_client.connect(
-            src_id, tgt_node.peer_host, tgt_node.port_peer
-        )
+        try:
+            result = connect_managed_peer(
+                network.rpc_client,
+                network.nodes,
+                source=src_id,
+                target=tgt_id,
+            )
+        except (ValueError, LoopbackAliasError) as e:
+            raise click.ClickException(str(e)) from e
         if result is None:
             click.echo(f"n{src_id} → n{tgt_id}: failed (offline?)")
         elif result.get("status") == "success":

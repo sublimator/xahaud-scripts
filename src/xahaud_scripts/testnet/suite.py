@@ -45,6 +45,7 @@ from xahaud_scripts.testnet.scenario import (
 )
 from xahaud_scripts.testnet.topology import (
     Edge,
+    connect_managed_peer,
     disconnect_managed_peer,
     format_edges,
     parse_edge_specs,
@@ -344,6 +345,36 @@ def _validated_node_binaries(raw: Any, *, node_count: int) -> dict[int, Path]:
     return result
 
 
+def _validated_lldb_nodes(raw: Any, *, node_count: int) -> set[int]:
+    """Validate the YAML ``lldb`` spec into a set of node ids.
+
+    Accepts ``all``/``true`` for every node, or a list of node ids (``0`` or
+    ``n0``). Nodes listed here are launched under lldb so a crash leaves a
+    backtrace in the pane (see ``x-testnet node-output``).
+    """
+    if raw is None or raw is False:
+        return set()
+    if raw is True or (isinstance(raw, str) and raw.strip().lower() == "all"):
+        return set(range(node_count))
+    if not isinstance(raw, list):
+        raise ValueError("network.lldb must be 'all' or a list of node ids")
+
+    result: set[int] = set()
+    for entry in raw:
+        try:
+            node_id = parse_node_ref(entry)
+        except ValueError as exc:
+            raise ValueError(
+                f"network.lldb entry must be a node id: {entry!r}"
+            ) from exc
+        if node_id < 0 or node_id >= node_count:
+            raise ValueError(
+                f"network.lldb n{node_id} is outside this {node_count}-node network"
+            )
+        result.add(node_id)
+    return result
+
+
 def _merge_env_override(
     config: dict[str, Any],
     env_override: dict[str, str] | None,
@@ -496,6 +527,10 @@ def _build_launch_config(
         config.get("node_binaries", {}),
         node_count=network_config.node_count,
     )
+    lldb_nodes = _validated_lldb_nodes(
+        config.get("lldb"),
+        node_count=network_config.node_count,
+    )
 
     # Suite-level rc specs use the same startup env path as `x-testnet run
     # --rc`, so delayed/dropped links are active from node launch.
@@ -538,6 +573,7 @@ def _build_launch_config(
         extra_env=extra_env,
         node_env=node_env,
         node_rippled_paths=node_rippled_paths,
+        lldb_nodes=lldb_nodes,
     )
 
 
@@ -661,10 +697,12 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
                 )
                 require_rpc_success(result, f"n{source}->n{target} disconnect")
         for source, target in sorted(expected - current):
-            target_node = _node_by_id(network.nodes, target)
             logger.info(f"Runtime topology connect n{source}->n{target}")
-            result = network.rpc_client.connect(
-                source, target_node.peer_host, target_node.port_peer
+            result = connect_managed_peer(
+                network.rpc_client,
+                network.nodes,
+                source=source,
+                target=target,
             )
             require_rpc_success(result, f"n{source}->n{target} connect")
         _wait_for_topology(
@@ -691,10 +729,12 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
         require_rpc_success(result, f"n{source}->n{target} disconnect")
     for spec in topo.get("connect", []) or []:
         source, target = parse_edge_specs([spec]).pop()
-        target_node = _node_by_id(network.nodes, target)
         logger.info(f"Runtime topology connect n{source}->n{target}")
-        result = network.rpc_client.connect(
-            source, target_node.peer_host, target_node.port_peer
+        result = connect_managed_peer(
+            network.rpc_client,
+            network.nodes,
+            source=source,
+            target=target,
         )
         require_rpc_success(result, f"n{source}->n{target} connect")
 
@@ -932,6 +972,10 @@ def run_suite(
                 config.get("node_binaries", {}),
                 node_count=config.get("node_count", 5),
             )
+            lldb_nodes = _validated_lldb_nodes(
+                config.get("lldb"),
+                node_count=config.get("node_count", 5),
+            )
             console.print(f"\n[bold cyan]  {i}. {test['name']}[/bold cyan]")
             console.print(f"     script: {test['script']}")
             params = test.get("_params")
@@ -951,6 +995,8 @@ def run_suite(
                 console.print(f"     rc: {rc}")
             if node_binaries:
                 console.print(f"     node_binaries: {node_binaries}")
+            if lldb_nodes:
+                console.print(f"     lldb: {sorted(lldb_nodes)}")
             topology = config.get("topology") or config.get("runtime_topology")
             if topology:
                 console.print(f"     topology: {topology}")

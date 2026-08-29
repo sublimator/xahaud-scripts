@@ -16,9 +16,9 @@ Scenario scripts define:
         ctx.assert_log("LedgerConsensus", within=window, nodes=[0, 3, 4])
         ctx.assert_not_log("error", within=window)
 
-Run via:
+Run via a suite entry (the only entry point):
 
-    x-testnet run --scenario-script my_scenario.py
+    x-testnet suite .testnet/scenarios/suite.yml --test my_scenario
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ from xahaud_scripts.testnet.topology import (
     Edge,
     TopologySnapshot,
     all_nodes,
+    connect_managed_peer,
     disconnect_managed_peer,
     format_edges,
     normalize_edges,
@@ -1632,8 +1633,12 @@ class ScenarioContext:
         """Tell one node to connect to another managed node."""
         self._topology_nodes([source, target])
         started = now_marker(name or f"connect-n{source}-n{target}-start")
-        target_node = self._node_info(target)
-        result = self.rpc.connect(source, target_node.peer_host, target_node.port_peer)
+        result = connect_managed_peer(
+            self.rpc,
+            self._network.nodes,
+            source=source,
+            target=target,
+        )
         require_rpc_success(result, f"n{source}->n{target} connect")
 
         expected = {(source, target)}
@@ -1748,9 +1753,11 @@ class ScenarioContext:
             )
             require_rpc_success(result, f"n{source}->n{target} disconnect")
         for source, target in sorted(expected - current):
-            target_node = self._node_info(target)
-            result = self.rpc.connect(
-                source, target_node.peer_host, target_node.port_peer
+            result = connect_managed_peer(
+                self.rpc,
+                self._network.nodes,
+                source=source,
+                target=target,
             )
             require_rpc_success(result, f"n{source}->n{target} connect")
 
