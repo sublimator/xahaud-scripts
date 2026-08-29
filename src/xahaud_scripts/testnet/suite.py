@@ -607,19 +607,24 @@ def _validate_log_levels(raw: Any) -> None:
             )
 
 
-def _validate_topology(raw: Any, *, node_count: int) -> None:
+def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
     """Validate statically-checkable topology fields before launch.
 
     Deliberately does not predict live state — only the shape and the node/edge
-    references, which are knowable from the config alone yet currently fail
-    after the nodes are running.
+    references, which are knowable from the config alone yet otherwise fail
+    after the nodes are running. The two cross-field invariants at the end are
+    the same ones `_apply_runtime_topology` enforces; they are reproduced here
+    rather than referenced so a config cannot get as far as a launched network
+    before being rejected.
     """
     _require_mapping(raw, "network.topology")
 
+    selected: list[int] | None = None
     nodes = raw.get("nodes")
     if nodes is not None:
         if not isinstance(nodes, list):
             raise ValueError("network.topology.nodes must be a list of node ids")
+        selected = []
         for entry in nodes:
             try:
                 node_id = parse_node_ref(entry)
@@ -630,6 +635,7 @@ def _validate_topology(raw: Any, *, node_count: int) -> None:
                     f"network.topology.nodes references n{node_id}, outside "
                     f"this {node_count}-node network"
                 )
+            selected.append(node_id)
 
     for key in ("edges", "connect", "disconnect"):
         specs = raw.get(key)
@@ -653,10 +659,36 @@ def _validate_topology(raw: Any, *, node_count: int) -> None:
     for key in ("bidirectional", "exact"):
         if raw.get(key) is not None:
             _require_bool(raw[key], f"network.topology.{key}")
-    for key in ("settle_timeout", "timeout", "poll_interval", "stable_for",
-                "rpc_timeout"):
+    for key in (
+        "settle_timeout",
+        "timeout",
+        "poll_interval",
+        "stable_for",
+        "rpc_timeout",
+    ):
         if raw.get(key) is not None:
             _require_number(raw[key], f"network.topology.{key}", minimum=0)
+
+    # Cross-field invariants, mirroring _apply_runtime_topology. Both default
+    # the same way it does: exact is true unless set, fixed_peers is true
+    # unless set.
+    if "edges" not in raw:
+        return
+    exact = bool(raw.get("exact", True))
+    expected = parse_edge_specs(
+        raw.get("edges") or [],
+        bidirectional=bool(raw.get("bidirectional", False)),
+    )
+    target_nodes = selected if selected is not None else list(range(node_count))
+    try:
+        validate_edges_in_nodes(expected, target_nodes)
+    except ValueError as exc:
+        raise ValueError(f"network.topology.edges: {exc}") from exc
+    if exact and fixed_peers:
+        raise ValueError(
+            "network.topology exact shaping requires fixed_peers: false; "
+            "generated [ips_fixed] peers may reconnect omitted edges"
+        )
 
 
 def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> None:
@@ -701,7 +733,11 @@ def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> No
     _validated_launcher(config.get("launcher"))
     topology = config.get("topology") or config.get("runtime_topology")
     if topology is not None:
-        _validate_topology(topology, node_count=node_count)
+        _validate_topology(
+            topology,
+            node_count=node_count,
+            fixed_peers=config.get("fixed_peers", True),
+        )
 
     _validate_network_env(config)
     _validated_node_binaries(config.get("node_binaries", {}), node_count=node_count)

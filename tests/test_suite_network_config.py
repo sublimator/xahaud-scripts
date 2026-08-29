@@ -347,6 +347,7 @@ def test_valid_semantics_still_pass(tmp_path: Path):
             "launcher": "tmux",
             "rc": ["rng_poll_ms=333", "n0->n2:drop=100,msg=proposal"],
             "log_levels": {"Overlay": "debug", "TxQ": ""},
+            "fixed_peers": False,
             "topology": {
                 "edges": ["n0->n1", "n1->n2"],
                 "exact": True,
@@ -378,3 +379,47 @@ def test_params_keys_must_be_strings(body: str, match: str, tmp_path: Path):
     path.write_text(body)
     with pytest.raises(ValueError, match=match):
         SuiteConfig.from_yaml(path)
+
+
+# --- topology cross-field invariants ----------------------------------------
+
+
+def test_topology_edge_outside_explicit_node_subset(tmp_path: Path):
+    """An edge to a node not in topology.nodes was only rejected after launch.
+
+    _apply_runtime_topology calls validate_edges_in_nodes once the network is
+    up and RPC is answering; the same check is deterministic from config.
+    """
+    with pytest.raises(ValueError, match=r"topology.edges:.*n2"):
+        _validate_network_config(
+            {
+                "node_count": 3,
+                "fixed_peers": False,
+                "topology": {"nodes": [0, 1], "edges": ["n0->n2"], "exact": True},
+            },
+            xahaud_root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        {"edges": ["n0->n1"], "exact": True},
+        {"edges": ["n0->n1"]},  # exact defaults true
+    ],
+    ids=["exact-explicit", "exact-default"],
+)
+def test_exact_shaping_requires_no_fixed_peers(topology: dict, tmp_path: Path):
+    """fixed_peers also defaults true, so the omitted-field pairing must fail."""
+    with pytest.raises(ValueError, match="requires fixed_peers: false"):
+        _validate_network_config(
+            {"node_count": 2, "topology": topology}, xahaud_root=tmp_path
+        )
+
+
+def test_non_exact_shaping_is_allowed_with_fixed_peers(tmp_path: Path):
+    """Additive (exact: false) shaping stays legal on a fixed-peer mesh."""
+    _validate_network_config(
+        {"node_count": 2, "topology": {"edges": ["n0->n1"], "exact": False}},
+        xahaud_root=tmp_path,
+    )
