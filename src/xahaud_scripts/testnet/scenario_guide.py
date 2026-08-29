@@ -390,6 +390,14 @@ await ctx.revoke_validator(master_node_id=0, via_node_id=2)
 Both helpers require the generated `validator-keys.json` files and the tmux
 launcher. A revocation is irreversible within that generated testnet; regenerate
 the network before reusing the validator master.
+
+`[validator_key_revocation]` is a single-value section. Calling
+`revoke_validator` again with the same via node replaces the previous
+revocation; it does not accumulate a list.
+
+Config and keyfile are committed before the restart. If the restart then
+fails, the new consistent pair stays installed for the next start. The
+helpers do not roll that pair back to the pre-mutation files.
 """)
 
     # -- Parameterized tests --

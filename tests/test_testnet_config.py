@@ -528,6 +528,11 @@ def test_update_config_section_replaces_token_and_appends_revocation(tmp_path: P
         "[validator_key_revocation]\nrevocation\n\n"
     )
 
+    update_config_section(config, "validator_key_revocation", "later-revocation")
+    text = config.read_text()
+    assert "[validator_key_revocation]\nlater-revocation\n" in text
+    assert "[validator_key_revocation]\nrevocation\n" not in text
+
 
 def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):
     node_dir = tmp_path / "n0"

@@ -1887,6 +1887,9 @@ class ScenarioContext:
         mints a fresh signing key and a manifest at exactly the next sequence,
         the generated ``[validator_token]`` is replaced, and the node is safely
         restarted with the same binary.
+
+        Disk is mutated before the restart. A later restart failure leaves
+        that new config/keyfile pair in place for the next start.
         """
         result = self._network.rotate_validator_manifest(node_id)
         result["restart"] = await self.restart_node(
@@ -1912,6 +1915,11 @@ class ScenarioContext:
         persisted validator keyfile and written to ``via_node_id``'s
         ``[validator_key_revocation]`` section.  Restarting the via node loads
         the revocation and lets the daemon relay it through its normal overlay.
+
+        The via node's revocation section is single-value: a later call with
+        the same via node replaces the previous revocation. Disk is mutated
+        before the via-node restart; a restart failure leaves that pair
+        installed for the next start.
         """
         result = self._network.revoke_validator(master_node_id, via_node_id)
         result["restart"] = await self.restart_node(
