@@ -114,23 +114,25 @@ def test_positive_cache_expires_so_a_removed_alias_is_noticed(on_macos, monkeypa
     exists to prevent, just relocated.
     """
     present = {"127.0.0.1", "127.0.0.2"}
+    clock = [1000.0]
+    monkeypatch.setattr(loopback.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(loopback, "_probe_loopback_addresses", lambda: set(present))
     loopback.reset_cache()
 
+    # Prime a POSITIVE cache entry, then remove the alias behind it. Priming the
+    # positive result first is the whole point: an earlier version of this test
+    # reset the cache after installing the clock and so only ever exercised the
+    # refresh-on-miss path, which passes with TTL expiry deleted.
     assert missing_loopback_aliases(["127.0.0.2"]) == []
-
     present.discard("127.0.0.2")
-    # Still inside the TTL: the cached answer is deliberately reused.
+
+    # Inside the TTL the stale positive is deliberately reused.
+    clock[0] += loopback.CACHE_TTL_SECONDS / 2
     assert missing_loopback_aliases(["127.0.0.2"]) == []
 
-    # Past the TTL, the removal is noticed.
-    clock = [0.0]
-    monkeypatch.setattr(loopback.time, "monotonic", lambda: clock[0])
-    loopback.reset_cache()
+    # Past it, the removal is noticed without any explicit cache reset.
+    clock[0] += loopback.CACHE_TTL_SECONDS
     assert missing_loopback_aliases(["127.0.0.2"]) == ["127.0.0.2"]
-    present.add("127.0.0.2")
-    clock[0] += loopback.CACHE_TTL_SECONDS + 1
-    assert missing_loopback_aliases(["127.0.0.2"]) == []
 
 
 def test_failed_probe_is_cached_so_it_is_not_reshelled_per_dial(on_macos, monkeypatch):

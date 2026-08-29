@@ -296,9 +296,11 @@ class TmuxLauncher:
         if config.quorum is not None:
             parts.append(f"--quorum {config.quorum}")
 
-        # Extra arguments
+        # Extra arguments. Quote each one: these strings are joined into a
+        # command that is typed into a shell, so an unquoted value with a space
+        # would split into two argv entries and a $(...) would be executed.
         if config.extra_args:
-            parts.extend(config.extra_args)
+            parts.extend(shlex.quote(arg) for arg in config.extra_args)
 
         return " ".join(parts)
 

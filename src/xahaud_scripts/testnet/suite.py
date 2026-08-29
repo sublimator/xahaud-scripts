@@ -370,8 +370,12 @@ def _validated_extra_args(raw: Any) -> list[str]:
         )
     args: list[str] = []
     for entry in raw:
-        if not isinstance(entry, (str, int, float)):
-            raise ValueError(f"network.extra_args entry must be a string: {entry!r}")
+        # bool is an int, so reject it explicitly: `- true` would otherwise be
+        # handed to the daemon as the string "True".
+        if isinstance(entry, bool) or not isinstance(entry, (str, int, float)):
+            raise ValueError(
+                f"network.extra_args entry must be a string or number: {entry!r}"
+            )
         args.append(str(entry))
     return args
 
@@ -437,6 +441,24 @@ def _validate_network_env(config: dict[str, Any]) -> None:
     """Validate env-bearing network config without mutating it."""
     _validated_env_mapping(config.get("env", {}), label="network.env")
     _validated_node_env(config.get("node_env", {}))
+
+
+def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> None:
+    """Run every ``network:`` validator without building anything.
+
+    One entry point on purpose. Validators used to be invoked only where their
+    value was needed — inside ``_build_launch_config`` — which meant ``--dry-run``
+    silently skipped several of them, and a real run did not reject a bad field
+    until after it had already torn down the previous network and regenerated
+    node directories. Rejecting up front keeps a typo cheap.
+    """
+    node_count = config.get("node_count", 5)
+    _validate_network_env(config)
+    _validated_node_binaries(config.get("node_binaries", {}), node_count=node_count)
+    _validated_lldb_nodes(config.get("lldb"), node_count=node_count)
+    _validated_genesis_file(config.get("genesis_file"), xahaud_root=xahaud_root)
+    _validated_extra_args(config.get("extra_args"))
+    _validated_desktop(config.get("desktop"))
 
 
 def _snapshot_test(network: TestNetwork, dest: Path) -> None:
@@ -814,7 +836,7 @@ def _run_one_test(
 
     config = suite.effective_network(test)
     _merge_env_override(config, env_override)
-    _validate_network_env(config)
+    _validate_network_config(config, xahaud_root=xahaud_root)
 
     # --fast-bootstrap: inject global.bootstrap_fast_start=true unless already
     # set in XAHAUD_RUNTIME_TEST_CONFIG.
@@ -1013,7 +1035,7 @@ def run_suite(
         for i, test in enumerate(tests, 1):
             config = suite.effective_network(test)
             _merge_env_override(config, env_override)
-            _validate_network_env(config)
+            _validate_network_config(config, xahaud_root=xahaud_root)
             node_binaries = _validated_node_binaries(
                 config.get("node_binaries", {}),
                 node_count=config.get("node_count", 5),
