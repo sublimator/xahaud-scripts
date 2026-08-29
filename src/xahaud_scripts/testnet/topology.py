@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from xahaud_scripts.testnet.config import NodeInfo
+from xahaud_scripts.testnet.loopback import require_loopback_hosts
 
 Edge = tuple[int, int]
 
@@ -38,6 +39,19 @@ class DisconnectRPC(PeerRPC, Protocol):
         port: int,
     ) -> dict[str, Any] | None:
         """Tell a node to disconnect from a peer endpoint."""
+        ...
+
+
+class ConnectRPC(PeerRPC, Protocol):
+    """Peer RPC subset that can also dial a peer endpoint."""
+
+    def connect(
+        self,
+        node_id: int,
+        ip: str,
+        port: int,
+    ) -> dict[str, Any] | None:
+        """Tell a node to connect to a peer endpoint."""
         ...
 
 
@@ -319,6 +333,37 @@ def managed_peer_endpoint(
     return None
 
 
+def node_by_id(nodes: list[NodeInfo], node_id: int) -> NodeInfo:
+    """Look up generated node metadata by id."""
+    for node in nodes:
+        if node.id == node_id:
+            return node
+    raise ValueError(f"Unknown node id: n{node_id}")
+
+
+def connect_managed_peer(
+    rpc: ConnectRPC,
+    nodes: list[NodeInfo],
+    *,
+    source: int,
+    target: int,
+) -> dict[str, Any] | None:
+    """Dial managed ``target`` from ``source`` at the target's peer address.
+
+    The single choke point for peer dialing, so the loopback-alias precondition
+    is checked in exactly one place. Without it a missing alias is invisible:
+    ``connect`` reports success for merely *scheduling* the attempt, and the
+    only symptom is an edge that never appears.
+    """
+    target_node = node_by_id(nodes, target)
+    require_loopback_hosts(
+        [target_node.peer_host],
+        context=f"n{source}->n{target} connect",
+        node_count=len(nodes),
+    )
+    return rpc.connect(source, target_node.peer_host, target_node.port_peer)
+
+
 def disconnect_managed_peer(
     rpc: DisconnectRPC,
     nodes: list[NodeInfo],
@@ -329,9 +374,14 @@ def disconnect_managed_peer(
     """Disconnect ``source`` from managed ``target`` using the live endpoint."""
     endpoint = managed_peer_endpoint(rpc, nodes, source=source, target=target)
     if endpoint is None:
-        target_node = next((node for node in nodes if node.id == target), None)
-        if target_node is None:
-            raise ValueError(f"Unknown target node: n{target}")
+        # No live session to match: fall back to the target's listen address.
+        # That is an alias, so hold it to the same precondition as dialing.
+        target_node = node_by_id(nodes, target)
+        require_loopback_hosts(
+            [target_node.peer_host],
+            context=f"n{source}->n{target} disconnect",
+            node_count=len(nodes),
+        )
         endpoint = (target_node.peer_host, target_node.port_peer)
     ip, port = endpoint
     return rpc.disconnect(source, ip, port)

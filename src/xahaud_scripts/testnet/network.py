@@ -13,7 +13,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +22,7 @@ from xahaud_scripts.testnet.generator import (
     ValidatorKeysGenerator,
     generate_all_configs,
 )
+from xahaud_scripts.testnet.loopback import alias_for, require_loopback_hosts
 from xahaud_scripts.testnet.monitor import NetworkMonitor
 from xahaud_scripts.utils.logging import make_logger
 
@@ -195,49 +195,25 @@ class TestNetwork:
         return self._process_mgr.check_ports_free(ports)
 
     def _verify_loopback_aliases(self) -> None:
-        """Fail loud if the loopback aliases a localhost mesh needs are missing.
+        """Fail loud if the loopback aliases this network needs are missing.
 
-        Each node dials its peers at a distinct 127.0.0.<id+1> (the peerfinder
-        dedups fixed peers by IP address, so reusing 127.0.0.1 collapses the
-        mesh to ~1 peer). On macOS those 127.0.0.2+ aliases must be created
+        Each node is dialed at a distinct 127.0.0.<id+1> (the peerfinder dedups
+        peers by IP address, so reusing 127.0.0.1 collapses the mesh to ~1
+        peer). On macOS those 127.0.0.2+ aliases must be created
         (`x-testnet setup-aliases`); Linux routes all of 127/8 already.
+
+        Checked for every multi-node network, not just generated `[ips_fixed]`
+        ones: a `--no-fixed-peers` network still dials those same addresses when
+        a scenario or suite shapes topology at runtime. Failing here is far
+        cheaper than the alternative — `connect` reports success, no edge ever
+        forms, and the topology diff just says `actual=[]`.
         """
-        if sys.platform != "darwin" or not self._config.fixed_peers:
-            return
         count = len(self._nodes) if self._nodes else self._config.node_count
-        required = [f"127.0.0.{i + 1}" for i in range(1, count)]
-        if not required:
-            return
-        try:
-            out = subprocess.run(
-                ["ifconfig", "lo0"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
-            # Couldn't verify -- don't hard-block, but surface it (not silent) so a
-            # mesh that fails to form isn't mistaken for the preflight passing.
-            logger.warning(
-                "Could not verify loopback aliases via ifconfig (%s); if the peer "
-                "mesh fails to form, run: x-testnet setup-aliases -n %d",
-                e,
-                count,
-            )
-            return
-        present = {
-            line.split()[1]
-            for line in out.splitlines()
-            if line.strip().startswith("inet ")
-        }
-        missing = [ip for ip in required if ip not in present]
-        if missing:
-            raise RuntimeError(
-                "Missing macOS loopback aliases for the peer mesh: "
-                + ", ".join(missing)
-                + f"\n  Fix: x-testnet setup-aliases -n {count}"
-                + "\n  (or per alias: sudo ifconfig lo0 alias 127.0.0.X up)"
-            )
+        require_loopback_hosts(
+            [alias_for(i) for i in range(count)],
+            context=f"Launching a {count}-node network",
+            node_count=count,
+        )
 
     def run(self, launch_config: LaunchConfig) -> None:
         """Launch all nodes and start monitoring.
