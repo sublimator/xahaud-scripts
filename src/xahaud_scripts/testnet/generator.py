@@ -8,10 +8,14 @@ This module provides functions for:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from xrpl.constants import CryptoAlgorithm
+from xrpl.core.addresscodec import encode_seed
 
 from xahaud_scripts.testnet.config import NodeInfo
 from xahaud_scripts.utils.logging import make_logger
@@ -177,6 +181,19 @@ LOG_LEVEL_SUITES: dict[str, dict[str, str]] = {
 }
 
 
+def _deterministic_node_seed(network_id: int, node_id: int) -> str:
+    """Return a stable, distinct secp256k1 node seed for a local test node.
+
+    ``wallet.db`` normally owns the generated overlay identity.  Test scenarios
+    can intentionally delete that database, so pin the identity in generated
+    config instead.  Namespacing by network and node keeps concurrent local
+    networks distinct while making regeneration and wallet resets stable.
+    """
+    material = f"x-testnet-node-v1:{network_id}:{node_id}".encode()
+    entropy = hashlib.sha256(material).digest()[:16]
+    return encode_seed(entropy, CryptoAlgorithm.SECP256K1)
+
+
 def _build_rpc_startup_section(log_levels: dict[str, str] | None = None) -> str:
     """Build the [rpc_startup] section content for log levels.
 
@@ -237,6 +254,7 @@ def generate_node_config(
     port_peer = network_config.port_peer(node_id)
     port_rpc = network_config.port_rpc(node_id)
     port_ws = network_config.port_ws(node_id)
+    node_seed = _deterministic_node_seed(network_config.network_id, node_id)
 
     fixed_peers_section = ""
     if network_config.fixed_peers:
@@ -287,6 +305,10 @@ def generate_node_config(
 
 [network_id]
 {network_config.network_id}
+
+# Keep the overlay identity stable across intentional wallet.db resets.
+[node_seed]
+{node_seed}
 
 [server]
 port_rpc_admin_local

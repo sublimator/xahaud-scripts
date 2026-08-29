@@ -36,7 +36,10 @@ from xahaud_scripts.testnet.config import (
     prepare_genesis_file,
     resolve_feature_name,
 )
-from xahaud_scripts.testnet.generator import generate_node_config
+from xahaud_scripts.testnet.generator import (
+    _deterministic_node_seed,
+    generate_node_config,
+)
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.suite import (
@@ -404,6 +407,31 @@ def test_generate_node_config_full_mesh_fixed_peers_by_default(tmp_path: Path):
     # peerfinder's address-based fixed-peer dedup doesn't collapse them.
     assert f"127.0.0.2 {DEFAULT_BASE_PORT_PEER + 1}" in text
     assert f"127.0.0.3 {DEFAULT_BASE_PORT_PEER + 2}" in text
+
+
+def test_generate_node_config_pins_deterministic_node_identity(tmp_path: Path):
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    validators_file = node_dir / "validators.txt"
+    validators_file.write_text("")
+
+    cfg_path = generate_node_config(
+        node_id=0,
+        node_dir=node_dir,
+        validator_token="token",
+        validators_file=validators_file,
+        network_config=NetworkConfig(network_id=31337, node_count=2),
+    )
+
+    assert "\n[node_seed]\nssGn2RwhoWE5M7VgNDk986v9m87zL\n" in cfg_path.read_text()
+
+
+def test_deterministic_node_seed_is_stable_and_namespaced():
+    seed = _deterministic_node_seed(31337, 0)
+
+    assert seed == "ssGn2RwhoWE5M7VgNDk986v9m87zL"
+    assert seed != _deterministic_node_seed(31337, 1)
+    assert seed != _deterministic_node_seed(21337, 0)
 
 
 def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):
