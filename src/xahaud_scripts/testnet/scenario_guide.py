@@ -231,36 +231,66 @@ When neither is given, all nodes in the network are targeted.
 
     # -- Example --
     parts.append("""\
-## Example: Amendment Crash Scenario
+## Example: Amendment Upgrade Boundary
+
+Note what this asserts, because the intuitive version is wrong: a node that
+does not support an activated amendment does **not** crash. `LedgerMaster`
+logs "unsupported amendments activated: server blocked" and calls
+`setAmendmentBlocked()` — the node stays up and keeps answering RPC. So assert
+`amendment_blocked` and continued liveness, not an exit status.
+
+Note also that voting a node out (`exclude_nodes`) changes its *vote*, not its
+compiled support. To get a genuinely non-supporting node you need a binary that
+lacks the amendment, via suite `network.node_binaries`.
+
+```yaml
+# suite.yml
+tests:
+  - name: upgrade_boundary
+    script: .testnet/scenarios/upgrade_boundary.py
+    network:
+      node_count: 5
+      validators: 4          # n4 is a non-UNL tracker
+      node_binaries:
+        4: "@old-release"    # the only node without the amendment
+      majority_features:
+        - ConsensusEntropy
+      start_ledger: 210
+```
 
 ```python
-\"\"\"Scenario: ConsensusEntropy amendment crashes non-supporting node.
+\"\"\"An activated amendment blocks a non-supporting node without killing it.\"\"\"
 
-Votes ConsensusEntropy accept on all nodes except n4, then waits for n4
-to crash as the amendment activates without its support.
+VALIDATORS = [0, 1, 2, 3]
+OLD_NODE = 4
 
-    x-testnet suite .testnet/scenarios/suite.yml --test consensus_entropy_crash
-\"\"\"
+
+def _blocked(ctx, nid):
+    info = ctx.rpc.server_info(nid) or {}
+    return bool(info.get("info", {}).get("amendment_blocked"))
 
 
 async def scenario(ctx, log):
     await ctx.wait_for_ledger_close()
-    ctx.feature("ConsensusEntropy", vetoed=False, exclude_nodes=[4])
+    gate = ctx.mark("vote")
+    ctx.feature("ConsensusEntropy", vetoed=False, nodes=VALIDATORS)
 
-    log("Waiting for ConsensusEntropy to be voted for...")
+    log("Waiting for the amendment to activate on the supporting quorum...")
     await ctx.wait_for_feature(
         "ConsensusEntropy",
-        check=lambda s: not s.get("vetoed"),
-        exclude_nodes=[4],
-        timeout=60,
+        check=lambda s: s.get("enabled"),
+        nodes=VALIDATORS,
+        timeout=900,
     )
 
-    log("Waiting for n4 to crash...")
-    op = await ctx.wait_for_nodes_down(nodes=[4], timeout=600)
+    log(f"Waiting for n{OLD_NODE} to report amendment_blocked...")
+    await ctx.wait_for_nodes(lambda nid: _blocked(ctx, nid),
+                             nodes=[OLD_NODE], timeout=180)
 
-    ctx.assert_log("unsupported amendments activated", since=op.started, nodes=[4])
-    ctx.assert_exit_status(0, nodes=[4])
-    log("PASS: n4 shut down due to unsupported amendment")
+    ctx.assert_log("server blocked", since=gate, nodes=[OLD_NODE])
+    # Blocked, NOT dead: RPC must still answer.
+    assert ctx.rpc.server_info(OLD_NODE), f"n{OLD_NODE} crashed (expected blocked)"
+    log("PASS: blocked but alive")
 ```
 """)
 
