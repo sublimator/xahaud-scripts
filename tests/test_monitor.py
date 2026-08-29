@@ -18,3 +18,16 @@ def test_rippled_cpu_is_empty_when_ps_cannot_execute(
     )
 
     assert _get_rippled_cpu() == {}
+
+
+def test_rippled_cpu_does_not_invoke_ps_in_ai_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_ps(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("ps must not run in AI sandbox mode")
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.monitor.subprocess.check_output", unexpected_ps
+    )
+
+    assert _get_rippled_cpu(ai_sandboxed=True) == {}

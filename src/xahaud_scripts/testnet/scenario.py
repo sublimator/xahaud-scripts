@@ -2311,6 +2311,7 @@ async def run_scenario_with_monitor(
     network: TestNetwork,
     tracked_features: list[str] | None = None,
     params: dict[str, Any] | None = None,
+    ai_sandboxed: bool = False,
 ) -> bool:
     """Run a scenario script with the network monitor in background.
 
@@ -2319,6 +2320,7 @@ async def run_scenario_with_monitor(
         network: The TestNetwork instance.
         tracked_features: Optional list of feature names to track.
         params: Optional keyword arguments passed to the scenario function.
+        ai_sandboxed: Skip optional monitor host-process introspection.
 
     Returns:
         True if scenario passed, False if it failed.
@@ -2333,6 +2335,7 @@ async def run_scenario_with_monitor(
         rpc_client=network.rpc_client,
         network_config=network.config,
         tracked_features=tracked_features,
+        ai_sandboxed=ai_sandboxed,
     )
 
     async def run_monitor() -> None:

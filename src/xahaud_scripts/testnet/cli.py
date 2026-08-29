@@ -2419,6 +2419,12 @@ def scenario_test_guide() -> None:
     "overridden in suite config or --env (default: enabled; feature-export-rng "
     "branches only; inert elsewhere).",
 )
+@click.option(
+    "--ai-sandboxed/--no-ai-sandboxed",
+    default=False,
+    envvar="AI_SANDBOXED",
+    help="Skip optional host process introspection such as ps (env: AI_SANDBOXED).",
+)
 @click.pass_context
 def suite(
     ctx: click.Context,
@@ -2433,6 +2439,7 @@ def suite(
     env_vars: tuple[str, ...],
     py_log_specs: tuple[str, ...],
     fast_bootstrap: bool,
+    ai_sandboxed: bool,
 ) -> None:
     """Run a scenario test suite from a YAML file.
 
@@ -2534,6 +2541,7 @@ def suite(
             dry_run=dry_run,
             py_log_specs=list(py_log_specs) if py_log_specs else None,
             fast_bootstrap=fast_bootstrap,
+            ai_sandboxed=ai_sandboxed,
             rippled_path=rippled_path,
             testnet_dir=ctx.obj.get("testnet_dir"),
         )

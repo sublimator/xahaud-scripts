@@ -50,14 +50,18 @@ def format_uptime(seconds: float) -> str:
         return f"{hours}h {mins}m"
 
 
-def _get_rippled_cpu() -> dict[int, float]:
+def _get_rippled_cpu(*, ai_sandboxed: bool = False) -> dict[int, float]:
     """Get CPU% for each rippled node by parsing ps output.
 
     Matches nodes by looking for /nN/xahaud.cfg in command line args.
+    AI-sandboxed runs skip host process introspection entirely.
 
     Returns:
         Dict mapping node_id -> cpu_percent
     """
+    if ai_sandboxed:
+        return {}
+
     try:
         result = subprocess.check_output(
             ["ps", "aux"], text=True, stderr=subprocess.DEVNULL
@@ -561,6 +565,7 @@ class NetworkMonitor:
         rpc_client: RPC client for queries
         network_config: Network configuration
         tracked_features: Optional list of feature names to track
+        ai_sandboxed: Skip optional host process introspection
     """
 
     def __init__(
@@ -570,6 +575,7 @@ class NetworkMonitor:
         tracked_features: list[str] | None = None,
         base_dir: Path | None = None,
         start_time: float | None = None,
+        ai_sandboxed: bool = False,
     ) -> None:
         """Initialize the network monitor.
 
@@ -580,12 +586,14 @@ class NetworkMonitor:
             base_dir: Testnet base dir (for reading vote timestamp)
             start_time: Network launch timestamp (epoch seconds). If provided,
                 uptime is calculated from this instead of monitor start.
+            ai_sandboxed: Skip optional host process introspection such as ps.
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_features = tracked_features or []
         self._base_dir = base_dir
         self._start_time: float | None = start_time
+        self._ai_sandboxed = ai_sandboxed
 
         # Convergence tracking
         self._total_conv_sum: float = 0.0  # Sum of all convergence times
@@ -872,7 +880,7 @@ class NetworkMonitor:
 
                     # Fetch node data in parallel
                     node_data = self._fetch_all_node_data()
-                    cpu_by_node = _get_rippled_cpu()
+                    cpu_by_node = _get_rippled_cpu(ai_sandboxed=self._ai_sandboxed)
                     self._update_convergence_stats(node_data)
                     console.print()
                     display_network_status(
@@ -951,7 +959,7 @@ class NetworkMonitor:
                         # Refresh the status table so node state is visible during stalls
                         uptime = self._get_uptime()
                         node_data = self._fetch_all_node_data()
-                        cpu_by_node = _get_rippled_cpu()
+                        cpu_by_node = _get_rippled_cpu(ai_sandboxed=self._ai_sandboxed)
                         self._update_convergence_stats(node_data)
                         display_network_status(
                             node_data,
@@ -1020,7 +1028,7 @@ class NetworkMonitor:
                     uptime = self._get_uptime()
 
                     node_data = self._fetch_all_node_data()
-                    cpu_by_node = _get_rippled_cpu()
+                    cpu_by_node = _get_rippled_cpu(ai_sandboxed=self._ai_sandboxed)
                     self._update_convergence_stats(node_data)
                     display_network_status(
                         node_data,

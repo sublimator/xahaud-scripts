@@ -1103,6 +1103,7 @@ def _run_one_test(
     env_override: dict[str, str] | None = None,
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
+    ai_sandboxed: bool = False,
     rippled_path: Path | None = None,
     testnet_dir: Path | None = None,
 ) -> TestResult:
@@ -1200,6 +1201,7 @@ def _run_one_test(
                     network=network,
                     tracked_features=tracked,
                     params=params,
+                    ai_sandboxed=ai_sandboxed,
                 )
             )
 
@@ -1267,6 +1269,7 @@ def run_suite(
     dry_run: bool = False,
     py_log_specs: list[str] | None = None,
     fast_bootstrap: bool = True,
+    ai_sandboxed: bool = False,
     rippled_path: Path | None = None,
     testnet_dir: Path | None = None,
 ) -> list[TestResult]:
@@ -1292,6 +1295,9 @@ def run_suite(
             XAHAUD_RUNTIME_TEST_CONFIG global.bootstrap_fast_start=true unless
             explicitly set in suite config or --env. Supported only by
             feature-export-rng branches; inert elsewhere.
+        ai_sandboxed: Skip optional monitor host-process introspection. This
+            does not soften RPC, lifecycle, topology, assertion, or teardown
+            failures.
         rippled_path: If set, use this binary instead of
             ``$xahaud_root/build/rippled``.
 
@@ -1400,6 +1406,7 @@ def run_suite(
                     env_override=env_override,
                     py_log_specs=py_log_specs,
                     fast_bootstrap=fast_bootstrap,
+                    ai_sandboxed=ai_sandboxed,
                     rippled_path=rippled_path,
                     testnet_dir=testnet_dir,
                 )

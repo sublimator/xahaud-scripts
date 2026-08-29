@@ -148,6 +148,9 @@ Useful flags:
 - `--env NAME=VALUE` — Merge an env var into every test's config
 - `--fast-bootstrap` — Inject `bootstrap_fast_start=true`; feature-export-rng
   branches only, inert elsewhere
+- `--ai-sandboxed` — Skip optional host process introspection such as `ps`
+  (also defaultable with `AI_SANDBOXED=1`); scenario and lifecycle failures
+  remain fatal
 - `--with-py-logs xahaud_scripts.testnet=DEBUG` — Extra Python logs to file
 - `--no-stop-on-fail` — Keep going after the first failure
 

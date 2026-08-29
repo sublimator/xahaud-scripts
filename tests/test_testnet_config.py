@@ -767,6 +767,48 @@ def test_suite_cli_passes_group_rippled_path(
 
 
 @pytest.mark.parametrize(
+    ("suite_args", "env", "expected"),
+    [
+        ([], {}, False),
+        (["--ai-sandboxed"], {}, True),
+        ([], {"AI_SANDBOXED": "1"}, True),
+        (["--no-ai-sandboxed"], {"AI_SANDBOXED": "1"}, False),
+    ],
+)
+def test_suite_cli_resolves_ai_sandbox_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suite_args: list[str],
+    env: dict[str, str],
+    expected: bool,
+) -> None:
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text("tests: []\n")
+    seen: dict[str, bool] = {}
+
+    def fake_run_suite(**kwargs):
+        seen["ai_sandboxed"] = kwargs["ai_sandboxed"]
+        return []
+
+    monkeypatch.setattr("xahaud_scripts.testnet.suite.run_suite", fake_run_suite)
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "suite",
+            str(suite_file),
+            *suite_args,
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["ai_sandboxed"] is expected
+
+
+@pytest.mark.parametrize(
     "command", ["generate", "run", "suite", "rc", "rc show", "rc set", "rc clear"]
 )
 def test_runtime_config_help_labels_branch_support(command: str):
