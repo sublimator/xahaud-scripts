@@ -163,3 +163,55 @@ def test_extra_args_rejects_nul_byte():
 def test_validate_network_config_rejects_nul_in_extra_args(tmp_path: Path):
     with pytest.raises(ValueError, match="NUL byte"):
         _validate_network_config({"extra_args": ["\x00"]}, xahaud_root=tmp_path)
+
+
+# --- YAML schema shape ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("tests: [42]\n", r"Test #1 must be a mapping, got int"),
+        ("tests: 'nope'\n", r"non-empty 'tests' list"),
+        (
+            "defaults: []\ntests: [{name: a, script: b}]\n",
+            r"'defaults' must be a mapping",
+        ),
+        (
+            "defaults: {network: []}\ntests: [{name: a, script: b}]\n",
+            r"'defaults.network' must be a mapping",
+        ),
+        (
+            "tests: [{name: a, script: b, network: []}]\n",
+            r"Test 'a' 'network' must be a mapping",
+        ),
+        (
+            "tests: [{name: a, script: b, params: 3}]\n",
+            r"Test 'a' 'params' must be a mapping",
+        ),
+        ("- a\n- b\n", r"Suite file must be a mapping, got list"),
+    ],
+    ids=[
+        "test-not-mapping",
+        "tests-not-list",
+        "defaults-not-mapping",
+        "defaults-network-not-mapping",
+        "test-network-not-mapping",
+        "test-params-not-mapping",
+        "root-not-mapping",
+    ],
+)
+def test_suite_yaml_shape_errors_are_value_errors(
+    body: str, match: str, tmp_path: Path
+):
+    """Valid YAML of the wrong shape is a config mistake, not an internal crash.
+
+    These previously reached `in` / `.items()` on the wrong type and surfaced
+    as raw TypeError/AttributeError tracebacks.
+    """
+    from xahaud_scripts.testnet.suite import SuiteConfig
+
+    path = tmp_path / "suite.yml"
+    path.write_text(body)
+    with pytest.raises(ValueError, match=match):
+        SuiteConfig.from_yaml(path)

@@ -65,6 +65,18 @@ logger = make_logger(__name__)
 _DICT_MERGE_KEYS = {"log_levels", "env", "node_binaries"}
 
 
+def _require_mapping(value: Any, label: str) -> None:
+    """Reject valid YAML of the wrong shape with a ValueError, not a TypeError.
+
+    ``tests: [42]`` and ``network: []`` parse fine as YAML and only fail later
+    on ``in``/``.items()``, where they read as an internal crash rather than the
+    configuration mistake they are.
+    """
+    if not isinstance(value, dict):
+        got = type(value).__name__
+        raise ValueError(f"{label} must be a mapping, got {got}")
+
+
 @dataclass
 class TestResult:
     """Result of a single scenario test."""
@@ -105,25 +117,40 @@ class SuiteConfig:
 
     @classmethod
     def from_yaml(cls, path: Path) -> SuiteConfig:
-        """Load and validate a suite YAML file."""
+        """Load and validate a suite YAML file.
+
+        Every nested shape is checked here rather than where it is consumed.
+        Valid YAML of the wrong shape (``tests: [42]``, ``network: []``) used to
+        reach ``.items()``/``in`` on the wrong type and surface as a raw
+        TypeError or AttributeError traceback.
+        """
         with open(path) as f:
             raw = yaml.safe_load(f)
 
-        if not isinstance(raw, dict):
-            raise ValueError(f"Suite file must be a YAML mapping, got {type(raw)}")
+        _require_mapping(raw, "Suite file")
+
+        defaults = raw.get("defaults", {})
+        _require_mapping(defaults, "'defaults'")
+        for key in ("network", "params"):
+            if key in defaults:
+                _require_mapping(defaults[key], f"'defaults.{key}'")
 
         tests = raw.get("tests")
         if not tests or not isinstance(tests, list):
             raise ValueError("Suite file must have a non-empty 'tests' list")
 
         for i, test in enumerate(tests):
+            _require_mapping(test, f"Test #{i + 1}")
             if "name" not in test:
                 raise ValueError(f"Test #{i + 1} missing required 'name' key")
             if "script" not in test:
                 raise ValueError(f"Test '{test['name']}' missing required 'script' key")
+            for key in ("network", "params"):
+                if key in test:
+                    _require_mapping(test[key], f"Test '{test['name']}' '{key}'")
 
         return cls(
-            defaults=raw.get("defaults", {}),
+            defaults=defaults,
             tests=tests,
         )
 
