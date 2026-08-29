@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import logging
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +18,9 @@ from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
+from xahaud_scripts.testnet.scenario import (
+    AssertionError as ScenarioAssertionError,
+)
 from xahaud_scripts.testnet.scenario import ScenarioContext
 
 
@@ -358,6 +364,87 @@ def test_scenario_restart_node_waits_for_exit_then_wipes_and_starts():
         "start:2",
         "rpc:2",
     ]
+
+
+def test_scenario_restart_node_zero_replaces_running_websocket_task():
+    async def exercise() -> None:
+        network = _RestartScenarioNetwork()
+        ctx = ScenarioContext(cast(Any, network))
+        starts = 0
+
+        async def fake_ws_loop() -> None:
+            nonlocal starts
+            starts += 1
+            await asyncio.Event().wait()
+
+        ctx._ws_loop = fake_ws_loop  # type: ignore[method-assign]
+        await ctx._start_ws()
+        await asyncio.sleep(0)
+        original_task = ctx._ws_task
+
+        result = await ctx.restart_node(0)
+        await asyncio.sleep(0)
+
+        assert result == {0: True}
+        assert original_task is not None and original_task.cancelled()
+        assert ctx._ws_task is not original_task
+        assert starts == 2
+        await ctx._stop_ws()
+
+    asyncio.run(exercise())
+
+
+def test_scenario_assertion_error_is_a_builtin_assertion_error():
+    assert issubclass(ScenarioAssertionError, builtins.AssertionError)
+
+
+def test_tmux_launcher_preserves_text_stderr_on_launch_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    launcher = TmuxLauncher()
+    node = _node(tmp_path, 0)
+    config = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "build" / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+    )
+
+    def fail_create_session(_node: NodeInfo, _cmd: str) -> str:
+        raise subprocess.CalledProcessError(
+            1,
+            ["tmux", "new-session"],
+            output="",
+            stderr="fork blocked",
+        )
+
+    monkeypatch.setattr(launcher, "_create_session", fail_create_session)
+    with caplog.at_level(logging.ERROR, logger="xahaud_scripts.testnet.launcher.tmux"):
+        assert launcher.launch(node, config) is False
+
+    assert "tmux stderr: fork blocked" in caplog.text
+
+
+def test_launch_env_labels_runtime_config_branch_support(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    network = _network(tmp_path, _NoBuilderLauncher())
+    config = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "build" / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+        extra_env={
+            "XAHAUD_RUNTIME_TEST_CONFIG": (
+                '{"set":{"global":{"bootstrap_fast_start":true}}}'
+            )
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="xahaud_scripts.testnet.network"):
+        network._dump_launch_env(config)
+
+    assert "feature-export-rng branches only; inert elsewhere" in caplog.text
 
 
 def test_scenario_rotate_validator_manifest_restarts_rotated_node():

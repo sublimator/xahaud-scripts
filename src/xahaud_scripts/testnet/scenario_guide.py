@@ -146,8 +146,13 @@ Useful flags:
 - `--test-n N` — Run each test N times (flaky-test hunting)
 - `--params-json '{...}'` — Override scenario kwargs (skips variants)
 - `--env NAME=VALUE` — Merge an env var into every test's config
+- `--fast-bootstrap` — Inject `bootstrap_fast_start=true`; feature-export-rng
+  branches only, inert elsewhere
 - `--with-py-logs xahaud_scripts.testnet=DEBUG` — Extra Python logs to file
 - `--no-stop-on-fail` — Keep going after the first failure
+
+All `--rc` controls and their `XAHAUD_RUNTIME_TEST_CONFIG` environment payload
+also require a feature-export-rng xahaud branch; stock binaries ignore them.
 
 Each test gets a **fresh network**: teardown -> generate -> launch -> scenario.
 The runner then:
@@ -227,6 +232,15 @@ Most multi-node methods accept two keyword arguments:
 
 These compose: `nodes=[0,1,2,3,4], exclude_nodes=[4]` targets 0-3.
 When neither is given, all nodes in the network are targeted.
+
+### Single-validator passive peers
+
+In observed stock-branch runs, a passive peer outside the UNL in a one-validator
+network can remain at "Ledger 1 accepted" while the sole validator continues
+closing rounds. The passive peer may also log "Candidate for current ledger has
+close time 2000-Jan-01" warnings. Use the validator node for ledger-progress
+waits in this topology; passive-peer progress is not a reliable readiness
+signal.
 """)
 
     # -- Example --

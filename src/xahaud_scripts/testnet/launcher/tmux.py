@@ -27,6 +27,14 @@ logger = make_logger(__name__)
 
 TMUX_SESSION_NAME = "xahaud-testnet"
 
+
+def _process_output(value: str | bytes | None) -> str:
+    """Normalize captured subprocess output without assuming byte mode."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace").strip()
+    return value.strip() if value else ""
+
+
 # Shell function injected into each pane before launching a node.
 # Saves PID and exit status to the node's working directory.
 # Compatible with bash and zsh. Process runs in foreground (output
@@ -130,8 +138,10 @@ class TmuxLauncher:
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to launch node {node.id}: {e}")
-            if e.stderr:
-                logger.error(f"  Error: {e.stderr.decode()}")
+            if stderr := _process_output(e.stderr):
+                logger.error(f"  tmux stderr: {stderr}")
+            if stdout := _process_output(e.stdout):
+                logger.error(f"  tmux stdout: {stdout}")
             return False
 
     def _create_session(self, node: NodeInfo, cmd: str) -> str:

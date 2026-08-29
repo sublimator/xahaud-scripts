@@ -363,16 +363,29 @@ class TestNetwork:
 
     def _dump_launch_env(self, launch_config: LaunchConfig) -> None:
         """Log effective environment variables for visibility."""
+        from xahaud_scripts.testnet.cli_handlers.rc import (
+            RUNTIME_CONFIG_ENV,
+            RUNTIME_CONFIG_SUPPORT_NOTE,
+        )
+
         logger.info("  Environment:")
 
         # Global extra env vars (--env NAME=VALUE)
         for key, value in sorted(launch_config.extra_env.items()):
-            logger.info(f"    {key}={value}")
+            note = (
+                f" ({RUNTIME_CONFIG_SUPPORT_NOTE})" if key == RUNTIME_CONFIG_ENV else ""
+            )
+            logger.info(f"    {key}={value}{note}")
 
         # Node-specific env vars (--env n0:NAME=VALUE)
         for node_id in sorted(launch_config.node_env):
             for key, value in sorted(launch_config.node_env[node_id].items()):
-                logger.info(f"    n{node_id}: {key}={value}")
+                note = (
+                    f" ({RUNTIME_CONFIG_SUPPORT_NOTE})"
+                    if key == RUNTIME_CONFIG_ENV
+                    else ""
+                )
+                logger.info(f"    n{node_id}: {key}={value}{note}")
 
         # Startup flags
         if launch_config.quorum is not None:

@@ -1125,7 +1125,8 @@ def _run_one_test(
     _validate_network_config(config, xahaud_root=xahaud_root)
 
     # --fast-bootstrap: inject global.bootstrap_fast_start=true unless already
-    # set in XAHAUD_RUNTIME_TEST_CONFIG.
+    # set in XAHAUD_RUNTIME_TEST_CONFIG. This daemon hook exists only on
+    # feature-export-rng branches; stock binaries ignore it.
     if fast_bootstrap:
         env = config.setdefault("env", {})
         if isinstance(env, dict):
@@ -1289,7 +1290,8 @@ def run_suite(
             requested levels (format: ``logger.name=LEVEL``).
         fast_bootstrap: If True (default), inject
             XAHAUD_RUNTIME_TEST_CONFIG global.bootstrap_fast_start=true unless
-            explicitly set in suite config or --env.
+            explicitly set in suite config or --env. Supported only by
+            feature-export-rng branches; inert elsewhere.
         rippled_path: If set, use this binary instead of
             ``$xahaud_root/build/rippled``.
 

@@ -24,6 +24,7 @@ Run via a suite entry (the only entry point):
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import importlib.util
 import json as _json
@@ -488,7 +489,7 @@ def search_logs(
 # ---------------------------------------------------------------------------
 
 
-class AssertionError(Exception):
+class AssertionError(builtins.AssertionError):
     """Raised when a scenario assertion fails."""
 
     def __init__(self, message: str, result: LogSearchResult | None = None) -> None:
@@ -686,15 +687,19 @@ class ScenarioContext:
 
     async def _start_ws(self) -> None:
         """Start background WS task lazily on first use."""
-        if self._ws_task is None:
+        if self._ws_task is None or self._ws_task.done():
             self._ws_task = asyncio.create_task(self._ws_loop())
 
     async def _stop_ws(self) -> None:
         """Cancel WS task. Called in finally block."""
-        if self._ws_task:
-            self._ws_task.cancel()
+        task = self._ws_task
+        self._ws_task = None
+        self._ws_ready.clear()
+        self._ws_ledger_index = 0
+        if task:
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._ws_task
+                await task
 
     async def _ws_loop(self) -> None:
         """Background: subscribe to ledger+transactions on node 0."""
@@ -1845,33 +1850,44 @@ class ScenarioContext:
             TimeoutError: if the old process does not exit or the restarted node
                 does not answer RPC within the corresponding timeout.
         """
-        stopped = self.stop_node(node_id)
-        if not stopped:
-            return {node_id: False}
+        # Node 0 owns the persistent scenario WebSocket. Cancel it before the
+        # process restart so subsequent waits cannot observe stale readiness,
+        # then create a fresh connection task once the restart attempt settles.
+        restart_ws = node_id == 0 and self._ws_task is not None
+        if restart_ws:
+            await self._stop_ws()
 
-        await self.wait_for_nodes(
-            lambda nid: self._network.get_exit_status(nid) is not None,
-            nodes=[node_id],
-            timeout=stop_timeout,
-            poll_interval=0.1,
-            name=f"n{node_id}-process-exit",
-        )
+        try:
+            stopped = self.stop_node(node_id)
+            if not stopped:
+                return {node_id: False}
 
-        if wipe_wallet_db:
-            self._network.wipe_wallet_db(node_id)
-        if delay > 0:
-            await asyncio.sleep(delay)
-
-        started = self.start_node(node_id)
-        result = {node_id: started}
-        if verify_timeout > 0 and started:
             await self.wait_for_nodes(
-                lambda nid: bool(self.rpc.server_info(nid)),
+                lambda nid: self._network.get_exit_status(nid) is not None,
                 nodes=[node_id],
-                timeout=verify_timeout,
-                name=f"n{node_id}-restart",
+                timeout=stop_timeout,
+                poll_interval=0.1,
+                name=f"n{node_id}-process-exit",
             )
-        return result
+
+            if wipe_wallet_db:
+                self._network.wipe_wallet_db(node_id)
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            started = self.start_node(node_id)
+            result = {node_id: started}
+            if verify_timeout > 0 and started:
+                await self.wait_for_nodes(
+                    lambda nid: bool(self.rpc.server_info(nid)),
+                    nodes=[node_id],
+                    timeout=verify_timeout,
+                    name=f"n{node_id}-restart",
+                )
+            return result
+        finally:
+            if restart_ws:
+                await self._start_ws()
 
     async def rotate_validator_manifest(
         self,

@@ -269,7 +269,8 @@ def testnet(
     "rc_specs",
     multiple=True,
     help="Runtime config spec. Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. "
-    "Persisted in network.json, auto-applied on run. Can be repeated.",
+    "Persisted in network.json, auto-applied on run. Can be repeated. "
+    "Feature-export-rng branches only; inert elsewhere.",
 )
 @click.pass_context
 def generate(
@@ -331,6 +332,7 @@ def generate(
         for spec in rc_specs:
             parse_rc_spec(spec)  # raises on invalid
         logger.info(f"Runtime config specs: {len(rc_specs)}")
+        logger.info("  feature-export-rng branches only; inert elsewhere")
         for spec in rc_specs:
             logger.info(f"  {spec}")
 
@@ -358,7 +360,10 @@ def generate(
         click.echo(f"  Non-UNL peers: {node_count - vc} (n{vc}-n{node_count - 1})")
     click.echo(f"  Base directory: {network.base_dir}")
     if rc_specs:
-        click.echo(f"  Runtime config: {len(rc_specs)} spec(s) persisted")
+        click.echo(
+            f"  Runtime config: {len(rc_specs)} spec(s) persisted "
+            "(feature-export-rng branches only; inert elsewhere)"
+        )
     if not fixed_peers:
         click.echo("  Fixed peers: disabled (nodes start isolated)")
     click.echo("\nValidator public keys:")
@@ -427,7 +432,8 @@ def generate(
     "rc_specs",
     multiple=True,
     help="Runtime config spec (overrides/adds to generate-time specs). "
-    "Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. Can be repeated.",
+    "Format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]. Can be repeated. "
+    "Feature-export-rng branches only; inert elsewhere.",
 )
 @click.option(
     "--rc-clear",
@@ -491,7 +497,8 @@ def generate(
     "fast_bootstrap",
     default=True,
     help="Set runtime_config global.bootstrap_fast_start=true unless explicitly "
-    "overridden via --env (default: enabled).",
+    "overridden via --env (default: enabled; feature-export-rng branches only; "
+    "inert elsewhere).",
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -614,6 +621,8 @@ def run(
             for key, value in env_dict.items():
                 logger.info(f"  n{node_id}: {key}={value}")
 
+    # This daemon test hook exists only on feature-export-rng branches;
+    # stock binaries ignore the injected environment setting.
     if fast_bootstrap:
         from xahaud_scripts.testnet.cli_handlers.rc import merge_runtime_config_env
 
@@ -1791,7 +1800,8 @@ def rc(ctx: click.Context) -> None:
     """Manage runtime config (send delays, jitter, packet drops).
 
     Controls the runtime_config RPC on running nodes to simulate
-    network conditions for testing.
+    network conditions for testing. Feature-export-rng branches only; inert
+    elsewhere.
 
     Spec format: [NODE[->PEER]:]PARAM=VALUE[,PARAM=VALUE,...]
 
@@ -1820,6 +1830,7 @@ def rc_show(ctx: click.Context, node: str | None) -> None:
     """Show runtime config on all nodes (or a specific node).
 
     Queries every node via RPC and displays the active config.
+    Feature-export-rng branches only; inert elsewhere.
 
     \b
     Examples:
@@ -1848,6 +1859,7 @@ def rc_set(ctx: click.Context, specs: tuple[str, ...]) -> None:
     """Set runtime config on running nodes.
 
     SPECS are runtime config specs in DSL format.
+    Feature-export-rng branches only; inert elsewhere.
 
     \b
     Examples:
@@ -1879,6 +1891,7 @@ def rc_clear(ctx: click.Context, target: str | None) -> None:
     """Clear runtime config on running nodes.
 
     TARGET is optional — clear a specific node or node->peer, or omit to clear all.
+    Feature-export-rng branches only; inert elsewhere.
 
     \b
     Examples:
@@ -2403,7 +2416,8 @@ def scenario_test_guide() -> None:
     "fast_bootstrap",
     default=True,
     help="Set runtime_config global.bootstrap_fast_start=true unless explicitly "
-    "overridden in suite config or --env (default: enabled).",
+    "overridden in suite config or --env (default: enabled; feature-export-rng "
+    "branches only; inert elsewhere).",
 )
 @click.pass_context
 def suite(

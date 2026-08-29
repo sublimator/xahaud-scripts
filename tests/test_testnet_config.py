@@ -766,6 +766,19 @@ def test_suite_cli_passes_group_rippled_path(
     assert seen["rippled_path"] == binary
 
 
+@pytest.mark.parametrize(
+    "command", ["generate", "run", "suite", "rc", "rc show", "rc set", "rc clear"]
+)
+def test_runtime_config_help_labels_branch_support(command: str):
+    result = CliRunner().invoke(
+        testnet, [*command.split(), "--help"], terminal_width=240
+    )
+
+    assert result.exit_code == 0, result.output
+    normalized_help = " ".join(result.output.lower().split())
+    assert "feature-export-rng branches only; inert elsewhere" in normalized_help
+
+
 def test_suite_rejects_invalid_env_override_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

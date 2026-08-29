@@ -1,5 +1,8 @@
 """Runtime config DSL parser and handlers for network simulation.
 
+The xahaud daemon consumes ``XAHAUD_RUNTIME_TEST_CONFIG`` only on
+``feature-export-rng`` branches; stock branches ignore it.
+
 Parses specs like:
     delay=200                           # all nodes, all peers
     n0:delay=500,jitter=50              # node 0 only
@@ -30,6 +33,7 @@ logger = make_logger(__name__)
 console = Console()
 
 RUNTIME_CONFIG_ENV = "XAHAUD_RUNTIME_TEST_CONFIG"
+RUNTIME_CONFIG_SUPPORT_NOTE = "feature-export-rng branches only; inert elsewhere"
 
 # Valid message type names (must match C++ side)
 VALID_MSG_TYPES = frozenset(
@@ -95,6 +99,7 @@ GLOBAL_PARAM_MAP = {
     "rngdrop": "rng_claim_drop_pct",
     "rngrevealdrop": "rng_reveal_drop_pct",
     "rng_poll_ms": "rng_poll_ms",
+    # Branch-only daemon test hook; stock xahaud binaries ignore this setting.
     "bootstrap_fast_start": "bootstrap_fast_start",
     "no_export_sig": "no_export_sig",
     "no_export_sig_hash": "no_export_sig_hash",
