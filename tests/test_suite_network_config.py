@@ -282,3 +282,99 @@ def test_core_network_leaves_are_validated(config: dict, match: str, tmp_path: P
     range(node_count) — after teardown() had already destroyed the prior run."""
     with pytest.raises(ValueError, match=match):
         _validate_network_config(config, xahaud_root=tmp_path)
+
+
+# --- deterministic semantics (round-5 findings) -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        ({"slave_delay": float("nan")}, r"slave_delay must be a finite number"),
+        ({"slave_delay": float("inf")}, r"slave_delay must be a finite number"),
+        ({"rc": ["not-a-spec"]}, r"network.rc 'not-a-spec'"),
+        ({"node_count": 2, "rc": ["n9:delay=1"]}, r"references n9, outside"),
+        ({"node_count": 2, "rc": ["n0->n7:drop=1"]}, r"references n7, outside"),
+        ({"log_levels": {"Overlay": []}}, r"log_levels\['Overlay'\] must be a string"),
+        ({"log_levels": {"": "debug"}}, r"log_levels key must be a non-empty"),
+        ({"launcher": "imaginary"}, r"launcher must be one of"),
+        ({"topology": ["bad"]}, r"topology must be a mapping"),
+        (
+            {"node_count": 2, "topology": {"edges": ["n0->n9"]}},
+            r"references n9, outside",
+        ),
+        ({"topology": {"edges": "n0->n1"}}, r"topology.edges must be a list"),
+        ({"topology": {"edges": ["nope"]}}, r"topology.edges 'nope'"),
+        ({"topology": {"exact": "yes"}}, r"topology.exact must be true or false"),
+        (
+            {"topology": {"settle_timeout": float("nan")}},
+            r"settle_timeout must be a finite",
+        ),
+    ],
+    ids=[
+        "slave_delay-nan",
+        "slave_delay-inf",
+        "rc-malformed",
+        "rc-node-oob",
+        "rc-peer-oob",
+        "log_levels-value",
+        "log_levels-key",
+        "launcher-unknown",
+        "topology-not-mapping",
+        "topology-edge-oob",
+        "topology-edges-str",
+        "topology-edge-malformed",
+        "topology-exact-str",
+        "topology-nan-timeout",
+    ],
+)
+def test_deterministic_semantics_rejected_at_preflight(
+    config: dict, match: str, tmp_path: Path
+):
+    """All knowable from config alone, yet each used to fail after teardown,
+    config generation, or node launch."""
+    with pytest.raises(ValueError, match=match):
+        _validate_network_config(config, xahaud_root=tmp_path)
+
+
+def test_valid_semantics_still_pass(tmp_path: Path):
+    """Guard against the validators being too strict to express real suites."""
+    _validate_network_config(
+        {
+            "node_count": 3,
+            "validators": 2,
+            "slave_delay": 0.2,
+            "launcher": "tmux",
+            "rc": ["rng_poll_ms=333", "n0->n2:drop=100,msg=proposal"],
+            "log_levels": {"Overlay": "debug", "TxQ": ""},
+            "topology": {
+                "edges": ["n0->n1", "n1->n2"],
+                "exact": True,
+                "settle_timeout": 30,
+            },
+        },
+        xahaud_root=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("tests: [{name: a, script: b, params: {1: v}}]\n", r"keys must be non-empty"),
+        ("tests: [{name: a, script: b, params: []}]\n", r"'params' must be a mapping"),
+        (
+            "defaults: {params: {1: v}}\ntests: [{name: a, script: b}]\n",
+            r"keys must be non-empty",
+        ),
+    ],
+    ids=["test-params-int-key", "test-params-list", "defaults-params-int-key"],
+)
+def test_params_keys_must_be_strings(body: str, match: str, tmp_path: Path):
+    """params are expanded as **kwargs; a non-string key cannot be expanded,
+    and previously only failed once the network was already up."""
+    from xahaud_scripts.testnet.suite import SuiteConfig
+
+    path = tmp_path / "suite.yml"
+    path.write_text(body)
+    with pytest.raises(ValueError, match=match):
+        SuiteConfig.from_yaml(path)

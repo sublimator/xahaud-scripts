@@ -2479,7 +2479,20 @@ def suite(
 
     params_override: dict[str, Any] | None = None
     if params_json:
-        params_override = json.loads(params_json)
+        # The option promises a JSON object whose keys become scenario keyword
+        # arguments; a decode error or a JSON array otherwise surfaced as a raw
+        # traceback, or was accepted here and failed after the network launched.
+        try:
+            params_override = json.loads(params_json)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(
+                f"must be valid JSON: {exc}", param_hint="--params-json"
+            ) from exc
+        if not isinstance(params_override, dict):
+            got = type(params_override).__name__
+            raise click.BadParameter(
+                f"must be a JSON object, got {got}", param_hint="--params-json"
+            )
 
     env_override: dict[str, str] | None = None
     if env_vars:

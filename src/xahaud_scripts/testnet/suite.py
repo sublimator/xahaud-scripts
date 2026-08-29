@@ -15,6 +15,7 @@ import ast
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import shutil
@@ -84,10 +85,17 @@ def _require_int(value: Any, label: str, *, minimum: int | None = None) -> int:
 
 
 def _require_number(value: Any, label: str, *, minimum: float | None = None) -> float:
-    """Require a numeric leaf (int or float), excluding bool."""
+    """Require a finite numeric leaf (int or float), excluding bool.
+
+    NaN and infinity have to be rejected explicitly: `nan < 0` is False, so a
+    plain minimum check waves them through, and `time.sleep(nan)` then raises
+    only after the nodes have been launched.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         got = type(value).__name__
         raise ValueError(f"{label} must be a number, got {got}")
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be a finite number, got {value}")
     if minimum is not None and value < minimum:
         raise ValueError(f"{label} must be >= {minimum}, got {value}")
     return float(value)
@@ -177,9 +185,9 @@ class SuiteConfig:
 
         defaults = raw.get("defaults", {})
         _require_mapping(defaults, "'defaults'")
-        for key in ("network", "params"):
-            if key in defaults:
-                _require_mapping(defaults[key], f"'defaults.{key}'")
+        if "network" in defaults:
+            _require_mapping(defaults["network"], "'defaults.network'")
+        _validated_params(defaults.get("params"), "'defaults.params'")
 
         tests = raw.get("tests")
         if not tests or not isinstance(tests, list):
@@ -193,9 +201,9 @@ class SuiteConfig:
             if "script" not in test:
                 raise ValueError(f"Test '{test['name']}' missing required 'script' key")
             _require_non_empty_str(test["script"], f"Test '{test['name']}' 'script'")
-            for key in ("network", "params"):
-                if key in test:
-                    _require_mapping(test[key], f"Test '{test['name']}' '{key}'")
+            if "network" in test:
+                _require_mapping(test["network"], f"Test '{test['name']}' 'network'")
+            _validated_params(test.get("params"), f"Test '{test['name']}' 'params'")
 
         return cls(
             defaults=defaults,
@@ -527,6 +535,130 @@ def _validate_network_env(config: dict[str, Any]) -> None:
     _validated_node_env(config.get("node_env", {}))
 
 
+def _validated_params(raw: Any, label: str) -> dict[str, Any] | None:
+    """Require scenario params to be a mapping with non-empty string keys.
+
+    They are expanded as ``scenario(ctx, log, **params)``, and Python cannot
+    expand a non-string key — which otherwise surfaces only after the network
+    has been launched.
+    """
+    if raw is None:
+        return None
+    _require_mapping(raw, label)
+    for key in raw:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(
+                f"{label} keys must be non-empty strings (they become keyword "
+                f"arguments), got {key!r}"
+            )
+    return dict(raw)
+
+
+def _validated_launcher(raw: Any) -> str | None:
+    """Validate the launcher name against the registry."""
+    if raw is None:
+        return None
+    from xahaud_scripts.testnet.launcher import LAUNCHER_TYPES
+
+    name = _require_non_empty_str(raw, "network.launcher")
+    if name not in LAUNCHER_TYPES:
+        known = ", ".join(sorted(LAUNCHER_TYPES))
+        raise ValueError(f"network.launcher must be one of {known}, got {name!r}")
+    return name
+
+
+def _validate_rc_specs(specs: list[str], *, node_count: int) -> None:
+    """Parse every rc spec and bound its node references.
+
+    Both the DSL parse and the peer-address resolution otherwise happen in
+    _build_launch_config, i.e. after teardown and config regeneration.
+    """
+    from xahaud_scripts.testnet.cli_handlers.rc import parse_rc_spec
+
+    for spec in specs:
+        try:
+            parsed = parse_rc_spec(spec)
+        except Exception as exc:  # click.BadParameter, ValueError, ...
+            raise ValueError(f"network.rc {spec!r}: {exc}") from exc
+        for attr in ("node_id", "peer_id"):
+            node_id = getattr(parsed, attr)
+            if node_id is not None and not 0 <= node_id < node_count:
+                raise ValueError(
+                    f"network.rc {spec!r} references n{node_id}, outside this "
+                    f"{node_count}-node network"
+                )
+
+
+def _validate_log_levels(raw: Any) -> None:
+    """Validate the partition -> severity mapping.
+
+    An empty severity is the documented way to remove a default partition, so
+    it stays legal; a non-string value is not, and would be interpolated
+    straight into the generated daemon config.
+    """
+    _require_mapping(raw, "network.log_levels")
+    for partition, severity in raw.items():
+        _require_non_empty_str(partition, "network.log_levels key")
+        if not isinstance(severity, str):
+            got = type(severity).__name__
+            raise ValueError(
+                f"network.log_levels['{partition}'] must be a string "
+                f"(empty removes the partition), got {got}"
+            )
+
+
+def _validate_topology(raw: Any, *, node_count: int) -> None:
+    """Validate statically-checkable topology fields before launch.
+
+    Deliberately does not predict live state — only the shape and the node/edge
+    references, which are knowable from the config alone yet currently fail
+    after the nodes are running.
+    """
+    _require_mapping(raw, "network.topology")
+
+    nodes = raw.get("nodes")
+    if nodes is not None:
+        if not isinstance(nodes, list):
+            raise ValueError("network.topology.nodes must be a list of node ids")
+        for entry in nodes:
+            try:
+                node_id = parse_node_ref(entry)
+            except ValueError as exc:
+                raise ValueError(f"network.topology.nodes: {exc}") from exc
+            if not 0 <= node_id < node_count:
+                raise ValueError(
+                    f"network.topology.nodes references n{node_id}, outside "
+                    f"this {node_count}-node network"
+                )
+
+    for key in ("edges", "connect", "disconnect"):
+        specs = raw.get(key)
+        if specs is None:
+            continue
+        if isinstance(specs, str) or not isinstance(specs, list):
+            raise ValueError(f"network.topology.{key} must be a list of 'n0->n1'")
+        for spec in specs:
+            _require_non_empty_str(spec, f"network.topology.{key} entry")
+            try:
+                source, target = parse_edge_specs([spec]).pop()
+            except ValueError as exc:
+                raise ValueError(f"network.topology.{key} {spec!r}: {exc}") from exc
+            for node_id in (source, target):
+                if not 0 <= node_id < node_count:
+                    raise ValueError(
+                        f"network.topology.{key} {spec!r} references n{node_id}, "
+                        f"outside this {node_count}-node network"
+                    )
+
+    for key in ("bidirectional", "exact"):
+        if raw.get(key) is not None:
+            _require_bool(raw[key], f"network.topology.{key}")
+    for key in ("settle_timeout", "timeout", "poll_interval", "stable_for",
+                "rpc_timeout"):
+        if raw.get(key) is not None:
+            _require_number(raw[key], f"network.topology.{key}", minimum=0)
+
+
 def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> None:
     """Run every ``network:`` validator without building anything.
 
@@ -562,8 +694,14 @@ def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> No
     for key in ("features", "majority_features", "track_features", "rc"):
         if config.get(key) is not None:
             _require_str_list(config[key], f"network.{key}")
+    if config.get("rc") is not None:
+        _validate_rc_specs(config["rc"], node_count=node_count)
     if config.get("log_levels") is not None:
-        _require_mapping(config["log_levels"], "network.log_levels")
+        _validate_log_levels(config["log_levels"])
+    _validated_launcher(config.get("launcher"))
+    topology = config.get("topology") or config.get("runtime_topology")
+    if topology is not None:
+        _validate_topology(topology, node_count=node_count)
 
     _validate_network_env(config)
     _validated_node_binaries(config.get("node_binaries", {}), node_count=node_count)
@@ -1123,6 +1261,7 @@ def run_suite(
         List of TestResult for all executed tests.
     """
     suite = SuiteConfig.from_yaml(suite_path)
+    _validated_params(params_override, "params_override")
 
     # Expand matrix entries before filtering
     tests = _expand_tests(suite, xahaud_root, params_override=params_override)
