@@ -62,7 +62,7 @@ def _get_rippled_cpu() -> dict[int, float]:
         result = subprocess.check_output(
             ["ps", "aux"], text=True, stderr=subprocess.DEVNULL
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         return {}
 
     cpu_by_node: dict[int, float] = {}
