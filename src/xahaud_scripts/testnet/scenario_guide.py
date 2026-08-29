@@ -397,7 +397,9 @@ revocation; it does not accumulate a list.
 
 Config and keyfile are committed before the restart. If the restart then
 fails, the new consistent pair stays installed for the next start. The
-helpers do not roll that pair back to the pre-mutation files.
+helpers do not roll that pair back to the pre-mutation files. Check the
+returned `restart` map: `False` means the mutation committed but restart
+dispatch did not complete.
 """)
 
     # -- Parameterized tests --

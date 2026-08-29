@@ -299,15 +299,18 @@ class _RestartRPC:
 
 
 class _RestartScenarioNetwork:
-    def __init__(self) -> None:
+    def __init__(self, *, stop_success: bool = True) -> None:
         self.events: list[str] = []
         self.running = True
         self.exit_status: int | None = None
+        self.stop_success = stop_success
         self.rpc_client = _RestartRPC(self)
 
     def stop_nodes(self, node_ids: list[int]) -> dict[int, bool]:
         node_id = node_ids[0]
         self.events.append(f"stop:{node_id}")
+        if not self.stop_success:
+            return {node_id: False}
         self.running = False
         self.exit_status = 0
         return {node_id: True}
@@ -388,6 +391,17 @@ def test_scenario_revoke_validator_restarts_via_node():
         "start:2",
         "rpc:2",
     ]
+
+
+def test_scenario_manifest_mutation_stays_committed_when_stop_fails():
+    network = _RestartScenarioNetwork(stop_success=False)
+    ctx = ScenarioContext(cast(Any, network))
+
+    result = asyncio.run(ctx.rotate_validator_manifest(1))
+
+    assert result["sequence"] == 2
+    assert result["restart"] == {1: False}
+    assert network.events == ["rotate:1", "stop:1"]
 
 
 class _RecordingLauncher:
