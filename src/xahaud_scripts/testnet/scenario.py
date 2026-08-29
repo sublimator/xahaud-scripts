@@ -1873,6 +1873,55 @@ class ScenarioContext:
             )
         return result
 
+    async def rotate_validator_manifest(
+        self,
+        node_id: int,
+        *,
+        delay: float = 0,
+        stop_timeout: float = 30,
+        verify_timeout: float = 60,
+    ) -> dict[str, Any]:
+        """Rotate a validator's signing key/manifest and restart that node.
+
+        The persisted validator master key stays the same. ``validator-keys``
+        mints a fresh signing key and a manifest at exactly the next sequence,
+        the generated ``[validator_token]`` is replaced, and the node is safely
+        restarted with the same binary.
+        """
+        result = self._network.rotate_validator_manifest(node_id)
+        result["restart"] = await self.restart_node(
+            node_id,
+            delay=delay,
+            stop_timeout=stop_timeout,
+            verify_timeout=verify_timeout,
+        )
+        return result
+
+    async def revoke_validator(
+        self,
+        master_node_id: int,
+        via_node_id: int,
+        *,
+        delay: float = 0,
+        stop_timeout: float = 30,
+        verify_timeout: float = 60,
+    ) -> dict[str, Any]:
+        """Install a validator-master revocation on a relay node and restart it.
+
+        The maximum-sequence revocation is minted from ``master_node_id``'s
+        persisted validator keyfile and written to ``via_node_id``'s
+        ``[validator_key_revocation]`` section.  Restarting the via node loads
+        the revocation and lets the daemon relay it through its normal overlay.
+        """
+        result = self._network.revoke_validator(master_node_id, via_node_id)
+        result["restart"] = await self.restart_node(
+            via_node_id,
+            delay=delay,
+            stop_timeout=stop_timeout,
+            verify_timeout=verify_timeout,
+        )
+        return result
+
     async def restart_node_with_binary(
         self, node_id: int, binary: str, *, delay: float = 0, verify_timeout: float = 60
     ) -> dict[int, bool]:

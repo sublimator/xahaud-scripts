@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -111,12 +112,125 @@ class ValidatorKeysGenerator:
         Returns:
             Multi-line token string, or None if not found
         """
+        return self._parse_section(output, "validator_token")
+
+    def rotate(self, keyfile: Path) -> dict[str, str | int]:
+        """Mint the next validator manifest while retaining the master key."""
+        before = self._read_keyfile(keyfile)
+        if before.get("revoked") is True:
+            raise RuntimeError(f"Validator keyfile is already revoked: {keyfile}")
+
+        result = self._run_key_command("create_token", keyfile)
+        token = self._parse_token(result.stdout)
+        if not token:
+            raise RuntimeError(
+                "Could not extract rotated validator token from "
+                f"validator-keys output:\n{result.stdout}"
+            )
+
+        after = self._read_keyfile(keyfile)
+        public_key = self._require_string(after, "public_key", keyfile)
+        before_public_key = self._require_string(before, "public_key", keyfile)
+        if public_key != before_public_key:
+            raise RuntimeError("validator-keys changed the validator master key")
+
+        before_sequence = self._require_int(before, "token_sequence", keyfile)
+        sequence = self._require_int(after, "token_sequence", keyfile)
+        if sequence != before_sequence + 1:
+            raise RuntimeError(
+                "validator-keys did not increment manifest sequence exactly once: "
+                f"{before_sequence} -> {sequence}"
+            )
+        if after.get("revoked") is True:
+            raise RuntimeError("validator-keys unexpectedly revoked during rotation")
+
+        return {
+            "public_key": public_key,
+            "sequence": sequence,
+            "token": token,
+        }
+
+    def revoke(self, keyfile: Path) -> dict[str, str]:
+        """Mint a maximum-sequence revocation manifest for a validator master."""
+        before = self._read_keyfile(keyfile)
+        if before.get("revoked") is True:
+            raise RuntimeError(f"Validator keyfile is already revoked: {keyfile}")
+        before_public_key = self._require_string(before, "public_key", keyfile)
+
+        result = self._run_key_command("revoke_keys", keyfile)
+        revocation = self._parse_section(result.stdout, "validator_key_revocation")
+        if not revocation:
+            raise RuntimeError(
+                "Could not extract validator revocation from validator-keys "
+                f"output:\n{result.stdout}"
+            )
+
+        after = self._read_keyfile(keyfile)
+        public_key = self._require_string(after, "public_key", keyfile)
+        if public_key != before_public_key:
+            raise RuntimeError("validator-keys changed the validator master key")
+        if after.get("revoked") is not True:
+            raise RuntimeError("validator-keys did not mark the keyfile revoked")
+
+        return {"public_key": public_key, "revocation": revocation}
+
+    def _run_key_command(
+        self, command: str, keyfile: Path
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a validator-keys mutation command with consistent errors."""
+        try:
+            return subprocess.run(
+                ["validator-keys", command, "--keyfile", str(keyfile)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"validator-keys {command} failed: {exc.stderr}"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "validator-keys tool not found. "
+                "Please install it and ensure it's in your PATH."
+            ) from exc
+
+    @staticmethod
+    def _read_keyfile(keyfile: Path) -> dict[str, Any]:
+        """Read and validate the top-level validator keyfile object."""
+        try:
+            value = json.loads(keyfile.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Cannot read validator keyfile {keyfile}: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise RuntimeError(f"Validator keyfile is not an object: {keyfile}")
+        return value
+
+    @staticmethod
+    def _require_string(value: dict[str, Any], key: str, keyfile: Path) -> str:
+        result = value.get(key)
+        if not isinstance(result, str) or not result:
+            raise RuntimeError(f"Validator keyfile {keyfile} has no valid {key}")
+        return result
+
+    @staticmethod
+    def _require_int(value: dict[str, Any], key: str, keyfile: Path) -> int:
+        result = value.get(key)
+        if isinstance(result, bool) or not isinstance(result, int):
+            raise RuntimeError(f"Validator keyfile {keyfile} has no valid {key}")
+        return result
+
+    @staticmethod
+    def _parse_section(output: str, section: str) -> str | None:
+        """Extract the non-empty lines following ``[section]``."""
         lines = output.strip().split("\n")
         token_lines = []
         in_token = False
 
         for line in lines:
-            if "[validator_token]" in line:
+            if f"[{section}]" in line:
                 in_token = True
                 continue
             if in_token:
@@ -126,6 +240,31 @@ class ValidatorKeysGenerator:
                 token_lines.append(line)
 
         return "\n".join(token_lines) if token_lines else None
+
+
+def update_config_section(config_file: Path, section: str, value: str) -> None:
+    """Replace or append a single-value xahaud config section."""
+    if not section or any(char in section for char in "[]\n\r"):
+        raise ValueError(f"Invalid config section name: {section!r}")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"Config section [{section}] cannot be empty")
+
+    try:
+        config = config_file.read_text()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read node config {config_file}: {exc}") from exc
+
+    block = f"[{section}]\n{normalized}\n\n"
+    pattern = re.compile(
+        rf"^\[{re.escape(section)}\]\n.*?(?=^\[|\Z)",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if pattern.search(config):
+        updated = pattern.sub(block, config, count=1)
+    else:
+        updated = f"{config.rstrip()}\n\n{block}"
+    config_file.write_text(updated)
 
 
 def generate_validators_file(

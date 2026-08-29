@@ -373,6 +373,23 @@ await ctx.restart_node(2, wipe_wallet_db=True)
 
 This removes `db/wallet.db` and its SQLite sidecars after shutdown. It does not
 remove `db/nudb` and does not use the daemon `disconnect` RPC.
+
+Validator manifest lifecycle scenarios can rotate a validator to its next
+manifest sequence (same master key, fresh signing key), or mint a permanent
+master-key revocation and load it through a chosen relay node:
+
+```python
+rotation = await ctx.rotate_validator_manifest(0)
+assert rotation["sequence"] == 2
+
+# Permanently marks n0's generated validator keyfile revoked. The revocation is
+# installed on n2, which loads and relays it after the helper restarts n2.
+await ctx.revoke_validator(master_node_id=0, via_node_id=2)
+```
+
+Both helpers require the generated `validator-keys.json` files and the tmux
+launcher. A revocation is irreversible within that generated testnet; regenerate
+the network before reusing the validator master.
 """)
 
     # -- Parameterized tests --

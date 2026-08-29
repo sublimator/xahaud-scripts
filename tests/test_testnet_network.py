@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from xahaud_scripts.testnet.config import LaunchConfig, NetworkConfig, NodeInfo
+from xahaud_scripts.testnet.generator import ValidatorKeysGenerator
 from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
@@ -181,6 +182,113 @@ def test_wipe_wallet_db_refuses_while_process_is_running(
     assert wallet_db.read_text() == "live wallet state"
 
 
+def test_rotate_validator_manifest_updates_generated_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=2, validators=1)
+    node = _node(tmp_path, 0)
+    net._nodes = [node, _node(tmp_path, 1)]
+    node.node_dir.mkdir(parents=True)
+    node.config_path.write_text("[validator_token]\nold-token\n\n[server]\npeer\n")
+    keyfile = node.node_dir / "validator-keys.json"
+    keyfile.write_text("old-keyfile")
+
+    def rotate(_self: ValidatorKeysGenerator, path: Path):
+        assert path == keyfile
+        path.write_text("rotated-keyfile")
+        return {
+            "public_key": node.public_key,
+            "sequence": 2,
+            "token": "rotated-token",
+        }
+
+    monkeypatch.setattr(ValidatorKeysGenerator, "rotate", rotate)
+
+    result = net.rotate_validator_manifest(0)
+
+    assert result == {"node_id": 0, "public_key": "pk0", "sequence": 2}
+    assert keyfile.read_text() == "rotated-keyfile"
+    assert "[validator_token]\nrotated-token\n" in node.config_path.read_text()
+    assert "old-token" not in node.config_path.read_text()
+
+
+def test_revoke_validator_installs_revocation_on_via_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=2, validators=1)
+    master = _node(tmp_path, 0)
+    via = _node(tmp_path, 1)
+    net._nodes = [master, via]
+    master.node_dir.mkdir(parents=True)
+    via.node_dir.mkdir(parents=True)
+    master.config_path.write_text("[validator_token]\nmaster-token\n")
+    via.config_path.write_text("[server]\npeer\n")
+    keyfile = master.node_dir / "validator-keys.json"
+    keyfile.write_text("old-keyfile")
+
+    def revoke(_self: ValidatorKeysGenerator, path: Path):
+        assert path == keyfile
+        path.write_text("revoked-keyfile")
+        return {
+            "public_key": master.public_key,
+            "revocation": "revocation-base64",
+        }
+
+    monkeypatch.setattr(ValidatorKeysGenerator, "revoke", revoke)
+
+    result = net.revoke_validator(0, 1)
+
+    assert result == {
+        "master_node_id": 0,
+        "via_node_id": 1,
+        "public_key": "pk0",
+    }
+    assert keyfile.read_text() == "revoked-keyfile"
+    assert via.config_path.read_text().endswith(
+        "[validator_key_revocation]\nrevocation-base64\n\n"
+    )
+
+
+def test_rotate_validator_manifest_rejects_non_validator(tmp_path: Path):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=2, validators=1)
+    net._nodes = [_node(tmp_path, 0), _node(tmp_path, 1)]
+
+    with pytest.raises(ValueError, match="is not a validator"):
+        net.rotate_validator_manifest(1)
+
+
+def test_rotate_validator_manifest_rolls_back_keyfile_and_config_on_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=1, validators=1)
+    node = _node(tmp_path, 0)
+    net._nodes = [node]
+    node.node_dir.mkdir(parents=True)
+    node.config_path.write_text("[validator_token]\nold-token\n")
+    keyfile = node.node_dir / "validator-keys.json"
+    keyfile.write_text("old-keyfile")
+
+    def bad_rotate(_self: ValidatorKeysGenerator, path: Path):
+        path.write_text("mutated-keyfile")
+        return {
+            "public_key": "wrong-master",
+            "sequence": 2,
+            "token": "rotated-token",
+        }
+
+    monkeypatch.setattr(ValidatorKeysGenerator, "rotate", bad_rotate)
+
+    with pytest.raises(RuntimeError, match="keyfile master does not match"):
+        net.rotate_validator_manifest(0)
+
+    assert keyfile.read_text() == "old-keyfile"
+    assert node.config_path.read_text() == "[validator_token]\nold-token\n"
+
+
 class _RestartRPC:
     def __init__(self, network: _RestartScenarioNetwork) -> None:
         self._network = network
@@ -220,6 +328,18 @@ class _RestartScenarioNetwork:
         self.events.append(f"wipe:{node_id}")
         return []
 
+    def rotate_validator_manifest(self, node_id: int) -> dict[str, Any]:
+        self.events.append(f"rotate:{node_id}")
+        return {"node_id": node_id, "public_key": "pk", "sequence": 2}
+
+    def revoke_validator(self, master_node_id: int, via_node_id: int) -> dict[str, Any]:
+        self.events.append(f"revoke:{master_node_id}:via:{via_node_id}")
+        return {
+            "master_node_id": master_node_id,
+            "via_node_id": via_node_id,
+            "public_key": "pk",
+        }
+
 
 def test_scenario_restart_node_waits_for_exit_then_wipes_and_starts():
     network = _RestartScenarioNetwork()
@@ -232,6 +352,39 @@ def test_scenario_restart_node_waits_for_exit_then_wipes_and_starts():
         "stop:2",
         "exit-status:2",
         "wipe:2",
+        "start:2",
+        "rpc:2",
+    ]
+
+
+def test_scenario_rotate_validator_manifest_restarts_rotated_node():
+    network = _RestartScenarioNetwork()
+    ctx = ScenarioContext(cast(Any, network))
+
+    result = asyncio.run(ctx.rotate_validator_manifest(1))
+
+    assert result["sequence"] == 2
+    assert result["restart"] == {1: True}
+    assert network.events == [
+        "rotate:1",
+        "stop:1",
+        "exit-status:1",
+        "start:1",
+        "rpc:1",
+    ]
+
+
+def test_scenario_revoke_validator_restarts_via_node():
+    network = _RestartScenarioNetwork()
+    ctx = ScenarioContext(cast(Any, network))
+
+    result = asyncio.run(ctx.revoke_validator(0, 2))
+
+    assert result["restart"] == {2: True}
+    assert network.events == [
+        "revoke:0:via:2",
+        "stop:2",
+        "exit-status:2",
         "start:2",
         "rpc:2",
     ]

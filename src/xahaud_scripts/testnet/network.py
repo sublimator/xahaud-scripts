@@ -21,6 +21,7 @@ from xahaud_scripts.testnet.config import NodeInfo
 from xahaud_scripts.testnet.generator import (
     ValidatorKeysGenerator,
     generate_all_configs,
+    update_config_section,
 )
 from xahaud_scripts.testnet.loopback import alias_for, require_loopback_hosts
 from xahaud_scripts.testnet.monitor import NetworkMonitor
@@ -803,6 +804,103 @@ class TestNetwork:
             "ledger database retained"
         )
         return removed
+
+    def rotate_validator_manifest(self, node_id: int) -> dict[str, Any]:
+        """Mint and install the next manifest token for a validator node.
+
+        The validator master key is retained while ``validator-keys`` creates a
+        fresh signing key and increments the manifest sequence.  This updates
+        the generated config but does not restart the node; scenario callers
+        should use ``ScenarioContext.rotate_validator_manifest`` for the full
+        lifecycle operation.
+        """
+        node = self._validator_node(node_id)
+        keyfile = node.node_dir / "validator-keys.json"
+        original_keyfile = keyfile.read_text()
+        original_config = node.config_path.read_text()
+
+        try:
+            rotation = ValidatorKeysGenerator().rotate(keyfile)
+            public_key = rotation["public_key"]
+            token = rotation["token"]
+            sequence = rotation["sequence"]
+            if public_key != node.public_key:
+                raise RuntimeError(
+                    f"n{node_id} keyfile master does not match generated node metadata"
+                )
+            if not isinstance(token, str) or not isinstance(sequence, int):
+                raise RuntimeError("validator-keys returned invalid rotation metadata")
+            update_config_section(node.config_path, "validator_token", token)
+        except Exception:
+            # validator-keys mutates its keyfile before printing the new token.
+            # Keep the config/keyfile pair atomic if validation or config write
+            # fails before the node is restarted.
+            keyfile.write_text(original_keyfile)
+            node.config_path.write_text(original_config)
+            raise
+
+        return {
+            "node_id": node_id,
+            "public_key": public_key,
+            "sequence": sequence,
+        }
+
+    def revoke_validator(self, master_node_id: int, via_node_id: int) -> dict[str, Any]:
+        """Mint a validator revocation and install it in another node's config.
+
+        The master validator keyfile is permanently marked revoked by
+        ``validator-keys``.  The chosen ``via`` node loads and relays the
+        maximum-sequence manifest on its next start.
+        """
+        master = self._validator_node(master_node_id)
+        if not self._nodes:
+            self._load_network_info()
+        via = self._get_node(via_node_id)
+        if via is None:
+            raise ValueError(f"Unknown node: n{via_node_id}")
+
+        keyfile = master.node_dir / "validator-keys.json"
+        original_keyfile = keyfile.read_text()
+        original_config = via.config_path.read_text()
+
+        try:
+            result = ValidatorKeysGenerator().revoke(keyfile)
+            public_key = result["public_key"]
+            revocation = result["revocation"]
+            if public_key != master.public_key:
+                raise RuntimeError(
+                    f"n{master_node_id} keyfile master does not match generated "
+                    "node metadata"
+                )
+            update_config_section(
+                via.config_path,
+                "validator_key_revocation",
+                revocation,
+            )
+        except Exception:
+            keyfile.write_text(original_keyfile)
+            via.config_path.write_text(original_config)
+            raise
+
+        return {
+            "master_node_id": master_node_id,
+            "via_node_id": via_node_id,
+            "public_key": public_key,
+        }
+
+    def _validator_node(self, node_id: int) -> NodeInfo:
+        """Return a generated UNL validator node or raise a precise error."""
+        if not self._nodes:
+            self._load_network_info()
+        node = self._get_node(node_id)
+        if node is None:
+            raise ValueError(f"Unknown node: n{node_id}")
+        if node_id >= self._config.validator_count:
+            raise ValueError(
+                f"n{node_id} is not a validator in this network "
+                f"(validators are n0..n{self._config.validator_count - 1})"
+            )
+        return node
 
     def rebuild_launch_command(self, node_id: int, binary_path: Path) -> str:
         """Rewrite a node's saved launch command to use a different binary.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,8 +38,10 @@ from xahaud_scripts.testnet.config import (
     resolve_feature_name,
 )
 from xahaud_scripts.testnet.generator import (
+    ValidatorKeysGenerator,
     _deterministic_node_seed,
     generate_node_config,
+    update_config_section,
 )
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
@@ -432,6 +435,98 @@ def test_deterministic_node_seed_is_stable_and_namespaced():
     assert seed == "ssGn2RwhoWE5M7VgNDk986v9m87zL"
     assert seed != _deterministic_node_seed(31337, 1)
     assert seed != _deterministic_node_seed(21337, 0)
+
+
+def test_validator_keys_rotate_requires_same_master_and_next_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    keyfile = tmp_path / "validator-keys.json"
+    keyfile.write_text(
+        json.dumps(
+            {
+                "public_key": "master-public",
+                "secret_key": "master-secret",
+                "token_sequence": 4,
+                "revoked": False,
+            }
+        )
+    )
+
+    def rotate_command(args: list[str], **_kwargs: Any):
+        state = json.loads(keyfile.read_text())
+        state["token_sequence"] = 5
+        state["manifest"] = "new-manifest"
+        keyfile.write_text(json.dumps(state))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="[validator_token]\nrotated-token\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", rotate_command)
+
+    result = ValidatorKeysGenerator().rotate(keyfile)
+
+    assert result == {
+        "public_key": "master-public",
+        "sequence": 5,
+        "token": "rotated-token",
+    }
+
+
+def test_validator_keys_revoke_extracts_config_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    keyfile = tmp_path / "validator-keys.json"
+    keyfile.write_text(
+        json.dumps(
+            {
+                "public_key": "master-public",
+                "secret_key": "master-secret",
+                "token_sequence": 2,
+                "revoked": False,
+            }
+        )
+    )
+
+    def revoke_command(args: list[str], **_kwargs: Any):
+        state = json.loads(keyfile.read_text())
+        state["revoked"] = True
+        state["manifest"] = "revocation-manifest"
+        keyfile.write_text(json.dumps(state))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                "WARNING: destructive\n\n"
+                "[validator_key_revocation]\nrevocation-base64\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", revoke_command)
+
+    result = ValidatorKeysGenerator().revoke(keyfile)
+
+    assert result == {
+        "public_key": "master-public",
+        "revocation": "revocation-base64",
+    }
+
+
+def test_update_config_section_replaces_token_and_appends_revocation(tmp_path: Path):
+    config = tmp_path / "xahaud.cfg"
+    config.write_text("[validator_token]\nold-token\n\n[server]\npeer\n")
+
+    update_config_section(config, "validator_token", "new-token")
+    update_config_section(config, "validator_key_revocation", "revocation")
+
+    assert config.read_text() == (
+        "[validator_token]\nnew-token\n\n"
+        "[server]\npeer\n\n"
+        "[validator_key_revocation]\nrevocation\n\n"
+    )
 
 
 def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):
