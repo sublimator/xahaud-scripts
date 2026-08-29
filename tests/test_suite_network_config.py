@@ -215,3 +215,70 @@ def test_suite_yaml_shape_errors_are_value_errors(
     path.write_text(body)
     with pytest.raises(ValueError, match=match):
         SuiteConfig.from_yaml(path)
+
+
+# --- required leaf fields ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("tests: [{name: [], script: b}]\n", r"Test #1 'name' must be a non-empty"),
+        ("tests: [{name: '', script: b}]\n", r"Test #1 'name' must be a non-empty"),
+        ("tests: [{name: a, script: []}]\n", r"Test 'a' 'script' must be a non-empty"),
+        (
+            "tests: [{name: a, script: '  '}]\n",
+            r"Test 'a' 'script' must be a non-empty",
+        ),
+    ],
+    ids=["name-list", "name-empty", "script-list", "script-blank"],
+)
+def test_required_leaf_fields_are_validated(body: str, match: str, tmp_path: Path):
+    """`script: []` reached Path() and raised a raw TypeError; `name: []` was
+    silently accepted by --dry-run and printed as the test's name."""
+    from xahaud_scripts.testnet.suite import SuiteConfig
+
+    path = tmp_path / "suite.yml"
+    path.write_text(body)
+    with pytest.raises(ValueError, match=match):
+        SuiteConfig.from_yaml(path)
+
+
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        ({"node_count": []}, r"network.node_count must be an integer, got list"),
+        ({"node_count": True}, r"network.node_count must be an integer, got bool"),
+        ({"node_count": 0}, r"network.node_count must be >= 1"),
+        ({"validators": "3"}, r"network.validators must be an integer, got str"),
+        ({"node_count": 3, "validators": 5}, r"cannot exceed"),
+        ({"quorum": []}, r"network.quorum must be an integer"),
+        ({"start_ledger": 1.5}, r"network.start_ledger must be an integer"),
+        ({"slave_delay": "fast"}, r"network.slave_delay must be a number"),
+        ({"fixed_peers": "no"}, r"network.fixed_peers must be true or false"),
+        ({"features": "ConsensusEntropy"}, r"network.features must be a list"),
+        ({"features": [3]}, r"network.features entry must be a non-empty string"),
+        ({"rc": [""]}, r"network.rc entry must be a non-empty string"),
+        ({"log_levels": []}, r"network.log_levels must be a mapping"),
+    ],
+    ids=[
+        "node_count-list",
+        "node_count-bool",
+        "node_count-zero",
+        "validators-str",
+        "validators-exceeds",
+        "quorum-list",
+        "start_ledger-float",
+        "slave_delay-str",
+        "fixed_peers-str",
+        "features-bare-str",
+        "features-int-entry",
+        "rc-empty-entry",
+        "log_levels-list",
+    ],
+)
+def test_core_network_leaves_are_validated(config: dict, match: str, tmp_path: Path):
+    """node_count: [] used to pass preflight and only fail inside generate()'s
+    range(node_count) — after teardown() had already destroyed the prior run."""
+    with pytest.raises(ValueError, match=match):
+        _validate_network_config(config, xahaud_root=tmp_path)

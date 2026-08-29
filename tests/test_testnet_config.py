@@ -1079,3 +1079,38 @@ def test_suite_config_error_is_a_clean_cli_error(tmp_path: Path):
     assert "Error:" in result.output
     assert "does not exist" in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("network_block", "match"),
+    [
+        ("      node_count: []\n", "node_count must be an integer"),
+        ("      validators: '3'\n", "validators must be an integer"),
+        ("      features: ConsensusEntropy\n", "features must be a list"),
+    ],
+    ids=["node_count", "validators", "features"],
+)
+def test_dry_run_rejects_malformed_leaves_cleanly(
+    network_block: str, match: str, tmp_path: Path
+):
+    """--dry-run must reject these, not print a plan and exit 0.
+
+    node_count: [] previously survived preflight and only failed inside
+    generate(), i.e. after the run had already torn down the prior network.
+    """
+    script = tmp_path / "scenario.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        f"tests:\n  - name: t\n    script: {script}\n    network:\n{network_block}"
+    )
+
+    result = CliRunner().invoke(
+        testnet,
+        ["--xahaud-root", str(tmp_path), "suite", str(suite_file), "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.output
+    assert match in result.output
+    assert "Traceback" not in result.output

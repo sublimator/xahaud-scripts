@@ -65,6 +65,52 @@ logger = make_logger(__name__)
 _DICT_MERGE_KEYS = {"log_levels", "env", "node_binaries"}
 
 
+def _require_non_empty_str(value: Any, label: str) -> str:
+    """Require a non-empty string leaf."""
+    if not isinstance(value, str) or not value.strip():
+        got = type(value).__name__
+        raise ValueError(f"{label} must be a non-empty string, got {got}")
+    return value
+
+
+def _require_int(value: Any, label: str, *, minimum: int | None = None) -> int:
+    """Require an integer leaf. bool is an int in Python, so exclude it."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        got = type(value).__name__
+        raise ValueError(f"{label} must be an integer, got {got}")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{label} must be >= {minimum}, got {value}")
+    return value
+
+
+def _require_number(value: Any, label: str, *, minimum: float | None = None) -> float:
+    """Require a numeric leaf (int or float), excluding bool."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        got = type(value).__name__
+        raise ValueError(f"{label} must be a number, got {got}")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{label} must be >= {minimum}, got {value}")
+    return float(value)
+
+
+def _require_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        got = type(value).__name__
+        raise ValueError(f"{label} must be true or false, got {got}")
+    return value
+
+
+def _require_str_list(value: Any, label: str) -> list[str]:
+    """Require a list of non-empty strings (features, rc specs, ...)."""
+    if isinstance(value, str) or not isinstance(value, list):
+        got = type(value).__name__
+        raise ValueError(
+            f"{label} must be a list of strings, got {got} "
+            "(each entry is a separate list item)"
+        )
+    return [_require_non_empty_str(entry, f"{label} entry") for entry in value]
+
+
 def _require_mapping(value: Any, label: str) -> None:
     """Reject valid YAML of the wrong shape with a ValueError, not a TypeError.
 
@@ -143,8 +189,10 @@ class SuiteConfig:
             _require_mapping(test, f"Test #{i + 1}")
             if "name" not in test:
                 raise ValueError(f"Test #{i + 1} missing required 'name' key")
+            _require_non_empty_str(test["name"], f"Test #{i + 1} 'name'")
             if "script" not in test:
                 raise ValueError(f"Test '{test['name']}' missing required 'script' key")
+            _require_non_empty_str(test["script"], f"Test '{test['name']}' 'script'")
             for key in ("network", "params"):
                 if key in test:
                     _require_mapping(test[key], f"Test '{test['name']}' '{key}'")
@@ -488,7 +536,35 @@ def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> No
     until after it had already torn down the previous network and regenerated
     node directories. Rejecting up front keeps a typo cheap.
     """
+    # Core sizing first: everything below is expressed relative to node_count,
+    # and a bad value here used to survive preflight only to blow up inside
+    # generate()'s range(node_count) — after teardown() had already run.
     node_count = config.get("node_count", 5)
+    _require_int(node_count, "network.node_count", minimum=1)
+
+    validators = config.get("validators")
+    if validators is not None:
+        _require_int(validators, "network.validators", minimum=1)
+        if validators > node_count:
+            raise ValueError(
+                f"network.validators ({validators}) cannot exceed "
+                f"network.node_count ({node_count})"
+            )
+
+    for key in ("quorum", "start_ledger"):
+        if config.get(key) is not None:
+            _require_int(config[key], f"network.{key}", minimum=1)
+    if config.get("slave_delay") is not None:
+        _require_number(config["slave_delay"], "network.slave_delay", minimum=0)
+    for key in ("fixed_peers", "find_ports", "unl_report"):
+        if config.get(key) is not None:
+            _require_bool(config[key], f"network.{key}")
+    for key in ("features", "majority_features", "track_features", "rc"):
+        if config.get(key) is not None:
+            _require_str_list(config[key], f"network.{key}")
+    if config.get("log_levels") is not None:
+        _require_mapping(config["log_levels"], "network.log_levels")
+
     _validate_network_env(config)
     _validated_node_binaries(config.get("node_binaries", {}), node_count=node_count)
     _validated_lldb_nodes(config.get("lldb"), node_count=node_count)
