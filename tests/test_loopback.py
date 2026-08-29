@@ -104,3 +104,47 @@ def test_format_alias_fix_without_node_count_is_still_actionable():
     text = format_alias_fix(["127.0.0.2"])
     assert "x-testnet setup-aliases -n <node-count>" in text
     assert "sudo ifconfig lo0 alias 127.0.0.2 up" in text
+
+
+def test_positive_cache_expires_so_a_removed_alias_is_noticed(on_macos, monkeypatch):
+    """A cached hit must not certify an alias after it is torn down.
+
+    Caching a positive result for the process lifetime kept reporting success
+    after an alias was removed mid-run — the same silent failure this module
+    exists to prevent, just relocated.
+    """
+    present = {"127.0.0.1", "127.0.0.2"}
+    monkeypatch.setattr(loopback, "_probe_loopback_addresses", lambda: set(present))
+    loopback.reset_cache()
+
+    assert missing_loopback_aliases(["127.0.0.2"]) == []
+
+    present.discard("127.0.0.2")
+    # Still inside the TTL: the cached answer is deliberately reused.
+    assert missing_loopback_aliases(["127.0.0.2"]) == []
+
+    # Past the TTL, the removal is noticed.
+    clock = [0.0]
+    monkeypatch.setattr(loopback.time, "monotonic", lambda: clock[0])
+    loopback.reset_cache()
+    assert missing_loopback_aliases(["127.0.0.2"]) == ["127.0.0.2"]
+    present.add("127.0.0.2")
+    clock[0] += loopback.CACHE_TTL_SECONDS + 1
+    assert missing_loopback_aliases(["127.0.0.2"]) == []
+
+
+def test_failed_probe_is_cached_so_it_is_not_reshelled_per_dial(on_macos, monkeypatch):
+    """An unusable ifconfig must not be shelled out once per dial."""
+    calls: list[int] = []
+
+    def probe():
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(loopback, "_probe_loopback_addresses", probe)
+    loopback.reset_cache()
+
+    for _ in range(5):
+        assert missing_loopback_aliases(["127.0.0.2"]) == []
+
+    assert len(calls) == 1

@@ -10,12 +10,22 @@ A missing alias fails *silently and late*: the ``connect`` RPC still reports
 success (it only schedules an attempt), the TCP connect then fails, and the only
 symptom is a peer edge that never forms. So check up front and raise something
 that names the exact fix.
+
+Contract, stated explicitly because both halves matter:
+
+* **Fail closed on a definite miss.** If the probe works and an address is
+  absent, dialing raises.
+* **Fail OPEN on an unusable probe.** If ``ifconfig`` cannot be run or parsed we
+  warn and allow the operation. That deliberately forfeits the guarantee in
+  such an environment rather than blocking work on a check we cannot perform —
+  the pre-existing silent-failure mode is what you get back.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from collections.abc import Iterable
 
 from xahaud_scripts.utils.logging import make_logger
@@ -25,7 +35,14 @@ logger = make_logger(__name__)
 # 127.0.0.1 always exists; it is the base address, not an alias.
 BASE_LOOPBACK = "127.0.0.1"
 
-_cached_present: set[str] | None = None
+# Aliases can be added *or removed* while a long suite runs, so a positive
+# result is only trusted briefly. The window just has to be short enough that a
+# stale answer cannot outlive a test, while still collapsing the burst of checks
+# a single topology apply produces into one probe.
+CACHE_TTL_SECONDS = 5.0
+
+# (probed_at_monotonic, addresses_or_None)
+_cached: tuple[float, set[str] | None] | None = None
 _probe_warned = False
 
 
@@ -35,8 +52,8 @@ class LoopbackAliasError(RuntimeError):
 
 def reset_cache() -> None:
     """Forget the probed alias set (tests, and after creating aliases)."""
-    global _cached_present, _probe_warned
-    _cached_present = None
+    global _cached, _probe_warned
+    _cached = None
     _probe_warned = False
 
 
@@ -75,11 +92,19 @@ def _probe_loopback_addresses() -> set[str] | None:
 
 
 def present_loopback_addresses(*, refresh: bool = False) -> set[str] | None:
-    """Configured loopback addresses, cached for the process."""
-    global _cached_present
-    if refresh or _cached_present is None:
-        _cached_present = _probe_loopback_addresses()
-    return _cached_present
+    """Configured loopback addresses, cached for ``CACHE_TTL_SECONDS``.
+
+    The TTL applies to a *successful* probe too. Caching a positive result for
+    the life of the process would keep certifying an alias after it was torn
+    down mid-run, which is the same silent failure this module exists to stop.
+    A failed probe is cached for the same window so an unusable ``ifconfig``
+    does not get shelled out once per dial.
+    """
+    global _cached
+    now = time.monotonic()
+    if refresh or _cached is None or (now - _cached[0]) >= CACHE_TTL_SECONDS:
+        _cached = (now, _probe_loopback_addresses())
+    return _cached[1]
 
 
 def _needs_alias(host: str) -> bool:

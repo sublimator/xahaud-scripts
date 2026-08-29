@@ -202,8 +202,14 @@ Scenario testing:
   (teardown -> generate -> launch -> scenario), configured entirely from the
   YAML `network:` block: `node_count`, `validators`, `quorum`, `fixed_peers`,
   `find_ports`, `features`, `majority_features`, `start_ledger`, `unl_report`,
-  `env`, `node_env`, `node_binaries`, `log_levels`, `track_features`, `rc`,
-  `topology`, `lldb`, `launcher`, `slave_delay`.
+  `genesis_file`, `env`, `node_env`, `node_binaries`, `extra_args`, `desktop`,
+  `log_levels`, `track_features`, `rc`, `topology`, `lldb`, `launcher`,
+  `slave_delay`.
+- **Breaking difference from the removed `run --teardown`:** suite tears down
+  with `keep_dirs=True`, so node dirs and logs survive a run. That is
+  deliberate — the old flag deleted exactly the `debug.log` you need to
+  diagnose the failure. Clean up with `x-testnet clean` when you want the
+  space back.
 - `lldb: all` or `lldb: [0, 4]` launches those nodes under lldb, so a crash
   leaves a backtrace in the pane (read it with `x-testnet node-output nN`).
 - Output: live net in `testnet/`; suite log at

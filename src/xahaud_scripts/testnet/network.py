@@ -202,16 +202,20 @@ class TestNetwork:
         peer). On macOS those 127.0.0.2+ aliases must be created
         (`x-testnet setup-aliases`); Linux routes all of 127/8 already.
 
-        Checked for every multi-node network, not just generated `[ips_fixed]`
-        ones: a `--no-fixed-peers` network still dials those same addresses when
-        a scenario or suite shapes topology at runtime. Failing here is far
-        cheaper than the alternative — `connect` reports success, no edge ever
-        forms, and the topology diff just says `actual=[]`.
+        Scoped to generated `[ips_fixed]` networks, because only those bake the
+        full set of addresses into the config and dial them at startup. Node
+        listeners bind 0.0.0.0, and a `fixed_peers: false` network does no
+        dialing at launch at all — demanding every alias there would block
+        isolated or partially-connected topologies that never need them.
+        Runtime dials are guarded individually by `connect_managed_peer`, which
+        knows the one address it is about to use.
         """
+        if not self._config.fixed_peers:
+            return
         count = len(self._nodes) if self._nodes else self._config.node_count
         require_loopback_hosts(
             [alias_for(i) for i in range(count)],
-            context=f"Launching a {count}-node network",
+            context=f"Launching a {count}-node fixed-peer network",
             node_count=count,
         )
 

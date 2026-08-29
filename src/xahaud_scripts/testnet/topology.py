@@ -371,17 +371,17 @@ def disconnect_managed_peer(
     source: int,
     target: int,
 ) -> dict[str, Any] | None:
-    """Disconnect ``source`` from managed ``target`` using the live endpoint."""
+    """Disconnect ``source`` from managed ``target`` using the live endpoint.
+
+    Deliberately unguarded by the loopback-alias check, unlike dialing: the
+    daemon's ``disconnect`` handler only parses the endpoint and compares it
+    against active peers — it never dials or binds that address. Refusing to
+    disconnect because a local alias is absent could only reduce recoverability.
+    """
     endpoint = managed_peer_endpoint(rpc, nodes, source=source, target=target)
     if endpoint is None:
-        # No live session to match: fall back to the target's listen address.
-        # That is an alias, so hold it to the same precondition as dialing.
+        # No live session matched; fall back to the target's listen address.
         target_node = node_by_id(nodes, target)
-        require_loopback_hosts(
-            [target_node.peer_host],
-            context=f"n{source}->n{target} disconnect",
-            node_count=len(nodes),
-        )
         endpoint = (target_node.peer_host, target_node.port_peer)
     ip, port = endpoint
     return rpc.disconnect(source, ip, port)

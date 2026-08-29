@@ -345,6 +345,48 @@ def _validated_node_binaries(raw: Any, *, node_count: int) -> dict[int, Path]:
     return result
 
 
+def _validated_genesis_file(raw: Any, *, xahaud_root: Path) -> Path | None:
+    """Resolve the YAML ``genesis_file`` override, or None for the bundled one."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (str, Path)) or not str(raw):
+        raise ValueError("network.genesis_file must be a path")
+    path = Path(str(raw)).expanduser()
+    if not path.is_absolute():
+        path = xahaud_root / path
+    if not path.is_file():
+        raise ValueError(f"network.genesis_file does not exist: {path}")
+    return path
+
+
+def _validated_extra_args(raw: Any) -> list[str]:
+    """Validate the YAML ``extra_args`` list of raw daemon arguments."""
+    if raw is None:
+        return []
+    if isinstance(raw, str) or not isinstance(raw, list):
+        raise ValueError(
+            "network.extra_args must be a list of strings, not a bare string "
+            "(each argument is a separate list entry)"
+        )
+    args: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, (str, int, float)):
+            raise ValueError(f"network.extra_args entry must be a string: {entry!r}")
+        args.append(str(entry))
+    return args
+
+
+def _validated_desktop(raw: Any) -> int | None:
+    """Validate the YAML ``desktop`` macOS space number."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("network.desktop must be an integer 1-9")
+    if not 1 <= raw <= 9:
+        raise ValueError(f"network.desktop must be between 1 and 9, got {raw}")
+    return raw
+
+
 def _validated_lldb_nodes(raw: Any, *, node_count: int) -> set[int]:
     """Validate the YAML ``lldb`` spec into a set of node ids.
 
@@ -497,7 +539,10 @@ def _build_launch_config(
             fixed_peers=config.get("fixed_peers", True),
         )
 
-    base_genesis = get_bundled_genesis_file()
+    base_genesis = (
+        _validated_genesis_file(config.get("genesis_file"), xahaud_root=xahaud_root)
+        or get_bundled_genesis_file()
+    )
     features = config.get("features", [])
     unl_report_keys = None
     if config.get("unl_report"):
@@ -569,11 +614,12 @@ def _build_launch_config(
         quorum=config.get("quorum"),
         no_delays=config.get("slave_delay") is None,
         slave_delay=config.get("slave_delay", 1.0),
-        extra_args=[],
+        extra_args=_validated_extra_args(config.get("extra_args")),
         extra_env=extra_env,
         node_env=node_env,
         node_rippled_paths=node_rippled_paths,
         lldb_nodes=lldb_nodes,
+        desktop=_validated_desktop(config.get("desktop")),
     )
 
 

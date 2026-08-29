@@ -234,10 +234,15 @@ def test_connect_managed_peer_fails_fast_when_alias_missing(
     assert rpc.connects == []
 
 
-def test_disconnect_managed_peer_fallback_also_guards_alias(
+def test_disconnect_managed_peer_fallback_is_not_alias_guarded(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """With no live session to match, disconnect falls back to the alias."""
+    """Disconnect must work even with no alias — unlike dialing.
+
+    The daemon's disconnect handler only parses the endpoint and compares it
+    against active peers; it never dials or binds that address. Refusing here
+    because a local alias is absent could only reduce recoverability.
+    """
     monkeypatch.setattr(loopback, "aliases_required", lambda: True)
     monkeypatch.setattr(loopback, "_probe_loopback_addresses", _only_base_loopback)
     loopback.reset_cache()
@@ -245,10 +250,9 @@ def test_disconnect_managed_peer_fallback_also_guards_alias(
     nodes = [_node(0, "pk0"), _node(1, "pk1")]
     rpc = DialRPC({0: [], 1: []})
 
-    with pytest.raises(LoopbackAliasError, match="n0->n1 disconnect"):
-        disconnect_managed_peer(rpc, nodes, source=0, target=1)
+    disconnect_managed_peer(rpc, nodes, source=0, target=1)
 
-    assert rpc.disconnects == []
+    assert rpc.disconnects == [(0, "127.0.0.2", 21236)]
 
 
 def test_disconnect_managed_peer_uses_live_endpoint_without_alias_check():
