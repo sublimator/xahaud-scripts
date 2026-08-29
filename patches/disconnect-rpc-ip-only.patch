@@ -1,0 +1,105 @@
+Add a TESTNET-only admin RPC that disconnects active peers by IP address.
+
+This is derived from xahaud commit 6fc14f398d754283b5dee6576edb59dc2656eaaa,
+with port parsing and matching removed for distinct-IP local testnets.
+
+diff --git a/src/xrpld/rpc/detail/Handler.cpp b/src/xrpld/rpc/detail/Handler.cpp
+--- a/src/xrpld/rpc/detail/Handler.cpp
++++ b/src/xrpld/rpc/detail/Handler.cpp
+@@ -100,6 +100,7 @@ Handler const handlerArray[]{
+     {"channel_authorize", byRef(&doChannelAuthorize), Role::USER, NO_CONDITION},
+     {"channel_verify", byRef(&doChannelVerify), Role::USER, NO_CONDITION},
+     {"connect", byRef(&doConnect), Role::ADMIN, NO_CONDITION},
++    {"disconnect", byRef(&doDisconnect), Role::ADMIN, NO_CONDITION},
+     {"consensus_info", byRef(&doConsensusInfo), Role::ADMIN, NO_CONDITION},
+     {"deposit_authorized",
+      byRef(&doDepositAuthorized),
+diff --git a/src/xrpld/rpc/handlers/Disconnect.cpp b/src/xrpld/rpc/handlers/Disconnect.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/xrpld/rpc/handlers/Disconnect.cpp
+@@ -0,0 +1,72 @@
++//------------------------------------------------------------------------------
++/*
++    This file is part of rippled: https://github.com/ripple/rippled
++    Copyright (c) 2012-2014 Ripple Labs Inc.
++
++    Permission to use, copy, modify, and/or distribute this software for any
++    purpose  with  or without fee is hereby granted, provided that the above
++    copyright notice and this permission notice appear in all copies.
++
++    THE  SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++    WITH  REGARD  TO  THIS  SOFTWARE  INCLUDING  ALL  IMPLIED  WARRANTIES  OF
++    MERCHANTABILITY  AND  FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++    ANY  SPECIAL ,  DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++    WHATSOEVER  RESULTING  FROM  LOSS  OF USE, DATA OR PROFITS, WHETHER IN AN
++    ACTION  OF  CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++*/
++//==============================================================================
++
++#include <xrpld/app/main/Application.h>
++#include <xrpld/core/Config.h>
++#include <xrpld/overlay/Overlay.h>
++#include <xrpld/overlay/detail/PeerImp.h>
++#include <xrpld/rpc/Context.h>
++#include <xrpld/rpc/detail/Handler.h>
++#include <xrpl/protocol/ErrorCodes.h>
++#include <xrpl/protocol/RPCErr.h>
++#include <xrpl/protocol/jss.h>
++
++namespace ripple {
++
++// {
++//   ip: <string>
++// }
++Json::Value
++doDisconnect(RPC::JsonContext& context)
++{
++    if (context.app.config().standalone())
++    {
++        return RPC::make_error(rpcNOT_SYNCED);
++    }
++
++    if (!context.params.isMember(jss::ip))
++        return RPC::missing_field_error(jss::ip);
++
++    auto const ipStr = context.params[jss::ip].asString();
++    auto const ip = beast::IP::Endpoint::from_string(ipStr);
++
++    int disconnected = 0;
++    if (!is_unspecified(ip))
++    {
++        for (auto const& peer : context.app.overlay().getActivePeers())
++        {
++            if (peer && peer->getRemoteAddress().address() == ip.address())
++            {
++                // Explicit cast keeps this RPC local to the existing overlay
++                // implementation.
++                if (auto p = std::dynamic_pointer_cast<PeerImp>(peer))
++                {
++                    p->stop();
++                    ++disconnected;
++                }
++            }
++        }
++    }
++
++    return RPC::makeObjectValue(
++        "disconnect requested for IP:" + ipStr +
++        " peers: " + std::to_string(disconnected));
++}
++
++}  // namespace ripple
+diff --git a/src/xrpld/rpc/handlers/Handlers.h b/src/xrpld/rpc/handlers/Handlers.h
+--- a/src/xrpld/rpc/handlers/Handlers.h
++++ b/src/xrpld/rpc/handlers/Handlers.h
+@@ -59,6 +59,8 @@ doChannelVerify(RPC::JsonContext&);
+ Json::Value
+ doConnect(RPC::JsonContext&);
+ Json::Value
++doDisconnect(RPC::JsonContext&);
++Json::Value
+ doConsensusInfo(RPC::JsonContext&);
+ Json::Value
+ doDepositAuthorized(RPC::JsonContext&);
