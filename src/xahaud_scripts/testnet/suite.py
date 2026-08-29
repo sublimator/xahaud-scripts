@@ -376,7 +376,16 @@ def _validated_extra_args(raw: Any) -> list[str]:
             raise ValueError(
                 f"network.extra_args entry must be a string or number: {entry!r}"
             )
-        args.append(str(entry))
+        text = str(entry)
+        # Quoting makes every other value transport-safe, but a Unix argv
+        # cannot hold a NUL at all — YAML "\0" would sail through validation
+        # and only blow up in subprocess, defeating the up-front check.
+        if "\x00" in text:
+            raise ValueError(
+                "network.extra_args entry contains a NUL byte, which cannot "
+                f"appear in a command argument: {entry!r}"
+            )
+        args.append(text)
     return args
 
 

@@ -2442,6 +2442,8 @@ def suite(
         testnet suite .testnet/scenarios/suite.yml --params-json '{"min_txns": 100}'
         testnet suite .testnet/scenarios/suite.yml --list-tests
     """
+    import yaml
+
     from xahaud_scripts.testnet.suite import (
         SuiteConfig,
         _expand_tests,
@@ -2452,9 +2454,18 @@ def suite(
     xahaud_root = ctx.obj.get("xahaud_root") or _get_xahaud_root()
     rippled_path = ctx.obj.get("rippled_path")
 
+    # A malformed suite file is a user mistake, not a crash. run_suite() keeps
+    # raising ValueError for programmatic callers; only the CLI boundary
+    # translates it, so an operator sees one Error: line instead of a traceback
+    # through Click internals.
+    suite_errors = (ValueError, yaml.YAMLError)
+
     if list_tests:
-        suite_config = SuiteConfig.from_yaml(suite_file)
-        tests = _expand_tests(suite_config, xahaud_root)
+        try:
+            suite_config = SuiteConfig.from_yaml(suite_file)
+            tests = _expand_tests(suite_config, xahaud_root)
+        except suite_errors as exc:
+            raise click.ClickException(str(exc)) from exc
         for test in tests:
             script = Path(test["script"])
             if not script.is_absolute():
@@ -2483,21 +2494,24 @@ def suite(
                 raise click.BadParameter(str(exc), param_hint="--env") from exc
             env_override[k] = v
 
-    results = run_suite(
-        suite_path=suite_file,
-        xahaud_root=xahaud_root,
-        stop_on_fail=stop_on_fail,
-        snapshot_on_fail=snapshot_on_fail,
-        test_filter=list(test_filter) if test_filter else None,
-        test_n=test_n,
-        params_override=params_override,
-        env_override=env_override,
-        dry_run=dry_run,
-        py_log_specs=list(py_log_specs) if py_log_specs else None,
-        fast_bootstrap=fast_bootstrap,
-        rippled_path=rippled_path,
-        testnet_dir=ctx.obj.get("testnet_dir"),
-    )
+    try:
+        results = run_suite(
+            suite_path=suite_file,
+            xahaud_root=xahaud_root,
+            stop_on_fail=stop_on_fail,
+            snapshot_on_fail=snapshot_on_fail,
+            test_filter=list(test_filter) if test_filter else None,
+            test_n=test_n,
+            params_override=params_override,
+            env_override=env_override,
+            dry_run=dry_run,
+            py_log_specs=list(py_log_specs) if py_log_specs else None,
+            fast_bootstrap=fast_bootstrap,
+            rippled_path=rippled_path,
+            testnet_dir=ctx.obj.get("testnet_dir"),
+        )
+    except suite_errors as exc:
+        raise click.ClickException(str(exc)) from exc
 
     print_summary(results)
 

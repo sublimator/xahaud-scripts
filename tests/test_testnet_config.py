@@ -1051,3 +1051,31 @@ def test_disconnect_managed_peer_falls_back_to_listen_port_when_peer_not_visible
     assert result == {"status": "success"}
     # target n1 -> distinct loopback 127.0.0.2 (node i dials 127.0.0.<i+1>)
     assert rpc.disconnect_calls == [(0, "127.0.0.2", DEFAULT_BASE_PORT_PEER + 1)]
+
+
+def test_suite_config_error_is_a_clean_cli_error(tmp_path: Path):
+    """A bad suite file is an operator mistake, not a crash.
+
+    The stricter up-front validation routes ordinary config mistakes through
+    this path, so they must not surface as a traceback through Click internals.
+    """
+    suite_file = tmp_path / "suite.yml"
+    script = tmp_path / "scenario.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\n")
+    suite_file.write_text(
+        "tests:\n"
+        "  - name: bogus\n"
+        f"    script: {script}\n"
+        "    network:\n"
+        "      genesis_file: definitely-missing-genesis.json\n"
+    )
+
+    result = CliRunner().invoke(
+        testnet,
+        ["--xahaud-root", str(tmp_path), "suite", str(suite_file), "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.output
+    assert "does not exist" in result.output
+    assert "Traceback" not in result.output

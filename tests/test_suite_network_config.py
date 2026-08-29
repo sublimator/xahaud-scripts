@@ -148,3 +148,18 @@ def test_validate_network_config_rejects_each_field(
     """
     with pytest.raises(ValueError, match=match):
         _validate_network_config(config, xahaud_root=tmp_path)
+
+
+def test_extra_args_rejects_nul_byte():
+    """NUL is the one class quoting cannot rescue — argv cannot hold it.
+
+    YAML "\\0" decodes to "\\x00" and would pass every other check, then fail
+    deep in subprocess, which is exactly what up-front validation is for.
+    """
+    with pytest.raises(ValueError, match="NUL byte"):
+        _validated_extra_args(["--label=a\x00b"])
+
+
+def test_validate_network_config_rejects_nul_in_extra_args(tmp_path: Path):
+    with pytest.raises(ValueError, match="NUL byte"):
+        _validate_network_config({"extra_args": ["\x00"]}, xahaud_root=tmp_path)
