@@ -1813,6 +1813,66 @@ class ScenarioContext:
         """
         return self._network.start_nodes(nodes)
 
+    async def restart_node(
+        self,
+        node_id: int,
+        *,
+        wipe_wallet_db: bool = False,
+        delay: float = 0,
+        stop_timeout: float = 30,
+        verify_timeout: float = 60,
+    ) -> dict[int, bool]:
+        """Restart a node with the same binary, optionally resetting wallet state.
+
+        The node is not started again until its launcher has recorded the old
+        process's exit.  With ``wipe_wallet_db=True``, ``wallet.db`` and its
+        SQLite sidecars are then deleted while the ledger/node database is
+        retained.  This uses only the launcher's stop/start controls and does
+        not require the daemon ``disconnect`` RPC.
+
+        Args:
+            node_id: Node to restart.
+            wipe_wallet_db: Recreate the node's wallet database on startup.
+            delay: Seconds to wait after the old process exits and before start.
+            stop_timeout: Seconds to wait for the old process to exit.
+            verify_timeout: Seconds to wait for RPC liveness after start. 0
+                skips the liveness wait.
+
+        Returns:
+            Dict mapping ``node_id`` to restart dispatch success.
+
+        Raises:
+            TimeoutError: if the old process does not exit or the restarted node
+                does not answer RPC within the corresponding timeout.
+        """
+        stopped = self.stop_node(node_id)
+        if not stopped:
+            return {node_id: False}
+
+        await self.wait_for_nodes(
+            lambda nid: self._network.get_exit_status(nid) is not None,
+            nodes=[node_id],
+            timeout=stop_timeout,
+            poll_interval=0.1,
+            name=f"n{node_id}-process-exit",
+        )
+
+        if wipe_wallet_db:
+            self._network.wipe_wallet_db(node_id)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        started = self.start_node(node_id)
+        result = {node_id: started}
+        if verify_timeout > 0 and started:
+            await self.wait_for_nodes(
+                lambda nid: bool(self.rpc.server_info(nid)),
+                nodes=[node_id],
+                timeout=verify_timeout,
+                name=f"n{node_id}-restart",
+            )
+        return result
+
     async def restart_node_with_binary(
         self, node_id: int, binary: str, *, delay: float = 0, verify_timeout: float = 60
     ) -> dict[int, bool]:

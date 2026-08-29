@@ -352,6 +352,29 @@ async def scenario(ctx, log):
 Pass any of these as kwargs: `ctx.txn_generator(min_txns=1, lls_offset=5)`
 """)
 
+    # -- Node lifecycle --
+    parts.append("""\
+## Node Lifecycle
+
+Scenarios using the tmux launcher can stop and start individual nodes. For a
+safe same-binary restart, use the async helper; it waits for the old process to
+exit before starting it again and verifies that RPC comes back:
+
+```python
+await ctx.restart_node(2)
+```
+
+To exercise first-start wallet behavior while retaining downloaded ledger
+state, reset only the wallet SQLite database during the restart:
+
+```python
+await ctx.restart_node(2, wipe_wallet_db=True)
+```
+
+This removes `db/wallet.db` and its SQLite sidecars after shutdown. It does not
+remove `db/nudb` and does not use the daemon `disconnect` RPC.
+""")
+
     # -- Parameterized tests --
     parts.append("""\
 ## Parameterized Tests (Variants)

@@ -758,6 +758,52 @@ class TestNetwork:
             for nid in node_ids
         }
 
+    def wipe_wallet_db(self, node_id: int) -> list[Path]:
+        """Remove a stopped node's wallet database and SQLite sidecars.
+
+        This deliberately leaves the ledger/node database intact.  The next
+        start recreates ``db/wallet.db`` while retaining the node's downloaded
+        ledger state, which is the useful reset boundary for restart scenarios.
+
+        Returns:
+            Paths that existed and were removed.
+
+        Raises:
+            ValueError: if ``node_id`` is unknown.
+            RuntimeError: if the launcher has not confirmed that the node's
+                process exited.  Deleting a live SQLite database is unsafe.
+        """
+        if not self._nodes:
+            self._load_network_info()
+
+        node = self._get_node(node_id)
+        if node is None:
+            raise ValueError(f"Unknown node: n{node_id}")
+        if self.get_exit_status(node_id) is None:
+            raise RuntimeError(
+                f"Refusing to wipe n{node_id} wallet database before its "
+                "process has exited"
+            )
+
+        db_dir = node.node_dir / "db"
+        paths = [
+            db_dir / "wallet.db",
+            db_dir / "wallet.db-wal",
+            db_dir / "wallet.db-shm",
+            db_dir / "wallet.db-journal",
+        ]
+        removed: list[Path] = []
+        for path in paths:
+            if path.exists():
+                path.unlink()
+                removed.append(path)
+
+        logger.info(
+            f"Wiped n{node_id} wallet database ({len(removed)} file(s)); "
+            "ledger database retained"
+        )
+        return removed
+
     def rebuild_launch_command(self, node_id: int, binary_path: Path) -> str:
         """Rewrite a node's saved launch command to use a different binary.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 from pathlib import Path
 from typing import Any, cast
@@ -13,6 +14,7 @@ from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
+from xahaud_scripts.testnet.scenario import ScenarioContext
 
 
 def _node(tmp_path: Path, node_id: int) -> NodeInfo:
@@ -132,6 +134,107 @@ def test_rebuild_launch_command_unknown_node_raises(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Unknown node"):
         net.rebuild_launch_command(9, tmp_path / "new-rippled")
+
+
+def test_wipe_wallet_db_removes_only_wallet_sqlite_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    node = _node(tmp_path, 0)
+    net._nodes = [node]
+    db_dir = node.node_dir / "db"
+    db_dir.mkdir(parents=True)
+    wallet_files = [
+        db_dir / "wallet.db",
+        db_dir / "wallet.db-wal",
+        db_dir / "wallet.db-shm",
+        db_dir / "wallet.db-journal",
+    ]
+    for path in wallet_files:
+        path.write_text("wallet state")
+    ledger_file = db_dir / "nudb" / "nudb.dat"
+    ledger_file.parent.mkdir()
+    ledger_file.write_text("ledger state")
+    monkeypatch.setattr(net, "get_exit_status", lambda _nid: 0)
+
+    removed = net.wipe_wallet_db(0)
+
+    assert removed == wallet_files
+    assert all(not path.exists() for path in wallet_files)
+    assert ledger_file.read_text() == "ledger state"
+
+
+def test_wipe_wallet_db_refuses_while_process_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    node = _node(tmp_path, 0)
+    net._nodes = [node]
+    wallet_db = node.node_dir / "db" / "wallet.db"
+    wallet_db.parent.mkdir(parents=True)
+    wallet_db.write_text("live wallet state")
+    monkeypatch.setattr(net, "get_exit_status", lambda _nid: None)
+
+    with pytest.raises(RuntimeError, match="before its process has exited"):
+        net.wipe_wallet_db(0)
+
+    assert wallet_db.read_text() == "live wallet state"
+
+
+class _RestartRPC:
+    def __init__(self, network: _RestartScenarioNetwork) -> None:
+        self._network = network
+
+    def server_info(self, node_id: int) -> dict[str, Any] | None:
+        self._network.events.append(f"rpc:{node_id}")
+        return {"info": {}} if self._network.running else None
+
+
+class _RestartScenarioNetwork:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.running = True
+        self.exit_status: int | None = None
+        self.rpc_client = _RestartRPC(self)
+
+    def stop_nodes(self, node_ids: list[int]) -> dict[int, bool]:
+        node_id = node_ids[0]
+        self.events.append(f"stop:{node_id}")
+        self.running = False
+        self.exit_status = 0
+        return {node_id: True}
+
+    def start_nodes(self, node_ids: list[int]) -> dict[int, bool]:
+        node_id = node_ids[0]
+        self.events.append(f"start:{node_id}")
+        self.exit_status = None
+        self.running = True
+        return {node_id: True}
+
+    def get_exit_status(self, node_id: int) -> int | None:
+        self.events.append(f"exit-status:{node_id}")
+        return self.exit_status
+
+    def wipe_wallet_db(self, node_id: int) -> list[Path]:
+        assert self.exit_status is not None
+        self.events.append(f"wipe:{node_id}")
+        return []
+
+
+def test_scenario_restart_node_waits_for_exit_then_wipes_and_starts():
+    network = _RestartScenarioNetwork()
+    ctx = ScenarioContext(cast(Any, network))
+
+    result = asyncio.run(ctx.restart_node(2, wipe_wallet_db=True))
+
+    assert result == {2: True}
+    assert network.events == [
+        "stop:2",
+        "exit-status:2",
+        "wipe:2",
+        "start:2",
+        "rpc:2",
+    ]
 
 
 class _RecordingLauncher:
