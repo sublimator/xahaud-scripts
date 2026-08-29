@@ -49,7 +49,11 @@ def get_launcher(launcher_type: str | None = None) -> Launcher:
 
     Args:
         launcher_type: Optional launcher type ("iterm-panes", "iterm", "tmux").
-                      If None, uses iterm-panes (single window with panes).
+                      If None, picks the first available in preference order:
+                      tmux, then iterm-panes, then iterm. Only tmux implements
+                      ControllableLauncher (per-node stop/start/restart, pane
+                      capture, exit status), so scenarios that drive node
+                      lifecycle need it.
 
     Returns:
         A launcher instance appropriate for this system

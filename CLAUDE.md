@@ -94,37 +94,59 @@ xr-coverage-diff --since origin/dev
 Launch and manage local xahaud test networks (5 nodes by default).
 
 ```bash
+# Scenario testing (the primary workflow — see "Scenario testing" below)
+x-testnet suite .testnet/scenarios/suite.yml     # run a YAML suite (fresh net per test)
+x-testnet suite suite.yml --list-tests           # list test names (+ descriptions)
+x-testnet suite suite.yml --test my_test         # one test (or one variant: my_test@heavy)
+x-testnet suite suite.yml --dry-run              # print the plan, launch nothing
+x-testnet suite suite.yml --test-n 5             # repeat each test (flaky hunting)
+x-testnet scenario-test-guide                    # ScenarioContext API reference
+
 # Lifecycle
 x-testnet generate                              # generate configs + validator keys
 x-testnet generate --node-count 3               # fewer nodes
+x-testnet generate --node-count 7 --validators 5 # 5 on the UNL, 2 non-UNL trackers
 x-testnet generate --no-fixed-peers             # start isolated; shape topology via connect/RPC
 x-testnet generate --log-level-suite consensus   # preset log levels
 x-testnet generate --find-ports                  # auto-find free ports
-x-testnet run                                    # launch nodes + monitor
+x-testnet setup-aliases -n 7                     # macOS: lo0 aliases 127.0.0.2+ (REQUIRED, see Notes)
+x-testnet run                                    # launch nodes + monitor (needs a prior generate)
 x-testnet --rippled-path @rng-ce run             # launch with a saved binary
-x-testnet run --launcher tmux                    # use tmux instead of iTerm
+x-testnet run --launcher tmux                    # tmux is the default; iterm/iterm-panes also exist
 x-testnet run --node-binary n0:@old --node-binary n1:@new # mixed binary run
 x-testnet run --reconnect                        # reconnect to existing network
-x-testnet teardown                               # kill all node processes
+x-testnet monitor                                # attach monitor; Ctrl+C detaches, nodes live on
+x-testnet stop n1,n2 / start n1,n2 / restart n1  # per-node lifecycle (tmux launcher only)
+x-testnet snapshot before-restart                # copy net dir to .testnet/output/snapshots/
+x-testnet teardown                               # kill processes AND delete node dirs
 x-testnet clean                                  # remove generated files
 
 # Inspection
-x-testnet check                                  # amendment status table
+x-testnet check <AMENDMENT_HASH>                 # amendment status table (hash is required)
+x-testnet feature ConsensusEntropy               # query an amendment on all nodes
+x-testnet feature ConsensusEntropy accept ^n4    # vote yes everywhere except n4
 x-testnet server-info n0                         # query specific node
 x-testnet server-definitions -o defs.json        # fetch server definitions
 x-testnet ledger                                 # latest validated ledger
 x-testnet ledger 100 -o l.json                   # specific ledger to file
-x-testnet ping n0                                # trigger injection on node
-x-testnet inject n0,n1,n2 --amendment-id X --ledger-seq 100
+x-testnet ping n0                                # ping a node
+x-testnet node-output n4                         # capture the node's tmux pane (pre-log crashes!)
 x-testnet logs Validations trace                 # set log level
 x-testnet logs PeerTMProposeSet debug n0         # set log level on specific node
 x-testnet topology                               # peer connection map
+x-testnet topology-graph -f svg                  # render a Graphviz digraph
 x-testnet connect --bi n0 n1                     # add runtime peer connection
 x-testnet disconnect --bi n0 n1                  # drop runtime peer connection
 x-testnet ports                                  # port listening status
 x-testnet check-ports                            # check if ports are free
 x-testnet peer-addrs                             # output ip:port list
 x-testnet dump-conf                              # show all node configs
+
+# Runtime network simulation (delays, drops, RNG/Export knobs)
+x-testnet rc show                                # active runtime config per node
+x-testnet rc set delay=200,jitter=50             # all nodes, all peers
+x-testnet rc set 'n0->n2:drop=100,msg=proposal'  # directed; quote the '>' in shells
+x-testnet rc clear                               # clear_all on every node
 
 # Config generation (production)
 x-testnet create-config --network mainnet        # mainnet xahaud.cfg + validators
@@ -137,21 +159,29 @@ x-testnet hooks-server --error 500:0.25          # with random error responses
 x-testnet logs-search "LedgerConsensus.*accepted" # search all node logs
 x-testnet logs-search -s -5m                     # last 5 minutes of logs
 x-testnet logs-search Shuffle --tail 1000 -n 0-2 # tail + filter nodes
-x-testnet scenario-test-guide                    # show scenario script docs
+x-testnet logs-search --run latest/my_test PAT   # search an archived suite/scenario run
+x-testnet logs-search --snapshot latest PAT      # search a snapshot
 ```
 
 `run` key options:
-- `--amendment-id` - Amendment hash for injection
 - `--quorum N` - Consensus quorum value
-- `--flood N` - Inject every N ledgers
-- `--feature HASH` - Enable amendment (prefix `-` to disable, repeatable)
+- `--feature @Name|HASH` - Enable amendment at genesis (prefix `-` to disable, repeatable)
+- `--seed-majority @Name` - Pre-seed sfMajorities (hold only — still needs a real vote)
+- `--start-ledger N` - Start genesis at ledger N (1-256; injects synthetic skip lists)
 - `--genesis-file PATH` - Custom genesis ledger
 - `--env NAME=VALUE` - Env vars for nodes (or `n0:NAME=VALUE` for specific node)
 - `--node-binary n0:@name` - Per-node saved binary override for mixed-binary tests
+- `--rc SPEC` / `--rc-clear` - Runtime config at launch (same DSL as `x-testnet rc`)
+- `--track-feature NAME` - Add a per-node amendment column to the monitor
+- `--generate-txns N|MIN-MAX` - Background payment traffic each ledger
 - `--launcher tmux|iterm|iterm-panes`
+- `--lldb n0,n4|all` - Run node(s) under lldb for crash backtraces
 - `--desktop N` - macOS desktop number for window placement
-- `--scenario-script PATH` - Run scenario script instead of monitoring
-- `--teardown` - Kill nodes after scenario/txn-gen finishes
+- `--no-monitor` / `--no-teardown` - Launch and detach / Ctrl+C detaches without killing
+
+`run` launches and monitors a network; it does NOT run scenarios. Scenarios go
+through `x-testnet suite` (see Scenario testing below). `--scenario-script` was
+removed — suite is the only scenario entry point.
 
 Saved binaries:
 - Aliases use an explicit `@name` prefix. Non-`@` paths and peer-binary names
@@ -162,6 +192,26 @@ Saved binaries:
 - The JSON manifest is generated state: branch, commit, dirty flag, source path,
   build type, and `--version` output are best-effort evidence, not a package
   manager.
+
+Scenario testing:
+- A scenario is a Python file defining `async def scenario(ctx, log)`, where
+  `ctx` is a `ScenarioContext` (ledger/RPC waits, log assertions, topology
+  shaping, node lifecycle, tx submission). `x-testnet scenario-test-guide`
+  generates the full API reference from `scenario.py` itself.
+- One way to run one: `x-testnet suite <yaml>`. Each test gets a fresh network
+  (teardown -> generate -> launch -> scenario), configured entirely from the
+  YAML `network:` block: `node_count`, `validators`, `quorum`, `fixed_peers`,
+  `find_ports`, `features`, `majority_features`, `start_ledger`, `unl_report`,
+  `env`, `node_env`, `node_binaries`, `log_levels`, `track_features`, `rc`,
+  `topology`, `lldb`, `launcher`, `slave_delay`.
+- `lldb: all` or `lldb: [0, 4]` launches those nodes under lldb, so a crash
+  leaves a backtrace in the pane (read it with `x-testnet node-output nN`).
+- Output: live net in `testnet/`; suite log at
+  `.testnet/output/logs/scenario-test.log`; per-run archives in
+  `.testnet/output/runs/<timestamp>-<test>/` and `runs/latest/<test>/`, both
+  searchable via `logs-search --run`.
+- A script may export `variants = [{"label": "heavy", ...}, ...]`; each entry
+  becomes a `name@label` test whose non-`label` keys are scenario kwargs.
 
 ### x-inspect-net
 
@@ -263,12 +313,17 @@ x-quick-check --since origin/dev                  # changed files since branch
 ```
 src/xahaud_scripts/
 ├── __init__.py
-├── run_tests.py ............... x-run-tests entrypoint
+├── run_tests.py ............... x-run-tests entrypoint (+ x-coverage-diff/report, tail)
 ├── build_xrpld.py ............. xr-build + xr-coverage-diff entrypoints
 ├── get_job.py ................. x-get-job entrypoint (GitHubActionsFetcher)
 ├── build_test_hooks.py ........ x-build-test-hooks entrypoint
 ├── format_changed.py .......... x-format-changed entrypoint
 ├── quick_check.py ............. x-quick-check entrypoint
+├── codecov.py ................. x-codecov entrypoint (per-PR patch coverage via Codecov API)
+├── binary_features.py ......... x-binary-features entrypoint (amendments a source ref knows)
+├── binary_registry.py ......... Saved-binary @alias registry (manifest + cache, file-locked)
+├── run_stats.py ............... x-run-stats entrypoint (build/test timings from runs DB)
+├── hook_toolchain.py .......... Preflight external Hook-fixture compilers
 │
 ├── build/ ..................... Build system utilities
 │   ├── config.py .............. BuildConfig dataclass, config mismatch detection
@@ -276,48 +331,60 @@ src/xahaud_scripts/
 │   ├── conan.py ............... conan_install(), check_conan_available()
 │   └── ccache.py .............. ccache env/config, cross-worktree cache sharing
 │
-├── hooks/ ..................... WASM hook compilation
-│   └── compiler.py ............ WasmCompiler, CompilationCache, SourceValidator, BinaryChecker
+├── hooks/ ..................... Stub package; WASM hook compilation delegated to hookz
 │
 ├── patches/ ................... Bundled patch files
 │   └── coverage-cmake-clang-gcov.patch
 │
 ├── inspect_net/ ............... Live network inspection (x-inspect-net)
-│   ├── cli.py ................. Click group: amendments + crawl (Rich output)
-│   ├── networks.py ........... Network presets (rpc_url, seed hubs, peer port)
-│   ├── amendments.py ......... server_definitions fetch/normalize/compare
-│   └── crawl.py .............. Overlay /crawl BFS crawler (thread pool)
+│   ├── cli.py ................. Click group: amendments + crawl + zombies (Rich output)
+│   ├── networks.py ............ Network presets (rpc_url, seed hubs, peer port)
+│   ├── amendments.py .......... server_definitions fetch/normalize/compare
+│   ├── crawl.py ............... Overlay /crawl BFS crawler (thread pool)
+│   └── zombies.py ............. Visible versions vs enabled-amendment requirements
 │
 ├── utils/ ..................... Shared utilities
-│   ├── logging.py ............. setup_logging(), make_logger()
-│   ├── paths.py ............... get_xahaud_root()
+│   ├── logging.py ............. setup_logging(), make_logger(), scenario_file_logging()
+│   ├── paths.py ............... get_xahaud_root() (CMakeLists walk-up; NOT the testnet CLI's)
 │   ├── clipboard.py ........... get_clipboard()
+│   ├── quoting.py ............. shell_quote/shell_export/applescript_string (launcher safety)
 │   ├── shell_utils.py ......... run_command(), check_tool_exists(), get_mise_tool_cmd()
-│   ├── coverage.py ............ LLVM coverage (v1): merge profdata, generate reports
+│   ├── coverage_llvm.py ....... LLVM coverage (v1): merge profdata, generate reports
 │   ├── coverage_diff.py ....... Diff coverage (v1 llvm-cov + v2 gcovr): uncovered changed lines
+│   ├── runs_db.py ............. SQLite record of build/test run timings
+│   ├── migrations/ ............ Alembic migrations for runs_db
 │   └── lldb.py ................ LLDB script generation for debugging
 │
 └── testnet/ ................... Local testnet management
-    ├── cli.py ................. Click CLI group + all subcommands
+    ├── cli.py ................. Click CLI group + all subcommands (incl. rc subgroup)
     ├── config.py .............. NetworkConfig, LaunchConfig, NodeInfo, port/genesis helpers
     ├── generator.py ........... ValidatorKeysGenerator, config generation, log level suites
     ├── network.py ............. TestNetwork orchestrator (DI-based)
+    ├── suite.py ............... YAML suite runner: fresh net per test, variants, archiving
+    ├── scenario.py ............ ScenarioContext + timing/log/topology primitives
+    ├── scenario_guide.py ...... Generates the scenario API guide from scenario.py source
+    ├── topology.py ............ Directed peer-edge sets, snapshots, diffs, disconnect
+    ├── txn_generator.py ....... SubmissionTracker (pure FSM) + async TxnGenerator
     ├── rpc.py ................. RequestsRPCClient (HTTP JSON-RPC)
-    ├── websocket.py ........... WebSocketClient (async ledger streaming)
+    ├── websocket.py ........... WebSocketClient + PersistentWebSocketManager
     ├── process.py ............. UnixProcessManager (pgrep, lsof, kill)
-    ├── protocols.py ........... Protocol interfaces (Launcher, RPCClient, ProcessManager, KeyGenerator)
+    ├── protocols.py ........... Protocol interfaces (Launcher, ControllableLauncher, RPCClient, ...)
     ├── monitor.py ............. NetworkMonitor, Rich table displays
     ├── testing.py ............. Shared test utilities (XahauClient, account derivation, txn gen runner)
     ├── xrpl_patch.py .......... Runtime monkey-patch xrpl-py definitions for Xahau types
-    ├── data/genesis.json ...... Base genesis ledger
+    ├── data/
+    │   ├── genesis.json ....... Base genesis ledger
+    │   ├── genesis_amendments.py  Amendment list by name (source of truth for the above)
+    │   └── rebuild_genesis.py . Regenerate/verify genesis.json Amendments (--check)
     ├── cli_handlers/
     │   ├── create_config.py ... Production config generator (mainnet/testnet presets)
     │   ├── hooks_server.py .... Mock webhook receiver (ErrorConfig, ServerStats)
-    │   └── logs_search.py ..... Heap-based log merge across nodes
+    │   ├── logs_search.py ..... Heap-based log merge across nodes
+    │   └── rc.py .............. Runtime config DSL parser + RPC/env handlers
     └── launcher/
-        ├── iterm.py ........... iTerm2 tab launcher
-        ├── iterm_panes.py ..... iTerm2 pane management
-        └── tmux.py ............ Tmux launcher
+        ├── iterm.py ........... iTerm2 window-per-node launcher
+        ├── iterm_panes.py ..... iTerm2 single-window pane launcher
+        └── tmux.py ............ Tmux launcher (default; only one supporting node lifecycle control)
 ```
 
 ## Key Design Patterns
@@ -340,7 +407,26 @@ uv run pytest          # test
 ## Notes
 
 - Designed for macOS (iTerm2/tmux for testnet, lldb for debugging)
-- Run commands from within a xahaud worktree (auto-detects root via git or CMakeLists.txt)
-- Local testnet default ports: 51235+ (peer), 5005+ (rpc), 6005+ (ws)
+- Run commands from within a xahaud worktree. Note two different root detectors:
+  the `x-testnet` CLI uses `git rev-parse --show-toplevel` from CWD (it does NOT
+  honor `XAHAUD_ROOT`); `utils/paths.get_xahaud_root()` walks up for
+  `CMakeLists.txt` and is used by `x-inspect-net`
+- Local testnet default ports: 21235+ (peer), 5005+ (rpc), 6005+ (ws). The peer
+  base sits below the macOS ephemeral range (49152+) so outbound sockets from
+  any process can't squat on it
+- **Peer addressing is distinct-IP, everywhere.** Each node is dialed at its own
+  `127.0.0.<id+1>` (`NodeInfo.peer_host`), because rippled's peerfinder dedups
+  peers by IP ignoring port — reuse 127.0.0.1 and the mesh collapses to ~1 peer.
+  macOS needs `x-testnet setup-aliases -n N` first; Linux routes all of 127/8.
+  Never hand-roll `rpc.connect(src, "127.0.0.1", port)`: dial through
+  `topology.connect_managed_peer()` (or `ctx.connect_peer`), which is the one
+  place the alias precondition is enforced
+- A missing alias fails *silently and late* — `connect` returns success for
+  merely scheduling the attempt, the TCP connect then fails, and the only
+  symptom is `actual=[]` in a topology diff. So `testnet/loopback.py` checks up
+  front (at launch and at every dial) and raises with the exact missing
+  addresses plus both remedies (`setup-aliases`, and the literal
+  `sudo ifconfig lo0 alias ... up` lines). Tests stub the probe via the autouse
+  fixture in `tests/conftest.py`, so they never depend on the host's aliases
 - Production config ports: 21337 (mainnet peer), 21338 (testnet peer), 5009 (rpc), 6009 (ws)
 - Test script accounts are deterministic (SHA-512 of name -> seed -> wallet)
