@@ -1002,8 +1002,9 @@ def test_preflight_rejects_generator_consumed_by_assignment_unpack(
     [
         "(next(deferred) for _ in [0])",
         "(value for value in deferred)",
+        "(value for value in next(deferred))",
     ],
-    ids=["element-consumer", "iterable-consumer"],
+    ids=["element-consumer", "iterable-consumer", "iterable-expression-consumer"],
 )
 def test_preflight_rejects_tracked_generator_consumed_inside_assignment_unpack(
     unpacked: str,
@@ -1021,6 +1022,43 @@ def test_preflight_rejects_tracked_generator_consumed_inside_assignment_unpack(
 
     with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
         run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
+    tmp_path: Path,
+):
+    script = tmp_path / "assignment_unpack_filter_storage.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "[alias] = (value for value in [1] "
+        "if (next(deferred) for _ in [0]))\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+def test_deferred_generator_filter_does_not_trigger_variant_import(tmp_path: Path):
+    marker = tmp_path / "module-executed"
+    script = tmp_path / "assignment_unpack_filter_variants.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "deferred = ((variants := [{'label': 'unused'}]) for _ in [0])\n"
+        "[alias] = (value for value in [1] "
+        "if (next(deferred) for _ in [0]))\n"
+        "async def scenario(ctx, log, **params):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    suite = SuiteConfig.from_yaml(suite_file)
+    assert [test["name"] for test in _expand_tests(suite, tmp_path)] == ["dynamic"]
+    assert not marker.exists()
 
 
 def test_preflight_rejects_tracked_default_consumed_by_decorator(tmp_path: Path):
@@ -1276,6 +1314,11 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
             "wrapped_unpack",
         ),
         (
+            "deferred = ((variants := [{'label': 'iterable_unpack'}]) for _ in [0])\n",
+            "[alias] = (value for value in next(deferred))\n",
+            "iterable_unpack",
+        ),
+        (
             "",
             "[alias] = ((variants := [{'label': 'inline_unpack'}]) for _ in [0])\n",
             "inline_unpack",
@@ -1296,6 +1339,7 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
         "inline-starred-unpack",
         "assignment-unpack",
         "wrapped-assignment-unpack",
+        "iterable-expression-assignment-unpack",
         "inline-assignment-unpack",
         "tracked-default-decorator",
     ],

@@ -1040,8 +1040,26 @@ def _direct_handle_value(node: ast.AST, handles: set[str]) -> bool:
     return False
 
 
+class _FilterLoadFinder(_NameLoadFinder):
+    """Find immediate handle use while respecting nested generator deferral."""
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+        # Creating a nested generator used as a filter evaluates only its
+        # outermost iterable. Its body, filters, and nested iterables remain
+        # deferred because the generator object's truth value does not iterate it.
+        found, storage_only = _storage_expression_handle_state(
+            node.generators[0].iter,
+            self.names,
+        )
+        if found and not storage_only:
+            self.found = True
+
+
 def _iterable_unpack_consumes_handle(node: ast.AST, handles: set[str]) -> bool:
     """Return whether iterating an expression may consume one tracked handle."""
+    found, storage_only = _storage_expression_handle_state(node, handles)
+    if found and not storage_only:
+        return True
     if _direct_handle_value(node, handles):
         return True
     if isinstance(node, ast.GeneratorExp):
@@ -1052,7 +1070,7 @@ def _iterable_unpack_consumes_handle(node: ast.AST, handles: set[str]) -> bool:
             if _iterable_unpack_consumes_handle(generator.iter, handles):
                 return True
             for condition in generator.ifs:
-                finder = _NameLoadFinder(handles)
+                finder = _FilterLoadFinder(handles)
                 finder.visit(condition)
                 if finder.found:
                     return True
