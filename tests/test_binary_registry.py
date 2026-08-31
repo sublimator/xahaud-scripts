@@ -173,6 +173,39 @@ def test_save_binary_post_publish_failure_preserves_active_destination(
     assert resolve_binary_alias("@rng-ce", manifest=manifest) == saved_path
 
 
+def test_save_binary_post_publish_failure_preserves_superseded_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    manifest = tmp_path / "config" / "binaries.json"
+    cache = tmp_path / "cache" / "binaries"
+    newer = tmp_path / "newer-rippled"
+    _write_fake_binary(newer, "newer")
+    real_manifest_lock = binary_registry._manifest_lock
+    published_paths: list[Path] = []
+
+    @contextmanager
+    def supersede_after_unlock(path: Path | None = None):
+        with real_manifest_lock(path):
+            yield
+        data = load_manifest(manifest)
+        published_paths.append(Path(data["rng-ce"]["path"]))
+        data["rng-ce"] = {"path": str(newer)}
+        binary_registry.write_manifest(data, manifest)
+        raise OSError("post-publish unlock failed")
+
+    monkeypatch.setattr(binary_registry, "_manifest_lock", supersede_after_unlock)
+
+    with pytest.raises(OSError, match="post-publish unlock failed"):
+        save_binary("@rng-ce", source, manifest=manifest, cache_dir=cache)
+
+    assert published_paths[0].is_file()
+    assert resolve_binary_alias("@rng-ce", manifest=manifest) == newer
+
+
 def test_save_binary_copy_failure_preserves_preexisting_empty_cache_dirs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,6 +489,42 @@ def test_save_binary_joins_symlink_target_build_directory_lock(
     assert [call for call in calls if call[0] == actual.parent] == [
         (actual.parent, 2),
         (actual.parent, 8),
+    ]
+
+
+def test_save_binary_deduplicates_lock_for_symlinked_build_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actual_build = tmp_path / "actual-build"
+    actual_build.mkdir()
+    source = actual_build / "rippled"
+    _write_fake_binary(source)
+    (actual_build / ".x-build-lock").write_text("builder\n")
+    linked_build = tmp_path / "linked-build"
+    linked_build.symlink_to(actual_build, target_is_directory=True)
+    calls: list[tuple[str, int]] = []
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(handle, operation: int) -> None:
+            calls.append((Path(handle.name).name, operation))
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+
+    save_binary(
+        "@linked-build",
+        linked_build / "rippled",
+        manifest=tmp_path / "binaries.json",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert [call for call in calls if call[0] == ".x-build-lock"] == [
+        (".x-build-lock", FakeFcntl.LOCK_EX),
+        (".x-build-lock", FakeFcntl.LOCK_UN),
     ]
 
 

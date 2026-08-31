@@ -318,12 +318,8 @@ class SuiteConfig:
         Looks for a :descr: tag first, falls back to the first line.
         """
         try:
-            source = script_path.read_text()
-        except OSError:
-            return None
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
+            tree = ast.parse(script_path.read_bytes(), filename=str(script_path))
+        except (OSError, UnicodeError, SyntaxError):
             return None
         docstring = ast.get_docstring(tree)
         if not docstring:
@@ -532,7 +528,10 @@ class _ImportTimeBindingFinder(ast.NodeVisitor):
         self._visit_comprehension((node.elt,), node.generators)
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
-        self._visit_comprehension((node.elt,), node.generators)
+        # Creating a generator evaluates only the outermost iterable. Its
+        # element, filters, and nested iterables remain deferred until
+        # iteration, so bindings there do not replace a module name at import.
+        self.visit(node.generators[0].iter)
 
     def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
         self._visit_comprehension((node.key, node.value), node.generators)
@@ -582,7 +581,9 @@ def _script_may_define_variants(script_path: Path) -> bool:
     forms such as ``variants = make_variants()`` are still discovered.
     """
     try:
-        tree = ast.parse(script_path.read_text(), filename=str(script_path))
+        # Parse bytes so Python honors a PEP 263 encoding cookie exactly as the
+        # import loader will when it eventually executes the scenario.
+        tree = ast.parse(script_path.read_bytes(), filename=str(script_path))
     except (OSError, UnicodeError, SyntaxError):
         # Preserve the existing load error for unreadable/malformed scripts;
         # whole-suite preflight will still stop before lifecycle mutation.
@@ -1543,12 +1544,16 @@ def _validate_scenario_contract(
     syntax tree instead.
     """
     try:
-        source = script_path.read_text()
+        # Keep the encoded source so compile/AST parsing honor PEP 263 in the
+        # same way as the import loader.
+        source = script_path.read_bytes()
         # ``ast.parse`` accepts some constructs that cannot become a module
         # code object (for example ``return`` at module scope or a late
         # ``global`` declaration). Compile as well, without executing, so those
         # failures cannot be deferred until after the network is launched.
-        compile(source, str(script_path), "exec")
+        # Do not inherit this module's future flags: the scenario's own future
+        # imports must be authoritative.
+        compile(source, str(script_path), "exec", dont_inherit=True)
         tree = ast.parse(source, filename=str(script_path))
     except (OSError, UnicodeError, SyntaxError) as exc:
         raise ValueError(

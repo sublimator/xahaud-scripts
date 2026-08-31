@@ -646,6 +646,49 @@ def test_preflight_rejects_compile_invalid_module_without_dispatch(tmp_path: Pat
     assert not (tmp_path / ".testnet").exists()
 
 
+def test_preflight_honors_python_source_encoding_cookie(tmp_path: Path):
+    script = tmp_path / "latin1_scenario.py"
+    script.write_bytes(
+        b"# coding: latin-1\n"
+        b'"""caf\xe9 scenario"""\n'
+        b"description = 'caf\xe9'\n"
+        b"async def scenario(ctx, log):\n"
+        b"    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: latin1, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+    assert SuiteConfig.get_test_description(script) == "caf\xe9 scenario"
+
+
+def test_preflight_honors_scenario_future_syntax_flags(tmp_path: Path):
+    script = tmp_path / "future_syntax.py"
+    script.write_text(
+        "from __future__ import barry_as_FLUFL\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "legacy_not_equal = 1 <> 2\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: future-syntax, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+def test_preflight_ignores_binding_deferred_in_generator_body(tmp_path: Path):
+    script = tmp_path / "deferred_generator.py"
+    script.write_text(
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "deferred = ((scenario := None) for _ in ())\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: deferred, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
 def test_preflight_rejects_decorated_scenario_without_executing_decorator(
     tmp_path: Path,
 ):

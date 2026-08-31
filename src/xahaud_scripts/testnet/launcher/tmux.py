@@ -129,29 +129,37 @@ class TmuxLauncher:
         """
         try:
             cmd = self._build_full_command(node, config)
+            previous_session_created = self._session_created
+            previous_pane_count = self._pane_count
+            previous_pane_ids = self._pane_ids.copy()
             previous_commands = self._launch_commands.copy()
             previous_owner_tokens = self._pane_owner_tokens.copy()
             previous_desktop = self._desktop
             previous_base_dir = self._base_dir
             self._launch_commands[node.id] = cmd
             self._desktop = config.desktop
+            pane_id: str | None = None
 
             try:
                 if not self._session_created:
                     pane_id = self._create_session(node, cmd)
                 else:
                     pane_id = self._create_pane(node, cmd)
+                self._pane_ids[node.id] = pane_id
+                self._pane_count += 1
             except BaseException:
                 # A failed attempt must not publish a command for an unowned
                 # pane or erase state from an earlier successful generation.
+                if pane_id is not None:
+                    self._discard_failed_pane(node.id, pane_id)
+                self._session_created = previous_session_created
+                self._pane_count = previous_pane_count
+                self._pane_ids = previous_pane_ids
                 self._launch_commands = previous_commands
                 self._pane_owner_tokens = previous_owner_tokens
                 self._desktop = previous_desktop
                 self._base_dir = previous_base_dir
                 raise
-
-            self._pane_ids[node.id] = pane_id
-            self._pane_count += 1
             return True
 
         except subprocess.CalledProcessError as e:
@@ -216,13 +224,16 @@ class TmuxLauncher:
                 check=True,
                 capture_output=True,
             )
+
+            self._session_created = True
+            logger.info(
+                f"Created tmux session '{TMUX_SESSION_NAME}' with node {node.id}"
+            )
+            return pane_id
         except BaseException:
             self._discard_failed_pane(node.id, pane_id)
+            self._session_created = False
             raise
-
-        self._session_created = True
-        logger.info(f"Created tmux session '{TMUX_SESSION_NAME}' with node {node.id}")
-        return pane_id
 
     def _create_pane(self, node: NodeInfo, cmd: str) -> str:
         """Create a new pane for a node.
@@ -271,12 +282,12 @@ class TmuxLauncher:
                 check=True,
                 capture_output=True,
             )
+
+            logger.info(f"Created pane for node {node.id}")
+            return pane_id
         except BaseException:
             self._discard_failed_pane(node.id, pane_id)
             raise
-
-        logger.info(f"Created pane for node {node.id}")
-        return pane_id
 
     def build_launch_command(self, node: NodeInfo, config: LaunchConfig) -> str:
         """Build a node's full launch command (public wrapper over the builder).
@@ -491,6 +502,7 @@ class TmuxLauncher:
         try:
             subprocess.run(
                 ["tmux", "kill-pane", "-t", pane_id],
+                check=True,
                 capture_output=True,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -773,12 +785,14 @@ end tell
                 info = json.load(f)
             killed = len(info.get("nodes", []))
 
+        kill_attempt_completed = False
         try:
             # Kill the entire tmux session - this terminates all panes and processes
             result = subprocess.run(
                 ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
                 capture_output=True,
             )
+            kill_attempt_completed = True
 
             if result.returncode == 0:
                 logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
@@ -793,7 +807,12 @@ end tell
             self._close_iterm_window(base_dir)
             return killed
         finally:
-            self._reset_session_state()
+            # Preserve owner tokens and commands when tmux could not even run:
+            # callers can fix the environment and retry without losing the only
+            # safe handles to the still-live panes. Once tmux returns, retain the
+            # legacy interpretation that a non-zero result means no session.
+            if kill_attempt_completed:
+                self._reset_session_state()
 
     def _reset_session_state(self) -> None:
         """Drop pane ownership and commands after their session is gone."""

@@ -245,7 +245,7 @@ def _manifest_references_destination(
 @contextmanager
 def _build_output_lock(source: Path):
     """Join x-run-tests' persistent build-dir lock when one is present."""
-    lock_path = source.parent / _BUILD_LOCK_NAME
+    lock_path = (source.parent / _BUILD_LOCK_NAME).resolve()
     if fcntl is None or not lock_path.is_file():
         yield
         return
@@ -261,7 +261,10 @@ def _build_output_lock(source: Path):
 def _build_output_locks(source: Path):
     """Join locks beside both the lexical output and its canonical target."""
     canonical_source = source.resolve()
-    lock_parents = {source.parent, canonical_source.parent}
+    # Resolve the parent directories before de-duplicating. A lexical build
+    # directory may itself be a symlink to the canonical target directory; in
+    # that case opening and flocking the same inode twice would self-deadlock.
+    lock_parents = {source.parent.resolve(), canonical_source.parent.resolve()}
     with ExitStack() as stack:
         for lock_parent in sorted(lock_parents, key=os.fspath):
             stack.enter_context(_build_output_lock(lock_parent / source.name))
@@ -353,6 +356,7 @@ def save_binary(
         with suppress(FileNotFoundError):
             tmp_dest.unlink()
 
+    published = False
     try:
         worktree_path = _git_root(worktree or output_path.parent)
         entry = SavedBinary(
@@ -382,9 +386,19 @@ def save_binary(
         with _manifest_lock(manifest):
             data = load_manifest(manifest)
             data[name] = entry.as_dict()
-            write_manifest(data, manifest)
+            try:
+                write_manifest(data, manifest)
+            except BaseException:
+                # Inspect while still holding the manifest lock. Once this
+                # generation has crossed the atomic publication boundary it
+                # must survive, even if unlock fails or another publisher
+                # supersedes the alias before this caller handles the error.
+                published = _manifest_references_destination(name, dest, manifest)
+                raise
+            else:
+                published = True
     except BaseException:
-        if not _manifest_references_destination(name, dest, manifest):
+        if not published:
             _cleanup_failed_save(
                 tmp_dest=tmp_dest,
                 dest=dest,
