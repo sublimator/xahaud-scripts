@@ -589,16 +589,37 @@ class _NameLoadFinder(ast.NodeVisitor):
         if node.id in self.names and isinstance(node.ctx, ast.Load):
             self.found = True
 
+    def _visit_assignment_receiver(self, node: ast.AST) -> None:
+        """Visit executable receiver parts without treating its root as a read."""
+        if isinstance(node, ast.Name):
+            return
+        if isinstance(node, ast.Attribute):
+            self._visit_assignment_receiver(node.value)
+            return
+        if isinstance(node, ast.Subscript):
+            self._visit_assignment_receiver(node.value)
+            self.visit(node.slice)
+            return
+        self.visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
         # Evaluating ``holder.value = ...`` loads ``holder`` but does not read,
         # escape, or consume a generator previously stored on it. A load of the
-        # attribute itself still visits the root name.
+        # attribute itself still visits the root name. Complex receivers still
+        # execute: ``next(generator).value = ...`` consumes the generator.
         if isinstance(node.ctx, ast.Load):
             self.generic_visit(node)
+        else:
+            self._visit_assignment_receiver(node.value)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:  # noqa: N802
         if isinstance(node.ctx, ast.Load):
             self.generic_visit(node)
+        else:
+            # The container root is storage-only, but computed receivers and
+            # indices execute before the assignment and may consume a handle.
+            self._visit_assignment_receiver(node.value)
+            self.visit(node.slice)
 
     def _visit_definition_expressions(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -720,6 +741,7 @@ class _GeneratorStorageFinder(ast.NodeVisitor):
         self.generators: set[int] = set()
         self.handles: set[str] = set()
         self.same_statement_handles: set[str] = set()
+        self.immediate_consumer = False
 
     def _record(
         self,
@@ -727,7 +749,7 @@ class _GeneratorStorageFinder(ast.NodeVisitor):
         *,
         handles: set[str],
         same_statement_handles: set[str],
-    ) -> None:
+    ) -> bool:
         matched = False
         for value in values:
             for generator in _stored_generator_nodes(value):
@@ -739,6 +761,7 @@ class _GeneratorStorageFinder(ast.NodeVisitor):
         if matched:
             self.handles.update(handles)
             self.same_statement_handles.update(same_statement_handles)
+        return matched
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
         handles = set().union(
@@ -770,13 +793,18 @@ class _GeneratorStorageFinder(ast.NodeVisitor):
             for default in (*node.args.defaults, *node.args.kw_defaults)
             if default is not None
         )
-        self._record(
+        matched = self._record(
             defaults,
             handles={node.name}.union(
                 *(_named_storage_handle_names(default) for default in defaults)
             ),
             same_statement_handles=set(),
         )
+        # Decorators receive the newly created function after its defaults have
+        # been installed, so arbitrary decorator code can immediately inspect
+        # and consume a generator retained in those defaults.
+        if matched and node.decorator_list:
+            self.immediate_consumer = True
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         self._visit_definition_defaults(node)
@@ -886,8 +914,18 @@ def _storage_expression_handle_state(
         return found, True
     if isinstance(node, (ast.Constant, ast.Slice)):
         return False, True
-    if isinstance(node, (ast.Attribute, ast.Subscript, ast.Starred, ast.NamedExpr)):
+    if isinstance(node, (ast.Attribute, ast.Starred, ast.NamedExpr)):
         return _storage_expression_handle_state(node.value, handles)
+    if isinstance(node, ast.Subscript):
+        value_found, value_storage_only = _storage_expression_handle_state(
+            node.value, handles
+        )
+        slice_finder = _NameLoadFinder(handles)
+        slice_finder.visit(node.slice)
+        return (
+            value_found or slice_finder.found,
+            value_storage_only and not slice_finder.found,
+        )
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return _combine_handle_states(
             [_storage_expression_handle_state(item, handles) for item in node.elts]
@@ -901,13 +939,27 @@ def _storage_expression_handle_state(
             ]
         )
     if isinstance(node, ast.BoolOp):
-        return _combine_handle_states(
-            [_storage_expression_handle_state(value, handles) for value in node.values]
-        )
-    if isinstance(node, ast.IfExp):
+        # Every operand except the last is truth-tested. A tracked root can be
+        # an ordinary generator (whose truth value is harmless) or a holder
+        # with user-defined __bool__/__len__ that consumes the retained value;
+        # without executing it, the latter must be treated as a consumer.
+        truth_test_states: list[tuple[bool, bool]] = []
+        for value in node.values[:-1]:
+            finder = _NameLoadFinder(handles)
+            finder.visit(value)
+            truth_test_states.append((finder.found, not finder.found))
         return _combine_handle_states(
             [
-                _storage_expression_handle_state(node.test, handles),
+                *truth_test_states,
+                _storage_expression_handle_state(node.values[-1], handles),
+            ]
+        )
+    if isinstance(node, ast.IfExp):
+        test_finder = _NameLoadFinder(handles)
+        test_finder.visit(node.test)
+        return _combine_handle_states(
+            [
+                (test_finder.found, not test_finder.found),
                 _storage_expression_handle_state(node.body, handles),
                 _storage_expression_handle_state(node.orelse, handles),
             ]
@@ -962,6 +1014,46 @@ def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | N
     return assigned.names | extra_handles
 
 
+def _direct_target_names(node: ast.AST) -> set[str]:
+    """Return names definitely rebound by assigning or deleting one target."""
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.Starred):
+        return _direct_target_names(node.value)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return set().union(*(_direct_target_names(item) for item in node.elts))
+    return set()
+
+
+def _definitely_rebound_handle_names(statement: ast.stmt) -> set[str]:
+    """Find simple module bindings that replace an earlier handle on success."""
+    if isinstance(statement, ast.Assign):
+        return set().union(
+            *(_direct_target_names(target) for target in statement.targets)
+        )
+    if isinstance(statement, ast.AnnAssign):
+        return (
+            _direct_target_names(statement.target)
+            if statement.value is not None
+            else set()
+        )
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {statement.name}
+    if isinstance(statement, ast.Delete):
+        return set().union(
+            *(_direct_target_names(target) for target in statement.targets)
+        )
+    if isinstance(statement, ast.Import):
+        return {
+            alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
+        }
+    if isinstance(statement, ast.ImportFrom):
+        return {
+            alias.asname or alias.name for alias in statement.names if alias.name != "*"
+        }
+    return set()
+
+
 def _deferred_generator_bindings(
     tree: ast.Module, name: str
 ) -> tuple[set[int], set[int]]:
@@ -977,6 +1069,7 @@ def _deferred_generator_bindings(
 
     tracked_handles: set[str] = set()
     for statement, storage in zip(tree.body, storages, strict=True):
+        rebound_handles = _definitely_rebound_handle_names(statement)
         load_finder = _NameLoadFinder(tracked_handles)
         load_finder.visit(statement)
         local_load_finder = _NameLoadFinder(storage.same_statement_handles)
@@ -987,12 +1080,16 @@ def _deferred_generator_bindings(
             else None
         )
         if aliases is not None:
+            tracked_handles.difference_update(rebound_handles)
             tracked_handles.update(aliases)
-        elif load_finder.found or local_load_finder.found:
+        elif storage.immediate_consumer or load_finder.found or local_load_finder.found:
             consumer_statements.add(id(statement))
             assigned = _AssignedHandleFinder()
             assigned.visit(statement)
+            tracked_handles.difference_update(rebound_handles)
             tracked_handles.update(assigned.names)
+        else:
+            tracked_handles.difference_update(rebound_handles)
         tracked_handles.update(storage.handles)
     return deferred_generators, consumer_statements
 

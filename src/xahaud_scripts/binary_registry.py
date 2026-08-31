@@ -400,12 +400,22 @@ def save_binary(
             data[name] = entry.as_dict()
             try:
                 write_manifest(data, manifest)
-            except BaseException:
+            except BaseException as exc:
                 # Inspect while still holding the manifest lock. Once this
                 # generation has crossed the atomic publication boundary it
                 # must survive, even if unlock fails or another publisher
                 # supersedes the alias before this caller handles the error.
-                published = _manifest_references_destination(name, dest, manifest)
+                # Assume publication succeeded until inspection proves otherwise:
+                # reconciliation failure must not make the manifest dangle.
+                published = True
+                try:
+                    published = _manifest_references_destination(name, dest, manifest)
+                except BaseException as reconciliation_exc:
+                    exc.add_note(
+                        "Additionally failed to reconcile manifest publication; "
+                        "preserving the saved generation: "
+                        f"{reconciliation_exc}"
+                    )
                 raise
             else:
                 published = True

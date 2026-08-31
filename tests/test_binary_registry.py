@@ -146,6 +146,39 @@ def test_save_binary_manifest_failure_does_not_change_active_alias(
     assert set((cache / "rng-ce").iterdir()) == generations_before
 
 
+def test_save_binary_reconciliation_failure_preserves_published_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    manifest = tmp_path / "config" / "binaries.json"
+    cache = tmp_path / "cache" / "binaries"
+    real_write_manifest = binary_registry.write_manifest
+
+    def publish_then_fail(data: dict[str, object], path: Path | None = None) -> None:
+        real_write_manifest(data, path)
+        raise OSError("post-replace failure")
+
+    def fail_reconciliation(*_args: object, **_kwargs: object) -> bool:
+        raise KeyboardInterrupt("reconciliation interrupted")
+
+    monkeypatch.setattr(binary_registry, "write_manifest", publish_then_fail)
+    monkeypatch.setattr(
+        binary_registry,
+        "_manifest_references_destination",
+        fail_reconciliation,
+    )
+
+    with pytest.raises(OSError, match="post-replace failure") as raised:
+        save_binary("@rng-ce", source, manifest=manifest, cache_dir=cache)
+
+    assert any("reconciliation interrupted" in note for note in raised.value.__notes__)
+    saved_path = Path(load_manifest(manifest)["rng-ce"]["path"])
+    assert saved_path.is_file()
+
+
 def test_save_binary_post_publish_failure_preserves_active_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
