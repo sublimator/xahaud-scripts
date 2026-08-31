@@ -1040,6 +1040,36 @@ def _direct_handle_value(node: ast.AST, handles: set[str]) -> bool:
     return False
 
 
+def _iterable_unpack_consumes_handle(node: ast.AST, handles: set[str]) -> bool:
+    """Return whether iterating an expression may consume one tracked handle."""
+    if _direct_handle_value(node, handles):
+        return True
+    if isinstance(node, ast.GeneratorExp):
+        found, storage_only = _storage_expression_handle_state(node.elt, handles)
+        if found and not storage_only:
+            return True
+        for generator in node.generators:
+            if _iterable_unpack_consumes_handle(generator.iter, handles):
+                return True
+            for condition in generator.ifs:
+                finder = _NameLoadFinder(handles)
+                finder.visit(condition)
+                if finder.found:
+                    return True
+        return False
+    if isinstance(node, ast.NamedExpr):
+        return _iterable_unpack_consumes_handle(node.value, handles)
+    if isinstance(node, ast.BoolOp):
+        return any(
+            _iterable_unpack_consumes_handle(value, handles) for value in node.values
+        )
+    if isinstance(node, ast.IfExp):
+        return _iterable_unpack_consumes_handle(
+            node.body, handles
+        ) or _iterable_unpack_consumes_handle(node.orelse, handles)
+    return False
+
+
 def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | None:
     """Return new aliases if a statement stores handles without consuming them."""
     values: tuple[ast.AST, ...]
@@ -1050,7 +1080,7 @@ def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | N
         if (
             isinstance(statement, ast.Assign)
             and any(_target_requires_unpack(target) for target in statement.targets)
-            and _direct_handle_value(statement.value, handles)
+            and _iterable_unpack_consumes_handle(statement.value, handles)
         ):
             return None
         values = (statement.value,)

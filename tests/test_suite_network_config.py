@@ -997,6 +997,32 @@ def test_preflight_rejects_generator_consumed_by_assignment_unpack(
         run_suite(suite_file, tmp_path, dry_run=True)
 
 
+@pytest.mark.parametrize(
+    "unpacked",
+    [
+        "(next(deferred) for _ in [0])",
+        "(value for value in deferred)",
+    ],
+    ids=["element-consumer", "iterable-consumer"],
+)
+def test_preflight_rejects_tracked_generator_consumed_inside_assignment_unpack(
+    unpacked: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "assignment_unpack_wrapper_consumer.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        f"[alias] = {unpacked}\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
 def test_preflight_rejects_tracked_default_consumed_by_decorator(tmp_path: Path):
     script = tmp_path / "tracked_default_decorator.py"
     script.write_text(
@@ -1245,6 +1271,11 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
             "unpack",
         ),
         (
+            "deferred = ((variants := [{'label': 'wrapped_unpack'}]) for _ in [0])\n",
+            "[alias] = (next(deferred) for _ in [0])\n",
+            "wrapped_unpack",
+        ),
+        (
             "",
             "[alias] = ((variants := [{'label': 'inline_unpack'}]) for _ in [0])\n",
             "inline_unpack",
@@ -1264,6 +1295,7 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
         "starred-unpack",
         "inline-starred-unpack",
         "assignment-unpack",
+        "wrapped-assignment-unpack",
         "inline-assignment-unpack",
         "tracked-default-decorator",
     ],
