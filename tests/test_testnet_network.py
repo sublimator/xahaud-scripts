@@ -589,8 +589,15 @@ def test_tmux_refuses_reused_pane_from_another_network(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     launcher = TmuxLauncher()
-    launcher.load_launch_state({"base_dir": str(tmp_path), "pane_ids": {"0": "%0"}})
+    launcher.load_launch_state(
+        {
+            "base_dir": str(tmp_path),
+            "pane_ids": {"0": "%0"},
+            "pane_owner_tokens": {"0": "owner"},
+        }
+    )
     monkeypatch.setattr(launcher, "_list_live_pane_ids", lambda: {"%0"})
+    monkeypatch.setattr(launcher, "_pane_owner", lambda _pane: "owner")
     monkeypatch.setattr(
         launcher, "_pane_current_path", lambda _pane: tmp_path / "other" / "n0"
     )
@@ -602,6 +609,77 @@ def test_tmux_refuses_reused_pane_from_another_network(
     )
 
     assert launcher.stop_node(0) is False
+
+
+def test_tmux_refuses_legacy_untagged_pane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state({"base_dir": str(tmp_path), "pane_ids": {"0": "%0"}})
+    monkeypatch.setattr(launcher, "_list_live_pane_ids", lambda: {"%0"})
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an untagged legacy pane must not receive Ctrl+C"
+        ),
+    )
+
+    assert launcher.stop_node(0) is False
+
+
+def test_tmux_refuses_reused_pane_with_same_path_and_wrong_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state(
+        {
+            "base_dir": str(tmp_path),
+            "pane_ids": {"0": "%0"},
+            "pane_owner_tokens": {"0": "original-owner"},
+        }
+    )
+    monkeypatch.setattr(launcher, "_list_live_pane_ids", lambda: {"%0"})
+    monkeypatch.setattr(launcher, "_pane_owner", lambda _pane: "replacement-owner")
+    monkeypatch.setattr(launcher, "_pane_current_path", lambda _pane: tmp_path / "n0")
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a reused pane with the same path must not receive Ctrl+C"
+        ),
+    )
+
+    assert launcher.stop_node(0) is False
+
+
+def test_tmux_pane_owner_is_tagged_and_persisted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    launcher = TmuxLauncher()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.secrets.token_hex",
+        lambda _size: "owner-token",
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda args, **_kwargs: calls.append(args)
+        or subprocess.CompletedProcess(args, 0),
+    )
+
+    launcher._set_pane_owner(0, "%7")
+
+    assert calls == [
+        [
+            "tmux",
+            "set-option",
+            "-p",
+            "-t",
+            "%7",
+            "@xahaud_owner",
+            "owner-token",
+        ]
+    ]
+    assert launcher.launch_state["pane_owner_tokens"] == {"0": "owner-token"}
 
 
 def test_load_network_info_restores_tmux_base_dir_for_exit_status(tmp_path: Path):

@@ -169,6 +169,33 @@ def test_save_binary_rejects_fith_output_and_preserves_receipt(tmp_path: Path) -
     assert not cache.exists()
 
 
+def test_save_binary_checks_fith_receipt_beside_symlinked_output(
+    tmp_path: Path,
+) -> None:
+    actual = tmp_path / "artifacts" / "rippled.real"
+    actual.parent.mkdir()
+    _write_fake_binary(actual)
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    source.symlink_to(actual)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text(
+        json.dumps({"binary_sha256": hashlib.sha256(actual.read_bytes()).hexdigest()})
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="refusing to save FITH output"):
+        save_binary(
+            "@heuristic-link",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (tmp_path / "binaries.json").exists()
+    assert not (tmp_path / "cache").exists()
+
+
 def test_save_binary_allows_hash_mismatched_stale_fith_receipt(tmp_path: Path) -> None:
     source = tmp_path / "build" / "rippled"
     source.parent.mkdir()
@@ -226,15 +253,17 @@ def test_save_binary_rejects_source_replaced_during_copy(
         "xahaud_scripts.binary_registry.shutil.copy2", copy_then_activate_fith
     )
 
+    cache = tmp_path / "cache"
     with pytest.raises(OSError, match="binary changed while it was being saved"):
         save_binary(
             "@raced",
             source,
             manifest=tmp_path / "binaries.json",
-            cache_dir=tmp_path / "cache",
+            cache_dir=cache,
         )
 
     assert not (tmp_path / "binaries.json").exists()
+    assert not cache.exists()
 
 
 def test_save_binary_joins_existing_build_directory_lock(

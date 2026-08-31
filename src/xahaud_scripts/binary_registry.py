@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -211,47 +211,61 @@ def save_binary(
 ) -> SavedBinary:
     """Copy ``source`` into the saved-binary cache and update the manifest."""
     name = alias_name(alias)
-    source = source.expanduser().resolve()
-    if not source.exists():
-        raise FileNotFoundError(f"binary not found: {source}")
-    if not _is_executable_file(source):
-        raise ValueError(f"binary path is not an executable file: {source}")
+    # Preserve the operator-visible output path for adjacent lock/receipt
+    # discovery. Resolving a symlink first would look beside its target and
+    # could miss ``build/.rippled.fith-receipt.json`` beside ``build/rippled``.
+    output_path = Path(os.path.abspath(source.expanduser()))
 
-    with _build_output_lock(source):
+    with _build_output_lock(output_path):
+        # Recheck after acquiring the build lock: the output may have changed
+        # while this process waited for a build to finish.
+        if not output_path.exists():
+            raise FileNotFoundError(f"binary not found: {output_path}")
+        if not _is_executable_file(output_path):
+            raise ValueError(f"binary path is not an executable file: {output_path}")
+        canonical_source = output_path.resolve()
+
         # cppt installs the receipt before atomically activating its quick-linked
         # output. Match the receipt's binary digest rather than its mere presence:
         # a failed activation deliberately leaves a safely stale receipt beside
         # the previous ordinary binary. Keep this guard in the registry as well as
         # the x-run-tests CLI so direct API callers cannot launder a FITH artifact.
-        _reject_matching_fith_receipt(source, source)
+        _reject_matching_fith_receipt(output_path, output_path)
 
         root = binary_cache_dir(cache_dir)
         saved_at = datetime.now(UTC)
         token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
         dest_dir = root / name / f"{token}-{uuid4().hex[:12]}"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / source.name
-        tmp_dest = dest_dir / f".{source.name}.{os.getpid()}.tmp"
-        source_identity = _file_identity(source)
+        dest = dest_dir / canonical_source.name
+        tmp_dest = dest_dir / f".{canonical_source.name}.{os.getpid()}.tmp"
+        source_identity = _file_identity(output_path)
         try:
-            shutil.copy2(source, tmp_dest)
+            shutil.copy2(output_path, tmp_dest)
             # Re-read the receipt before the source identity. This ordering catches
             # both FITH's receipt-before-activation protocol and an ordinary build
             # that removes a receipt while replacing the target during this copy.
-            _reject_matching_fith_receipt(source, tmp_dest)
-            if _file_identity(source) != source_identity:
-                raise OSError(f"binary changed while it was being saved: {source}")
+            _reject_matching_fith_receipt(output_path, tmp_dest)
+            if _file_identity(output_path) != source_identity:
+                raise OSError(f"binary changed while it was being saved: {output_path}")
             tmp_dest.replace(dest)
         finally:
-            if tmp_dest.exists():
+            with suppress(FileNotFoundError):
                 tmp_dest.unlink()
+            if not dest.exists():
+                # This directory is unique to the attempted save. Best-effort
+                # removal keeps rejected/raced copies from accumulating empty
+                # cache generations; parent removal is safe only while empty.
+                for directory in (dest_dir, dest_dir.parent, root):
+                    with suppress(OSError):
+                        directory.rmdir()
 
-    worktree_path = _git_root(worktree or source.parent)
+    worktree_path = _git_root(worktree or output_path.parent)
     entry = SavedBinary(
         name=name,
         path=dest,
         saved_at=saved_at.isoformat().replace("+00:00", "Z"),
-        source_path=source,
+        source_path=canonical_source,
         worktree=worktree_path,
         branch=_git(worktree_path, "branch", "--show-current")
         if worktree_path

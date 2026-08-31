@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -109,6 +110,7 @@ class TmuxLauncher:
         self._base_dir: Path | None = None
         self._desktop: int | None = None
         self._pane_ids: dict[int, str] = {}
+        self._pane_owner_tokens: dict[int, str] = {}
         self._launch_commands: dict[int, str] = {}
 
     def is_available(self) -> bool:
@@ -185,6 +187,7 @@ class TmuxLauncher:
             text=True,
         )
         pane_id = result.stdout.strip()
+        self._set_pane_owner(node.id, pane_id)
 
         self._clear_node_markers(node.id)
 
@@ -228,6 +231,7 @@ class TmuxLauncher:
             text=True,
         )
         pane_id = result.stdout.strip()
+        self._set_pane_owner(node.id, pane_id)
 
         # Rebalance panes to tiled layout
         subprocess.run(
@@ -327,6 +331,9 @@ class TmuxLauncher:
         state: dict[str, Any] = {
             "launcher": "tmux",
             "pane_ids": {str(k): v for k, v in self._pane_ids.items()},
+            "pane_owner_tokens": {
+                str(k): v for k, v in self._pane_owner_tokens.items()
+            },
             "launch_commands": {str(k): v for k, v in self._launch_commands.items()},
         }
         if self._base_dir is not None:
@@ -336,6 +343,9 @@ class TmuxLauncher:
     def load_launch_state(self, state: dict[str, Any]) -> None:
         """Restore state from persisted launch_state."""
         self._pane_ids = {int(k): v for k, v in state.get("pane_ids", {}).items()}
+        self._pane_owner_tokens = {
+            int(k): v for k, v in state.get("pane_owner_tokens", {}).items()
+        }
         self._launch_commands = {
             int(k): v for k, v in state.get("launch_commands", {}).items()
         }
@@ -436,6 +446,47 @@ class TmuxLauncher:
         value = result.stdout.strip()
         return Path(value) if value else None
 
+    def _set_pane_owner(self, node_id: int, pane_id: str) -> None:
+        """Tag a new pane with an unguessable owner token for reuse detection."""
+        token = secrets.token_hex(16)
+        subprocess.run(
+            [
+                "tmux",
+                "set-option",
+                "-p",
+                "-t",
+                pane_id,
+                "@xahaud_owner",
+                token,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        self._pane_owner_tokens[node_id] = token
+
+    def _pane_owner(self, pane_id: str) -> str | None:
+        """Return the owner token attached to a live pane, if any."""
+        try:
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "show-options",
+                    "-p",
+                    "-q",
+                    "-v",
+                    "-t",
+                    pane_id,
+                    "@xahaud_owner",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = result.stdout.strip()
+        return value if value else None
+
     def _validate_pane(self, node_id: int) -> str | None:
         """Get pane ID for node, validating it still exists.
 
@@ -450,6 +501,20 @@ class TmuxLauncher:
             logger.error(
                 f"Pane {pane_id} for node {node_id} no longer exists "
                 f"(was it manually closed?). Live panes: {live}"
+            )
+            return None
+        expected_owner = self._pane_owner_tokens.get(node_id)
+        if expected_owner is None:
+            logger.error(
+                f"Refusing untagged pane {pane_id} for node {node_id}: persisted "
+                "launch state predates pane ownership tokens; relaunch the network"
+            )
+            return None
+        current_owner = self._pane_owner(pane_id)
+        if current_owner != expected_owner:
+            logger.error(
+                f"Refusing pane {pane_id} for node {node_id}: owner token "
+                "does not match persisted launch state"
             )
             return None
         if self._base_dir is not None:

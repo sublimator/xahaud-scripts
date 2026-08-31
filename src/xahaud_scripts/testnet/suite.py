@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import inspect
 import json
 import math
 import os
@@ -385,6 +386,139 @@ def _test_matches(name: str, filter_str: str) -> bool:
     )
 
 
+class _ImportTimeBindingFinder(ast.NodeVisitor):
+    """Find whether a module-level statement can bind or delete one name.
+
+    Compound statements execute in module scope, so their bodies are visited.
+    Function/lambda bodies and comprehension targets have their own scopes and
+    are skipped, while expressions evaluated while defining them are retained.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.found = False
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        if node.id == self.name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.found = True
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        # ``name: Type`` updates __annotations__ but does not bind or replace
+        # ``name``. Only an annotated assignment with a value does so.
+        if node.value is not None:
+            self.visit(node.target)
+            self.visit(node.value)
+        self.visit(node.annotation)
+
+    def _visit_definition_expressions(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        if node.name == self.name:
+            self.found = True
+        self._visit_definition_expressions(node)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        if node.name == self.name:
+            self.found = True
+        self._visit_definition_expressions(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        if node.name == self.name:
+            self.found = True
+        for expression in (*node.decorator_list, *node.bases):
+            self.visit(expression)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+    def _visit_comprehension(
+        self,
+        value_nodes: tuple[ast.AST, ...],
+        generators: list[ast.comprehension],
+    ) -> None:
+        for value in value_nodes:
+            self.visit(value)
+        for generator in generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.elt,), node.generators)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.elt,), node.generators)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+        self._visit_comprehension((node.elt,), node.generators)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.key, node.value), node.generators)
+
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        for alias in node.names:
+            bound = alias.asname or alias.name.split(".", 1)[0]
+            if bound == self.name:
+                self.found = True
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        for alias in node.names:
+            if alias.name == "*" or (alias.asname or alias.name) == self.name:
+                self.found = True
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:  # noqa: N802
+        if node.name == self.name:
+            self.found = True
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:  # noqa: N802
+        if node.name == self.name:
+            self.found = True
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:  # noqa: N802
+        if node.name == self.name:
+            self.found = True
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:  # noqa: N802
+        if node.rest == self.name:
+            self.found = True
+        self.generic_visit(node)
+
+
+def _statement_binds_name(statement: ast.stmt, name: str) -> bool:
+    finder = _ImportTimeBindingFinder(name)
+    finder.visit(statement)
+    return finder.found
+
+
+def _script_may_define_variants(script_path: Path) -> bool:
+    """Return whether importing a script could expose ``variants``.
+
+    Most scenarios have no variants. Avoid executing their module bodies just
+    to prove an attribute is absent; direct and dynamically-computed assignment
+    forms such as ``variants = make_variants()`` are still discovered.
+    """
+    try:
+        tree = ast.parse(script_path.read_text(), filename=str(script_path))
+    except (OSError, UnicodeError, SyntaxError):
+        # Preserve the existing load error for unreadable/malformed scripts;
+        # whole-suite preflight will still stop before lifecycle mutation.
+        return True
+    return any(_statement_binds_name(statement, "variants") for statement in tree.body)
+
+
 def _expand_tests(
     suite: SuiteConfig,
     xahaud_root: Path,
@@ -416,7 +550,7 @@ def _expand_tests(
             script_path = xahaud_root / script_path
 
         variants: list[dict[str, Any]] | None = None
-        if script_path.exists():
+        if script_path.exists() and _script_may_define_variants(script_path):
             try:
                 variants = load_scenario_variants(script_path)
             except Exception as exc:
@@ -1255,7 +1389,80 @@ def _resolved_script_path(test: dict[str, Any], xahaud_root: Path) -> Path:
     return script_path if script_path.is_absolute() else xahaud_root / script_path
 
 
-def _validate_scenario_contract(script_path: Path, *, test_name: str) -> None:
+def _ast_scenario_signature(
+    definition: ast.AsyncFunctionDef,
+) -> inspect.Signature:
+    """Build the callable signature relevant to the scenario runner."""
+    args = definition.args
+    positional = [*args.posonlyargs, *args.args]
+    default_start = len(positional) - len(args.defaults)
+    parameters: list[inspect.Parameter] = []
+
+    for index, arg in enumerate(positional):
+        kind = (
+            inspect.Parameter.POSITIONAL_ONLY
+            if index < len(args.posonlyargs)
+            else inspect.Parameter.POSITIONAL_OR_KEYWORD
+        )
+        default = None if index >= default_start else inspect.Parameter.empty
+        parameters.append(inspect.Parameter(arg.arg, kind, default=default))
+
+    if args.vararg is not None:
+        parameters.append(
+            inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL)
+        )
+    for arg, default_node in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+        default = None if default_node is not None else inspect.Parameter.empty
+        parameters.append(
+            inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, default=default)
+        )
+    if args.kwarg is not None:
+        parameters.append(
+            inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD)
+        )
+    return inspect.Signature(parameters)
+
+
+class _FunctionYieldFinder(ast.NodeVisitor):
+    """Find yields in one function body without descending into nested scopes."""
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def visit_Yield(self, node: ast.Yield) -> None:  # noqa: N802
+        self.found = True
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:  # noqa: N802
+        self.found = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+
+def _is_async_generator(definition: ast.AsyncFunctionDef) -> bool:
+    finder = _FunctionYieldFinder()
+    for statement in definition.body:
+        finder.visit(statement)
+    return finder.found
+
+
+def _validate_scenario_contract(
+    script_path: Path,
+    *,
+    test_name: str,
+    params: dict[str, Any] | None,
+) -> None:
     """Validate the scenario entry point without executing user code.
 
     Importing a scenario for preflight runs its module body. The real scenario
@@ -1272,16 +1479,45 @@ def _validate_scenario_contract(script_path: Path, *, test_name: str) -> None:
             f"Test '{test_name}' script failed preflight ({script_path}): {exc}"
         ) from exc
 
-    definitions = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
-        and node.name == "scenario"
-    ]
-    if not definitions or not isinstance(definitions[-1], ast.AsyncFunctionDef):
+    active_definition: ast.AsyncFunctionDef | None = None
+    for statement in tree.body:
+        if isinstance(statement, ast.AsyncFunctionDef) and statement.name == "scenario":
+            active_definition = statement
+        elif _statement_binds_name(statement, "scenario"):
+            # The final import-time binding is what load_scenario_script sees.
+            # A direct assignment, sync definition, import, delete, loop target,
+            # or conditional binding after the async def invalidates it.
+            active_definition = None
+
+    if active_definition is None:
         raise ValueError(
             f"Test '{test_name}' script must define 'async def scenario': {script_path}"
         )
+    if active_definition.decorator_list:
+        # A decorator can replace an async function with any object. Determining
+        # whether the final binding remains a coroutine would require executing
+        # user code, defeating side-effect-free preflight.
+        raise ValueError(
+            f"Test '{test_name}' scenario must not be decorated because its "
+            f"async contract cannot be checked without importing {script_path}"
+        )
+    if _is_async_generator(active_definition):
+        raise ValueError(
+            f"Test '{test_name}' scenario must be an awaitable coroutine, not an "
+            f"async generator: {script_path}"
+        )
+
+    try:
+        _ast_scenario_signature(active_definition).bind(
+            object(),
+            object(),
+            **{key: object() for key in params or {}},
+        )
+    except TypeError as exc:
+        raise ValueError(
+            f"Test '{test_name}' scenario cannot be called as "
+            f"scenario(ctx, log, **params): {exc}"
+        ) from exc
 
 
 def _preflight_selected_tests(
@@ -1297,7 +1533,9 @@ def _preflight_selected_tests(
         name = _validated_test_name(test["name"])
         _contained_run_dir(runs_dir, "latest", name)
 
-        _validated_params(test.get("_params"), f"Test '{name}' effective params")
+        params = _validated_params(
+            test.get("_params"), f"Test '{name}' effective params"
+        )
         config = suite.effective_network(test)
         _merge_env_override(config, env_override)
         _validate_network_config(config, xahaud_root=xahaud_root)
@@ -1305,7 +1543,7 @@ def _preflight_selected_tests(
         script_path = _resolved_script_path(test, xahaud_root)
         if not script_path.is_file():
             raise ValueError(f"Script is not a file: {script_path}")
-        _validate_scenario_contract(script_path, test_name=name)
+        _validate_scenario_contract(script_path, test_name=name, params=params)
 
 
 def _run_one_test(

@@ -584,14 +584,130 @@ def test_preflight_does_not_execute_scenario_module(tmp_path: Path):
         "    pass\n"
     )
     suite_file = tmp_path / "suite.yml"
-    # Explicit params skip variant discovery, which intentionally imports a
-    # scenario to support dynamically constructed variant lists.
-    suite_file.write_text(
-        f"tests:\n  - name: side-effect\n    script: {script}\n    params: {{}}\n"
-    )
+    suite_file.write_text(f"tests: [{{name: side-effect, script: {script}}}]\n")
 
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "scenario = None\n",
+        "def scenario(ctx, log):\n    pass\n",
+        "del scenario\n",
+    ],
+    ids=["assignment", "sync-redefinition", "delete"],
+)
+def test_preflight_rejects_overwritten_async_scenario(replacement: str, tmp_path: Path):
+    script = tmp_path / "overwritten.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\n" + replacement)
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: overwritten, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_preflight_allows_annotation_without_overwriting_scenario(tmp_path: Path):
+    script = tmp_path / "annotated.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\nscenario: object\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: annotated, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+def test_preflight_rejects_decorated_scenario_without_executing_decorator(
+    tmp_path: Path,
+):
+    marker = tmp_path / "decorator-executed"
+    script = tmp_path / "decorated.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "def replace(fn):\n"
+        f"    Path({str(marker)!r}).write_text('executed')\n"
+        "    return lambda ctx, log: None\n"
+        "@replace\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: decorated, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"scenario must not be decorated"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+    assert not marker.exists()
+
+
+def test_preflight_rejects_async_generator_scenario(tmp_path: Path):
+    script = tmp_path / "async_generator.py"
+    script.write_text("async def scenario(ctx, log):\n    yield 1\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: async-generator, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"not an async generator"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_allows_nested_generator_helper(tmp_path: Path):
+    script = tmp_path / "nested_generator.py"
+    script.write_text(
+        "async def scenario(ctx, log):\n"
+        "    def values():\n"
+        "        yield 1\n"
+        "    list(values())\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: nested-generator, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+@pytest.mark.parametrize(
+    ("signature", "params"),
+    [
+        ("", "{}"),
+        ("ctx, log, required", "{}"),
+        ("ctx, log", "{unexpected: 1}"),
+        ("ctx, log", "{ctx: duplicate}"),
+    ],
+    ids=["no-context", "missing-param", "unexpected-param", "duplicate-context"],
+)
+def test_preflight_rejects_scenario_call_signature_mismatch(
+    signature: str, params: str, tmp_path: Path
+):
+    script = tmp_path / "bad_signature.py"
+    script.write_text(f"async def scenario({signature}):\n    pass\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        f"tests:\n  - name: bad-signature\n    script: {script}\n    params: {params}\n"
+    )
+
+    with pytest.raises(ValueError, match=r"cannot be called as scenario"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_dynamic_variants_still_execute_for_expansion(tmp_path: Path):
+    marker = tmp_path / "variants-executed"
+    script = tmp_path / "dynamic_variants.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "variants = list([{'label': 'dynamic', 'value': 1}])\n"
+        "async def scenario(ctx, log, **params):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+    assert marker.read_text() == "executed"
 
 
 def test_malformed_variants_are_not_silently_ignored(tmp_path: Path):
