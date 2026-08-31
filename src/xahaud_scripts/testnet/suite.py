@@ -1040,18 +1040,40 @@ def _direct_handle_value(node: ast.AST, handles: set[str]) -> bool:
     return False
 
 
+def _generator_creation_consumes_handle(node: ast.AST, handles: set[str]) -> bool:
+    """Return whether evaluating ``node`` creates a consuming generator."""
+    if isinstance(node, ast.GeneratorExp):
+        # Creating a generator evaluates only its outermost iterable. Recurse
+        # through generators created by that expression without inspecting
+        # their deferred elements, filters, or later iterable clauses.
+        outer_iterable = node.generators[0].iter
+        found, storage_only = _storage_expression_handle_state(
+            outer_iterable,
+            handles,
+        )
+        return (found and not storage_only) or _generator_creation_consumes_handle(
+            outer_iterable,
+            handles,
+        )
+    if isinstance(node, ast.Lambda):
+        return any(
+            _generator_creation_consumes_handle(default, handles)
+            for default in (*node.args.defaults, *node.args.kw_defaults)
+            if default is not None
+        )
+    return any(
+        _generator_creation_consumes_handle(child, handles)
+        for child in ast.iter_child_nodes(node)
+    )
+
+
 class _FilterLoadFinder(_NameLoadFinder):
     """Find immediate handle use while respecting nested generator deferral."""
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
-        # Creating a nested generator used as a filter evaluates only its
-        # outermost iterable. Its body, filters, and nested iterables remain
-        # deferred because the generator object's truth value does not iterate it.
-        found, storage_only = _storage_expression_handle_state(
-            node.generators[0].iter,
-            self.names,
-        )
-        if found and not storage_only:
+        # A generator object's truth value does not iterate it, but creating it
+        # can recursively create generators in its outermost iterable.
+        if _generator_creation_consumes_handle(node, self.names):
             self.found = True
 
 

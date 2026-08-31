@@ -1024,7 +1024,17 @@ def test_preflight_rejects_tracked_generator_consumed_inside_assignment_unpack(
         run_suite(suite_file, tmp_path, dry_run=True)
 
 
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "(next(deferred) for _ in [0])",
+        "(outer for outer in (next(deferred) for _ in [0]))",
+        "(outer for outer in (inner for inner in [0] if next(deferred)))",
+    ],
+    ids=["body", "nested-body", "nested-filter"],
+)
 def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
+    condition: str,
     tmp_path: Path,
 ):
     script = tmp_path / "assignment_unpack_filter_storage.py"
@@ -1032,8 +1042,7 @@ def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
         "deferred = ((scenario := None) for _ in [0])\n"
         "async def scenario(ctx, log):\n"
         "    pass\n"
-        "[alias] = (value for value in [1] "
-        "if (next(deferred) for _ in [0]))\n"
+        f"[alias] = (value for value in [1] if {condition})\n"
     )
     suite_file = tmp_path / "suite.yml"
     suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
@@ -1041,15 +1050,44 @@ def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
 
 
-def test_deferred_generator_filter_does_not_trigger_variant_import(tmp_path: Path):
+def test_preflight_rejects_consuming_generator_created_in_unpack_filter(
+    tmp_path: Path,
+):
+    script = tmp_path / "assignment_unpack_nested_filter_consumer.py"
+    script.write_text(
+        "deferred = ((scenario := [1]) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "[alias] = (value for value in [1] "
+        "if (outer for outer in (inner for inner in next(deferred))))\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "(next(deferred) for _ in [0])",
+        "(outer for outer in (next(deferred) for _ in [0]))",
+        "(outer for outer in (inner for inner in [0] if next(deferred)))",
+    ],
+    ids=["body", "nested-body", "nested-filter"],
+)
+def test_deferred_generator_filter_does_not_trigger_variant_import(
+    condition: str,
+    tmp_path: Path,
+):
     marker = tmp_path / "module-executed"
     script = tmp_path / "assignment_unpack_filter_variants.py"
     script.write_text(
         "from pathlib import Path\n"
         f"Path({str(marker)!r}).write_text('executed')\n"
         "deferred = ((variants := [{'label': 'unused'}]) for _ in [0])\n"
-        "[alias] = (value for value in [1] "
-        "if (next(deferred) for _ in [0]))\n"
+        f"[alias] = (value for value in [1] if {condition})\n"
         "async def scenario(ctx, log, **params):\n"
         "    pass\n"
     )
@@ -1319,6 +1357,12 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
             "iterable_unpack",
         ),
         (
+            "deferred = ((variants := [{'label': 'nested_filter'}]) for _ in [0])\n",
+            "[alias] = (value for value in [1] "
+            "if (outer for outer in (inner for inner in next(deferred))))\n",
+            "nested_filter",
+        ),
+        (
             "",
             "[alias] = ((variants := [{'label': 'inline_unpack'}]) for _ in [0])\n",
             "inline_unpack",
@@ -1340,6 +1384,7 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
         "assignment-unpack",
         "wrapped-assignment-unpack",
         "iterable-expression-assignment-unpack",
+        "nested-filter-assignment-unpack",
         "inline-assignment-unpack",
         "tracked-default-decorator",
     ],
