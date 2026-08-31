@@ -386,6 +386,39 @@ def _test_matches(name: str, filter_str: str) -> bool:
     )
 
 
+class _ScopeGlobalFinder(ast.NodeVisitor):
+    """Find a global declaration in one class code block."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.found = False
+
+    def visit_Global(self, node: ast.Global) -> None:  # noqa: N802
+        if self.name in node.names:
+            self.found = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+
+def _scope_declares_global(statements: list[ast.stmt], name: str) -> bool:
+    finder = _ScopeGlobalFinder(name)
+    for statement in statements:
+        finder.visit(statement)
+    return finder.found
+
+
 class _ImportTimeBindingFinder(ast.NodeVisitor):
     """Find whether a module-level statement can bind or delete one name.
 
@@ -431,16 +464,54 @@ class _ImportTimeBindingFinder(ast.NodeVisitor):
             self.found = True
         self._visit_definition_expressions(node)
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
-        if node.name == self.name:
+    def _visit_class_definition(
+        self,
+        node: ast.ClassDef,
+        *,
+        enclosing_binds_module: bool,
+    ) -> None:
+        if enclosing_binds_module and node.name == self.name:
             self.found = True
-        for expression in (*node.decorator_list, *node.bases):
-            self.visit(expression)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
+        if enclosing_binds_module:
+            for expression in (*node.decorator_list, *node.bases):
+                self.visit(expression)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+        # A class body normally binds its own namespace, but a ``global``
+        # declaration redirects every matching store/delete in that class code
+        # block to the module. Class bodies execute immediately during import.
+        if _scope_declares_global(node.body, self.name):
+            for statement in node.body:
+                self.visit(statement)
+        else:
+            # Even when this class keeps ordinary local bindings, a nested
+            # class body executes and may carry its own module-level ``global``
+            # declaration. Traverse those executing class scopes without
+            # treating their names or enclosing-class expressions as globals.
+            for statement in node.body:
+                self._visit_nested_class_scopes(statement)
+
+    def _visit_nested_class_scopes(self, node: ast.AST) -> None:
+        if isinstance(node, ast.ClassDef):
+            self._visit_class_definition(node, enclosing_binds_module=False)
+            return
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda),
+        ):
+            return
+        for child in ast.iter_child_nodes(node):
+            self._visit_nested_class_scopes(child)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self._visit_class_definition(node, enclosing_binds_module=True)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
-        return
+        # The body is deferred, but defaults execute when the lambda object is
+        # created and assignment expressions there bind the enclosing scope.
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
 
     def _visit_comprehension(
         self,
@@ -1473,6 +1544,11 @@ def _validate_scenario_contract(
     """
     try:
         source = script_path.read_text()
+        # ``ast.parse`` accepts some constructs that cannot become a module
+        # code object (for example ``return`` at module scope or a late
+        # ``global`` declaration). Compile as well, without executing, so those
+        # failures cannot be deferred until after the network is launched.
+        compile(source, str(script_path), "exec")
         tree = ast.parse(source, filename=str(script_path))
     except (OSError, UnicodeError, SyntaxError) as exc:
         raise ValueError(

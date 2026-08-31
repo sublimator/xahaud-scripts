@@ -129,13 +129,26 @@ class TmuxLauncher:
         """
         try:
             cmd = self._build_full_command(node, config)
+            previous_commands = self._launch_commands.copy()
+            previous_owner_tokens = self._pane_owner_tokens.copy()
+            previous_desktop = self._desktop
+            previous_base_dir = self._base_dir
             self._launch_commands[node.id] = cmd
             self._desktop = config.desktop
 
-            if not self._session_created:
-                pane_id = self._create_session(node, cmd)
-            else:
-                pane_id = self._create_pane(node, cmd)
+            try:
+                if not self._session_created:
+                    pane_id = self._create_session(node, cmd)
+                else:
+                    pane_id = self._create_pane(node, cmd)
+            except BaseException:
+                # A failed attempt must not publish a command for an unowned
+                # pane or erase state from an earlier successful generation.
+                self._launch_commands = previous_commands
+                self._pane_owner_tokens = previous_owner_tokens
+                self._desktop = previous_desktop
+                self._base_dir = previous_base_dir
+                raise
 
             self._pane_ids[node.id] = pane_id
             self._pane_count += 1
@@ -187,21 +200,25 @@ class TmuxLauncher:
             text=True,
         )
         pane_id = result.stdout.strip()
-        self._set_pane_owner(node.id, pane_id)
+        try:
+            self._set_pane_owner(node.id, pane_id)
 
-        self._clear_node_markers(node.id)
+            self._clear_node_markers(node.id)
 
-        # Inject _xrun helper, then send the startup command
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
-            check=True,
-            capture_output=True,
-        )
+            # Inject _xrun helper, then send the startup command
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
+                check=True,
+                capture_output=True,
+            )
+        except BaseException:
+            self._discard_failed_pane(node.id, pane_id)
+            raise
 
         self._session_created = True
         logger.info(f"Created tmux session '{TMUX_SESSION_NAME}' with node {node.id}")
@@ -231,28 +248,32 @@ class TmuxLauncher:
             text=True,
         )
         pane_id = result.stdout.strip()
-        self._set_pane_owner(node.id, pane_id)
+        try:
+            self._set_pane_owner(node.id, pane_id)
 
-        # Rebalance panes to tiled layout
-        subprocess.run(
-            ["tmux", "select-layout", "-t", TMUX_SESSION_NAME, "tiled"],
-            check=True,
-            capture_output=True,
-        )
+            # Rebalance panes to tiled layout
+            subprocess.run(
+                ["tmux", "select-layout", "-t", TMUX_SESSION_NAME, "tiled"],
+                check=True,
+                capture_output=True,
+            )
 
-        self._clear_node_markers(node.id)
+            self._clear_node_markers(node.id)
 
-        # Inject _xrun helper, then send the startup command
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
-            check=True,
-            capture_output=True,
-        )
+            # Inject _xrun helper, then send the startup command
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, cmd, "Enter"],
+                check=True,
+                capture_output=True,
+            )
+        except BaseException:
+            self._discard_failed_pane(node.id, pane_id)
+            raise
 
         logger.info(f"Created pane for node {node.id}")
         return pane_id
@@ -463,6 +484,17 @@ class TmuxLauncher:
             capture_output=True,
         )
         self._pane_owner_tokens[node_id] = token
+
+    def _discard_failed_pane(self, node_id: int, pane_id: str) -> None:
+        """Best-effort rollback after a newly created pane fails setup."""
+        self._pane_owner_tokens.pop(node_id, None)
+        try:
+            subprocess.run(
+                ["tmux", "kill-pane", "-t", pane_id],
+                capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(f"Could not discard failed tmux pane {pane_id}: {exc}")
 
     def _pane_owner(self, pane_id: str) -> str | None:
         """Return the owner token attached to a live pane, if any."""
@@ -741,25 +773,37 @@ end tell
                 info = json.load(f)
             killed = len(info.get("nodes", []))
 
-        # Kill the entire tmux session - this terminates all panes and processes
-        result = subprocess.run(
-            ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
-            capture_output=True,
-        )
-
-        if result.returncode == 0:
-            logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
-        else:
-            # Session might not exist (already killed or never created)
-            logger.debug(
-                f"tmux session '{TMUX_SESSION_NAME}' not found or already killed"
+        try:
+            # Kill the entire tmux session - this terminates all panes and processes
+            result = subprocess.run(
+                ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
+                capture_output=True,
             )
-            killed = 0
 
-        # Close the iTerm window if one was created
-        self._close_iterm_window(base_dir)
+            if result.returncode == 0:
+                logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
+            else:
+                # Session might not exist (already killed or never created)
+                logger.debug(
+                    f"tmux session '{TMUX_SESSION_NAME}' not found or already killed"
+                )
+                killed = 0
 
-        return killed
+            # Close the iTerm window if one was created
+            self._close_iterm_window(base_dir)
+            return killed
+        finally:
+            self._reset_session_state()
+
+    def _reset_session_state(self) -> None:
+        """Drop pane ownership and commands after their session is gone."""
+        self._session_created = False
+        self._pane_count = 0
+        self._base_dir = None
+        self._desktop = None
+        self._pane_ids.clear()
+        self._pane_owner_tokens.clear()
+        self._launch_commands.clear()
 
     def _close_iterm_window(self, base_dir: Path) -> bool:
         """Close the iTerm window that was created for this tmux session.

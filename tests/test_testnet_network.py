@@ -682,6 +682,159 @@ def test_tmux_pane_owner_is_tagged_and_persisted(
     assert launcher.launch_state["pane_owner_tokens"] == {"0": "owner-token"}
 
 
+def test_tmux_failed_owner_tag_discards_new_pane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    node = _node(tmp_path, 1)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any):
+        calls.append(args)
+        if args[1] == "split-window":
+            return subprocess.CompletedProcess(args, 0, stdout="%7\n", stderr="")
+        if args[1] == "set-option":
+            raise subprocess.CalledProcessError(1, args, stderr="unsupported")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("xahaud_scripts.testnet.launcher.tmux.subprocess.run", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        launcher._create_pane(node, " command")
+
+    assert calls[-1] == ["tmux", "kill-pane", "-t", "%7"]
+    assert launcher.launch_state["pane_owner_tokens"] == {}
+
+
+def test_tmux_cleanup_failure_does_not_mask_owner_tag_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    node = _node(tmp_path, 1)
+
+    def fake_run(args: list[str], **_kwargs: Any):
+        if args[1] == "split-window":
+            return subprocess.CompletedProcess(args, 0, stdout="%7\n", stderr="")
+        if args[1] == "set-option":
+            raise subprocess.CalledProcessError(17, args, stderr="tag failed")
+        if args[1] == "kill-pane":
+            raise OSError("tmux disappeared")
+        raise AssertionError(f"unexpected tmux command: {args}")
+
+    monkeypatch.setattr("xahaud_scripts.testnet.launcher.tmux.subprocess.run", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        launcher._create_pane(node, " command")
+
+    assert raised.value.returncode == 17
+    assert raised.value.stderr == "tag failed"
+    assert launcher.launch_state["pane_owner_tokens"] == {}
+
+
+def test_tmux_failed_launch_restores_exact_prior_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher._session_created = True
+    launcher._base_dir = tmp_path / "existing"
+    launcher._desktop = 2
+    launcher._pane_ids = {0: "%3"}
+    launcher._pane_owner_tokens = {0: "existing-owner"}
+    launcher._launch_commands = {0: " existing-command"}
+    before = launcher.launch_state
+    node = _node(tmp_path, 1)
+    config = LaunchConfig(
+        xahaud_root=tmp_path,
+        rippled_path=tmp_path / "build" / "rippled",
+        genesis_file=tmp_path / "genesis.json",
+        desktop=4,
+    )
+
+    def fail_after_mutating_owner(_node: NodeInfo, _command: str) -> str:
+        launcher._pane_owner_tokens[1] = "transient-owner"
+        launcher._base_dir = tmp_path / "transient"
+        raise subprocess.CalledProcessError(19, ["tmux", "set-option"])
+
+    monkeypatch.setattr(launcher, "_create_pane", fail_after_mutating_owner)
+
+    assert launcher.launch(node, config) is False
+    assert launcher.launch_state == before
+    assert launcher._desktop == 2
+
+
+def test_tmux_shutdown_clears_pane_ownership_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher._session_created = True
+    launcher._pane_count = 1
+    launcher._base_dir = tmp_path
+    launcher._desktop = 2
+    launcher._pane_ids = {0: "%7"}
+    launcher._pane_owner_tokens = {0: "owner-token"}
+    launcher._launch_commands = {0: " command"}
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(args, 0),
+    )
+
+    launcher.shutdown(tmp_path, cast(Any, object()))
+
+    assert launcher.launch_state == {
+        "launcher": "tmux",
+        "pane_ids": {},
+        "pane_owner_tokens": {},
+        "launch_commands": {},
+    }
+    assert launcher._session_created is False
+    assert launcher._pane_count == 0
+    assert launcher._base_dir is None
+    assert launcher._desktop is None
+
+
+@pytest.mark.parametrize("failure_point", ["kill-session", "iterm-cleanup"])
+def test_tmux_shutdown_resets_state_even_when_cleanup_raises(
+    failure_point: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher._session_created = True
+    launcher._base_dir = tmp_path
+    launcher._pane_ids = {0: "%7"}
+    launcher._pane_owner_tokens = {0: "owner-token"}
+    launcher._launch_commands = {0: " command"}
+
+    if failure_point == "kill-session":
+
+        def fail_tmux(*_args: Any, **_kwargs: Any):
+            raise OSError("tmux disappeared")
+
+        monkeypatch.setattr(
+            "xahaud_scripts.testnet.launcher.tmux.subprocess.run", fail_tmux
+        )
+    else:
+        monkeypatch.setattr(
+            "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+            lambda args, **_kwargs: subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_close_iterm_window",
+            lambda _base_dir: (_ for _ in ()).throw(OSError("iTerm failed")),
+        )
+
+    with pytest.raises(OSError):
+        launcher.shutdown(tmp_path, cast(Any, object()))
+
+    assert launcher.launch_state == {
+        "launcher": "tmux",
+        "pane_ids": {},
+        "pane_owner_tokens": {},
+        "launch_commands": {},
+    }
+    assert launcher._session_created is False
+    assert launcher._base_dir is None
+
+
 def test_load_network_info_restores_tmux_base_dir_for_exit_status(tmp_path: Path):
     launcher = TmuxLauncher()
     net = _network(tmp_path, launcher)

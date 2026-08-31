@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,7 @@ def test_save_binary_manifest_failure_does_not_change_active_alias(
     manifest = tmp_path / "config" / "binaries.json"
     cache = tmp_path / "cache" / "binaries"
     saved = save_binary("@rng-ce", source, manifest=manifest, cache_dir=cache)
+    generations_before = set((cache / "rng-ce").iterdir())
 
     source.write_text("#!/bin/sh\nprintf '%s\\n' 'v2'\n")
 
@@ -141,6 +143,63 @@ def test_save_binary_manifest_failure_does_not_change_active_alias(
 
     assert resolve_binary_alias("@rng-ce", manifest=manifest) == saved.path
     assert saved.path.read_text() != source.read_text()
+    assert set((cache / "rng-ce").iterdir()) == generations_before
+
+
+def test_save_binary_post_publish_failure_preserves_active_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    manifest = tmp_path / "config" / "binaries.json"
+    cache = tmp_path / "cache" / "binaries"
+    real_manifest_lock = binary_registry._manifest_lock
+
+    @contextmanager
+    def fail_after_unlock(path: Path | None = None):
+        with real_manifest_lock(path):
+            yield
+        raise OSError("post-publish unlock failed")
+
+    monkeypatch.setattr(binary_registry, "_manifest_lock", fail_after_unlock)
+
+    with pytest.raises(OSError, match="post-publish unlock failed"):
+        save_binary("@rng-ce", source, manifest=manifest, cache_dir=cache)
+
+    saved_path = Path(load_manifest(manifest)["rng-ce"]["path"])
+    assert saved_path.is_file()
+    assert resolve_binary_alias("@rng-ce", manifest=manifest) == saved_path
+
+
+def test_save_binary_copy_failure_preserves_preexisting_empty_cache_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    cache = tmp_path / "cache" / "binaries"
+    alias_dir = cache / "rng-ce"
+    alias_dir.mkdir(parents=True)
+
+    def fail_copy(*_args, **_kwargs) -> None:
+        raise OSError("copy failed")
+
+    monkeypatch.setattr("xahaud_scripts.binary_registry.shutil.copy2", fail_copy)
+
+    with pytest.raises(OSError, match="copy failed"):
+        save_binary(
+            "@rng-ce",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=cache,
+        )
+
+    assert cache.is_dir()
+    assert alias_dir.is_dir()
+    assert not list(alias_dir.iterdir())
 
 
 def test_save_binary_rejects_non_executable_file(tmp_path: Path) -> None:
@@ -187,6 +246,74 @@ def test_save_binary_checks_fith_receipt_beside_symlinked_output(
     with pytest.raises(ValueError, match="refusing to save FITH output"):
         save_binary(
             "@heuristic-link",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (tmp_path / "binaries.json").exists()
+    assert not (tmp_path / "cache").exists()
+
+
+def test_save_binary_checks_fith_receipt_beside_symlink_target(
+    tmp_path: Path,
+) -> None:
+    actual = tmp_path / "artifacts" / "rippled.real"
+    actual.parent.mkdir()
+    _write_fake_binary(actual)
+    receipt = actual.with_name(f".{actual.name}.fith-receipt.json")
+    receipt.write_text(
+        json.dumps({"binary_sha256": hashlib.sha256(actual.read_bytes()).hexdigest()})
+        + "\n"
+    )
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    source.symlink_to(actual)
+
+    with pytest.raises(ValueError, match="refusing to save FITH output"):
+        save_binary(
+            "@heuristic-target",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (tmp_path / "binaries.json").exists()
+    assert not (tmp_path / "cache").exists()
+
+
+def test_save_binary_rejects_symlink_retargeted_during_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ordinary = tmp_path / "artifacts" / "ordinary"
+    heuristic = tmp_path / "artifacts" / "heuristic"
+    ordinary.parent.mkdir()
+    _write_fake_binary(ordinary, "ordinary")
+    _write_fake_binary(heuristic, "heuristic")
+    heuristic.with_name(f".{heuristic.name}.fith-receipt.json").write_text(
+        json.dumps(
+            {"binary_sha256": hashlib.sha256(heuristic.read_bytes()).hexdigest()}
+        )
+        + "\n"
+    )
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    source.symlink_to(ordinary)
+    real_copy2 = shutil.copy2
+
+    def retarget_then_copy(_source: Path, destination: Path) -> None:
+        source.unlink()
+        source.symlink_to(heuristic)
+        real_copy2(source, destination)
+
+    monkeypatch.setattr(
+        "xahaud_scripts.binary_registry.shutil.copy2", retarget_then_copy
+    )
+
+    with pytest.raises(ValueError, match="refusing to save FITH output"):
+        save_binary(
+            "@retargeted",
             source,
             manifest=tmp_path / "binaries.json",
             cache_dir=tmp_path / "cache",
@@ -294,6 +421,42 @@ def test_save_binary_joins_existing_build_directory_lock(
     )
 
     assert calls[:2] == [(".x-build-lock", 2), (".x-build-lock", 8)]
+
+
+def test_save_binary_joins_symlink_target_build_directory_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actual = tmp_path / "artifacts" / "rippled"
+    actual.parent.mkdir()
+    _write_fake_binary(actual)
+    (actual.parent / ".x-build-lock").write_text("builder\n")
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    source.symlink_to(actual)
+    calls: list[tuple[Path, int]] = []
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(handle, operation: int) -> None:
+            calls.append((Path(handle.name).parent, operation))
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+
+    save_binary(
+        "@target-locked",
+        source,
+        manifest=tmp_path / "binaries.json",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert [call for call in calls if call[0] == actual.parent] == [
+        (actual.parent, 2),
+        (actual.parent, 8),
+    ]
 
 
 def test_save_binary_ignores_nonzero_version_output(tmp_path: Path) -> None:

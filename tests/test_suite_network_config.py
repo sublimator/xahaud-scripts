@@ -14,6 +14,7 @@ from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.suite import (
     SuiteConfig,
     _contained_run_dir,
+    _expand_tests,
     _validate_network_config,
     _validated_desktop,
     _validated_extra_args,
@@ -596,8 +597,21 @@ def test_preflight_does_not_execute_scenario_module(tmp_path: Path):
         "scenario = None\n",
         "def scenario(ctx, log):\n    pass\n",
         "del scenario\n",
+        "holder = lambda value=(scenario := None): None\n",
+        "class Holder:\n    global scenario\n    scenario = None\n",
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        global scenario\n"
+        "        scenario = None\n",
     ],
-    ids=["assignment", "sync-redefinition", "delete"],
+    ids=[
+        "assignment",
+        "sync-redefinition",
+        "delete",
+        "lambda-default",
+        "class-global",
+        "nested-class-global",
+    ],
 )
 def test_preflight_rejects_overwritten_async_scenario(replacement: str, tmp_path: Path):
     script = tmp_path / "overwritten.py"
@@ -618,6 +632,18 @@ def test_preflight_allows_annotation_without_overwriting_scenario(tmp_path: Path
     suite_file.write_text(f"tests: [{{name: annotated, script: {script}}}]\n")
 
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+def test_preflight_rejects_compile_invalid_module_without_dispatch(tmp_path: Path):
+    script = tmp_path / "compile_invalid.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\nreturn\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: compile-invalid, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"'return' outside function"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+    assert not (tmp_path / ".testnet").exists()
 
 
 def test_preflight_rejects_decorated_scenario_without_executing_decorator(
@@ -708,6 +734,42 @@ def test_dynamic_variants_still_execute_for_expansion(tmp_path: Path):
 
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
     assert marker.read_text() == "executed"
+
+
+def test_lambda_default_variants_are_discovered(tmp_path: Path):
+    script = tmp_path / "lambda_variants.py"
+    script.write_text(
+        "holder = lambda value=(variants := "
+        "[{'label': 'lambda', 'value': 1}]): None\n"
+        "async def scenario(ctx, log, **params):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    suite = SuiteConfig.from_yaml(suite_file)
+    assert [test["name"] for test in _expand_tests(suite, tmp_path)] == [
+        "dynamic@lambda"
+    ]
+
+
+def test_nested_class_global_variants_are_discovered(tmp_path: Path):
+    script = tmp_path / "nested_class_variants.py"
+    script.write_text(
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        global variants\n"
+        "        variants = [{'label': 'nested', 'value': 1}]\n"
+        "async def scenario(ctx, log, **params):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    suite = SuiteConfig.from_yaml(suite_file)
+    assert [test["name"] for test in _expand_tests(suite, tmp_path)] == [
+        "dynamic@nested"
+    ]
 
 
 def test_malformed_variants_are_not_silently_ignored(tmp_path: Path):

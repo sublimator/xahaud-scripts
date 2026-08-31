@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -185,6 +185,63 @@ def _reject_matching_fith_receipt(source: Path, candidate: Path) -> None:
         )
 
 
+def _reject_matching_fith_receipts(sources: tuple[Path, ...], candidate: Path) -> None:
+    """Reject a candidate covered by any operator-visible or canonical receipt."""
+    for source in sources:
+        _reject_matching_fith_receipt(source, candidate)
+
+
+def _cleanup_failed_save(
+    *,
+    tmp_dest: Path,
+    dest: Path,
+    dest_dir: Path,
+    alias_dir: Path,
+    root: Path,
+    dest_dir_created: bool,
+    alias_dir_created: bool,
+    root_created: bool,
+) -> None:
+    """Remove only artifacts and parent directories created by a failed save."""
+    if dest_dir_created:
+        for path in (tmp_dest, dest):
+            with suppress(FileNotFoundError):
+                path.unlink()
+        with suppress(OSError):
+            dest_dir.rmdir()
+    if alias_dir_created:
+        with suppress(OSError):
+            alias_dir.rmdir()
+    if root_created:
+        with suppress(OSError):
+            root.rmdir()
+
+
+def _ensure_directory(path: Path, *, parents: bool = False) -> bool:
+    """Ensure ``path`` is a directory and report whether this call created it."""
+    try:
+        path.mkdir(parents=parents, exist_ok=False)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
+        return False
+    return True
+
+
+def _manifest_references_destination(
+    name: str, dest: Path, manifest: Path | None
+) -> bool:
+    """Fail safely when a publication error may have happened after replacement."""
+    try:
+        data = load_manifest(manifest)
+    except Exception:
+        # If the manifest cannot be inspected, preserving an unreferenced
+        # generation is safer than deleting a potentially active binary.
+        return True
+    entry = data.get(name)
+    return isinstance(entry, dict) and entry.get("path") == str(dest)
+
+
 @contextmanager
 def _build_output_lock(source: Path):
     """Join x-run-tests' persistent build-dir lock when one is present."""
@@ -198,6 +255,17 @@ def _build_output_lock(source: Path):
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _build_output_locks(source: Path):
+    """Join locks beside both the lexical output and its canonical target."""
+    canonical_source = source.resolve()
+    lock_parents = {source.parent, canonical_source.parent}
+    with ExitStack() as stack:
+        for lock_parent in sorted(lock_parents, key=os.fspath):
+            stack.enter_context(_build_output_lock(lock_parent / source.name))
+        yield canonical_source
 
 
 def save_binary(
@@ -216,7 +284,7 @@ def save_binary(
     # could miss ``build/.rippled.fith-receipt.json`` beside ``build/rippled``.
     output_path = Path(os.path.abspath(source.expanduser()))
 
-    with _build_output_lock(output_path):
+    with _build_output_locks(output_path) as locked_canonical_source:
         # Recheck after acquiring the build lock: the output may have changed
         # while this process waited for a build to finish.
         if not output_path.exists():
@@ -224,71 +292,110 @@ def save_binary(
         if not _is_executable_file(output_path):
             raise ValueError(f"binary path is not an executable file: {output_path}")
         canonical_source = output_path.resolve()
+        if canonical_source != locked_canonical_source:
+            raise OSError(
+                f"binary target changed while waiting for its build lock: {output_path}"
+            )
+        source_identity = _file_identity(output_path)
+        receipt_sources: tuple[Path, ...] = (output_path,)
+        if canonical_source != output_path:
+            receipt_sources += (canonical_source,)
 
         # cppt installs the receipt before atomically activating its quick-linked
         # output. Match the receipt's binary digest rather than its mere presence:
         # a failed activation deliberately leaves a safely stale receipt beside
         # the previous ordinary binary. Keep this guard in the registry as well as
         # the x-run-tests CLI so direct API callers cannot launder a FITH artifact.
-        _reject_matching_fith_receipt(output_path, output_path)
+        _reject_matching_fith_receipts(receipt_sources, output_path)
 
         root = binary_cache_dir(cache_dir)
+        alias_dir = root / name
         saved_at = datetime.now(UTC)
         token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
-        dest_dir = root / name / f"{token}-{uuid4().hex[:12]}"
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = alias_dir / f"{token}-{uuid4().hex[:12]}"
         dest = dest_dir / canonical_source.name
         tmp_dest = dest_dir / f".{canonical_source.name}.{os.getpid()}.tmp"
-        source_identity = _file_identity(output_path)
+        root_created = False
+        alias_dir_created = False
+        dest_dir_created = False
         try:
+            root_created = _ensure_directory(root, parents=True)
+            alias_dir_created = _ensure_directory(alias_dir)
+            dest_dir.mkdir(exist_ok=False)
+            dest_dir_created = True
             shutil.copy2(output_path, tmp_dest)
             # Re-read the receipt before the source identity. This ordering catches
             # both FITH's receipt-before-activation protocol and an ordinary build
             # that removes a receipt while replacing the target during this copy.
-            _reject_matching_fith_receipt(output_path, tmp_dest)
-            if _file_identity(output_path) != source_identity:
+            current_canonical_source = output_path.resolve()
+            current_receipt_sources = receipt_sources
+            if current_canonical_source not in current_receipt_sources:
+                current_receipt_sources += (current_canonical_source,)
+            _reject_matching_fith_receipts(current_receipt_sources, tmp_dest)
+            if (
+                current_canonical_source != canonical_source
+                or _file_identity(output_path) != source_identity
+            ):
                 raise OSError(f"binary changed while it was being saved: {output_path}")
             tmp_dest.replace(dest)
-        finally:
-            with suppress(FileNotFoundError):
-                tmp_dest.unlink()
-            if not dest.exists():
-                # This directory is unique to the attempted save. Best-effort
-                # removal keeps rejected/raced copies from accumulating empty
-                # cache generations; parent removal is safe only while empty.
-                for directory in (dest_dir, dest_dir.parent, root):
-                    with suppress(OSError):
-                        directory.rmdir()
+        except BaseException:
+            _cleanup_failed_save(
+                tmp_dest=tmp_dest,
+                dest=dest,
+                dest_dir=dest_dir,
+                alias_dir=alias_dir,
+                root=root,
+                dest_dir_created=dest_dir_created,
+                alias_dir_created=alias_dir_created,
+                root_created=root_created,
+            )
+            raise
+        with suppress(FileNotFoundError):
+            tmp_dest.unlink()
 
-    worktree_path = _git_root(worktree or output_path.parent)
-    entry = SavedBinary(
-        name=name,
-        path=dest,
-        saved_at=saved_at.isoformat().replace("+00:00", "Z"),
-        source_path=canonical_source,
-        worktree=worktree_path,
-        branch=_git(worktree_path, "branch", "--show-current")
-        if worktree_path
-        else None,
-        commit=_git(worktree_path, "rev-parse", "HEAD") if worktree_path else None,
-        dirty=_git_dirty(worktree_path) if worktree_path else None,
-        git_describe=_git(
-            worktree_path,
-            "describe",
-            "--tags",
-            "--always",
-            "--dirty",
+    try:
+        worktree_path = _git_root(worktree or output_path.parent)
+        entry = SavedBinary(
+            name=name,
+            path=dest,
+            saved_at=saved_at.isoformat().replace("+00:00", "Z"),
+            source_path=canonical_source,
+            worktree=worktree_path,
+            branch=_git(worktree_path, "branch", "--show-current")
+            if worktree_path
+            else None,
+            commit=_git(worktree_path, "rev-parse", "HEAD") if worktree_path else None,
+            dirty=_git_dirty(worktree_path) if worktree_path else None,
+            git_describe=_git(
+                worktree_path,
+                "describe",
+                "--tags",
+                "--always",
+                "--dirty",
+            )
+            if worktree_path
+            else None,
+            build_type=build_type,
+            version=_binary_version(dest),
         )
-        if worktree_path
-        else None,
-        build_type=build_type,
-        version=_binary_version(dest),
-    )
 
-    with _manifest_lock(manifest):
-        data = load_manifest(manifest)
-        data[name] = entry.as_dict()
-        write_manifest(data, manifest)
+        with _manifest_lock(manifest):
+            data = load_manifest(manifest)
+            data[name] = entry.as_dict()
+            write_manifest(data, manifest)
+    except BaseException:
+        if not _manifest_references_destination(name, dest, manifest):
+            _cleanup_failed_save(
+                tmp_dest=tmp_dest,
+                dest=dest,
+                dest_dir=dest_dir,
+                alias_dir=alias_dir,
+                root=root,
+                dest_dir_created=dest_dir_created,
+                alias_dir_created=alias_dir_created,
+                root_created=root_created,
+            )
+        raise
     return entry
 
 
