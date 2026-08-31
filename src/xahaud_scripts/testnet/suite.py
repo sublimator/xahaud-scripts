@@ -589,6 +589,17 @@ class _NameLoadFinder(ast.NodeVisitor):
         if node.id in self.names and isinstance(node.ctx, ast.Load):
             self.found = True
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+        # Evaluating ``holder.value = ...`` loads ``holder`` but does not read,
+        # escape, or consume a generator previously stored on it. A load of the
+        # attribute itself still visits the root name.
+        if isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:  # noqa: N802
+        if isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+
     def _visit_definition_expressions(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
@@ -614,45 +625,375 @@ class _NameLoadFinder(ast.NodeVisitor):
                 self.visit(default)
 
 
+def _stored_generator_nodes(node: ast.AST) -> list[ast.GeneratorExp]:
+    """Return generators whose value is retained without an immediate consumer."""
+    if isinstance(node, ast.GeneratorExp):
+        return [node]
+    if isinstance(node, ast.Lambda):
+        result: list[ast.GeneratorExp] = []
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                result.extend(_stored_generator_nodes(default))
+        return result
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return [
+            generator
+            for value in node.elts
+            for generator in _stored_generator_nodes(value)
+        ]
+    if isinstance(node, ast.BoolOp):
+        return [
+            generator
+            for value in node.values
+            for generator in _stored_generator_nodes(value)
+        ]
+    if isinstance(node, ast.Dict):
+        result = []
+        for key, value in zip(node.keys, node.values, strict=True):
+            if key is not None:
+                result.extend(_stored_generator_nodes(key))
+            result.extend(_stored_generator_nodes(value))
+        return result
+    if isinstance(node, ast.IfExp):
+        return [
+            *_stored_generator_nodes(node.body),
+            *_stored_generator_nodes(node.orelse),
+        ]
+    if isinstance(node, (ast.NamedExpr, ast.Starred)):
+        return _stored_generator_nodes(node.value)
+    return []
+
+
+def _target_root_names(node: ast.AST) -> set[str]:
+    """Return module-visible roots capable of retaining an assigned value."""
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Attribute, ast.Subscript, ast.Starred)):
+        return _target_root_names(node.value)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return set().union(*(_target_root_names(item) for item in node.elts))
+    return set()
+
+
+def _named_storage_handle_names(node: ast.AST) -> set[str]:
+    """Find assignment-expression names that retain a stored generator value."""
+    if isinstance(node, ast.NamedExpr):
+        return _target_root_names(node.target) | _named_storage_handle_names(node.value)
+    if isinstance(node, ast.GeneratorExp):
+        return set()
+    if isinstance(node, ast.Lambda):
+        return set().union(
+            *(
+                _named_storage_handle_names(default)
+                for default in (*node.args.defaults, *node.args.kw_defaults)
+                if default is not None
+            )
+        )
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return set().union(*(_named_storage_handle_names(item) for item in node.elts))
+    if isinstance(node, ast.BoolOp):
+        return set().union(
+            *(_named_storage_handle_names(value) for value in node.values)
+        )
+    if isinstance(node, ast.Dict):
+        return set().union(
+            *(
+                _named_storage_handle_names(item)
+                for item in (*node.keys, *node.values)
+                if item is not None
+            )
+        )
+    if isinstance(node, ast.IfExp):
+        return _named_storage_handle_names(node.body) | _named_storage_handle_names(
+            node.orelse
+        )
+    if isinstance(node, ast.Starred):
+        return _named_storage_handle_names(node.value)
+    return set()
+
+
+class _GeneratorStorageFinder(ast.NodeVisitor):
+    """Find import-time generator storage within one module statement."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.generators: set[int] = set()
+        self.handles: set[str] = set()
+        self.same_statement_handles: set[str] = set()
+
+    def _record(
+        self,
+        values: tuple[ast.AST, ...],
+        *,
+        handles: set[str],
+        same_statement_handles: set[str],
+    ) -> None:
+        matched = False
+        for value in values:
+            for generator in _stored_generator_nodes(value):
+                finder = _ImportTimeBindingFinder(self.name)
+                finder.visit(generator)
+                if finder.found:
+                    self.generators.add(id(generator))
+                    matched = True
+        if matched:
+            self.handles.update(handles)
+            self.same_statement_handles.update(same_statement_handles)
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        handles = set().union(
+            *(_target_root_names(target) for target in node.targets)
+        ) | _named_storage_handle_names(node.value)
+        self._record(
+            (node.value,),
+            handles=handles,
+            same_statement_handles=handles,
+        )
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        if node.value is None:
+            return
+        handles = _target_root_names(node.target) | _named_storage_handle_names(
+            node.value
+        )
+        self._record(
+            (node.value,),
+            handles=handles,
+            same_statement_handles=handles,
+        )
+
+    def _visit_definition_defaults(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        defaults = tuple(
+            default
+            for default in (*node.args.defaults, *node.args.kw_defaults)
+            if default is not None
+        )
+        self._record(
+            defaults,
+            handles={node.name}.union(
+                *(_named_storage_handle_names(default) for default in defaults)
+            ),
+            same_statement_handles=set(),
+        )
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._visit_definition_defaults(node)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        self._visit_definition_defaults(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        # Class bodies execute, but assignment expressions in comprehensions
+        # are prohibited in a class scope. Stored module generators loaded by a
+        # class body are handled by _NameLoadFinder instead.
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+        return
+
+    def visit_Expr(self, node: ast.Expr) -> None:  # noqa: N802
+        # A bare generator is created and discarded without running its body.
+        self._record(
+            (node.value,),
+            handles=_named_storage_handle_names(node.value),
+            same_statement_handles=_named_storage_handle_names(node.value),
+        )
+
+
+class _AssignedHandleFinder(ast.NodeVisitor):
+    """Collect names that may retain an already tracked generator handle."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        for target in node.targets:
+            self.names.update(_target_root_names(target))
+        self.visit(node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        self.names.update(_target_root_names(node.target))
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:  # noqa: N802
+        self.names.update(_target_root_names(node.target))
+        self.visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        self.names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+    def _visit_comprehension(
+        self,
+        value_nodes: tuple[ast.AST, ...],
+        generators: list[ast.comprehension],
+    ) -> None:
+        for value in value_nodes:
+            self.visit(value)
+        for generator in generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.elt,), node.generators)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.elt,), node.generators)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+        self.visit(node.generators[0].iter)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
+        self._visit_comprehension((node.key, node.value), node.generators)
+
+
+def _combine_handle_states(states: list[tuple[bool, bool]]) -> tuple[bool, bool]:
+    """Combine ``(loads_handle, storage_only)`` expression classifications."""
+    found = any(loads for loads, _storage_only in states)
+    storage_only = all(not loads or safe for loads, safe in states)
+    return found, storage_only
+
+
+def _storage_expression_handle_state(
+    node: ast.AST, handles: set[str]
+) -> tuple[bool, bool]:
+    """Classify whether an expression only retains tracked generator handles."""
+    if isinstance(node, ast.Name):
+        found = node.id in handles and isinstance(node.ctx, ast.Load)
+        return found, True
+    if isinstance(node, (ast.Constant, ast.Slice)):
+        return False, True
+    if isinstance(node, (ast.Attribute, ast.Subscript, ast.Starred, ast.NamedExpr)):
+        return _storage_expression_handle_state(node.value, handles)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return _combine_handle_states(
+            [_storage_expression_handle_state(item, handles) for item in node.elts]
+        )
+    if isinstance(node, ast.Dict):
+        return _combine_handle_states(
+            [
+                _storage_expression_handle_state(item, handles)
+                for item in (*node.keys, *node.values)
+                if item is not None
+            ]
+        )
+    if isinstance(node, ast.BoolOp):
+        return _combine_handle_states(
+            [_storage_expression_handle_state(value, handles) for value in node.values]
+        )
+    if isinstance(node, ast.IfExp):
+        return _combine_handle_states(
+            [
+                _storage_expression_handle_state(node.test, handles),
+                _storage_expression_handle_state(node.body, handles),
+                _storage_expression_handle_state(node.orelse, handles),
+            ]
+        )
+    if isinstance(node, ast.Lambda):
+        return _combine_handle_states(
+            [
+                _storage_expression_handle_state(default, handles)
+                for default in (*node.args.defaults, *node.args.kw_defaults)
+                if default is not None
+            ]
+        )
+    if isinstance(node, ast.GeneratorExp):
+        # Its body remains deferred and the new generator retains anything it
+        # references. Propagate that dependency to the assignment target.
+        finder = _NameLoadFinder(handles)
+        finder.visit(node)
+        return finder.found, True
+
+    finder = _NameLoadFinder(handles)
+    finder.visit(node)
+    return finder.found, not finder.found
+
+
+def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | None:
+    """Return new aliases if a statement stores handles without consuming them."""
+    values: tuple[ast.AST, ...]
+    extra_handles: set[str] = set()
+    if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
+        if statement.value is None:
+            return None
+        values = (statement.value,)
+    elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        values = tuple(statement.decorator_list) + tuple(
+            default
+            for default in (*statement.args.defaults, *statement.args.kw_defaults)
+            if default is not None
+        )
+        extra_handles = {statement.name}.union(
+            *(_named_storage_handle_names(value) for value in values)
+        )
+    else:
+        return None
+
+    found, storage_only = _combine_handle_states(
+        [_storage_expression_handle_state(value, handles) for value in values]
+    )
+    if not found or not storage_only:
+        return None
+    assigned = _AssignedHandleFinder()
+    assigned.visit(statement)
+    return assigned.names | extra_handles
+
+
 def _deferred_generator_bindings(
     tree: ast.Module, name: str
 ) -> tuple[set[int], set[int]]:
     """Find stored generators and later statements that may consume them."""
     deferred_generators: set[int] = set()
     consumer_statements: set[int] = set()
-    for index, statement in enumerate(tree.body):
-        generator: ast.GeneratorExp | None = None
-        targets: set[str] = set()
-        if isinstance(statement, ast.Assign) and isinstance(
-            statement.value, ast.GeneratorExp
-        ):
-            if all(isinstance(target, ast.Name) for target in statement.targets):
-                generator = statement.value
-                targets = {
-                    target.id
-                    for target in statement.targets
-                    if isinstance(target, ast.Name)
-                }
-        elif (
-            isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-            and isinstance(statement.value, ast.GeneratorExp)
-        ):
-            generator = statement.value
-            targets = {statement.target.id}
+    storages: list[_GeneratorStorageFinder] = []
+    for statement in tree.body:
+        storage = _GeneratorStorageFinder(name)
+        storage.visit(statement)
+        storages.append(storage)
+        deferred_generators.update(storage.generators)
 
-        if generator is None:
-            continue
-        binding_finder = _ImportTimeBindingFinder(name)
-        binding_finder.visit(generator)
-        if not binding_finder.found:
-            continue
-        deferred_generators.add(id(generator))
-        for later_statement in tree.body[index + 1 :]:
-            load_finder = _NameLoadFinder(targets)
-            load_finder.visit(later_statement)
-            if load_finder.found:
-                consumer_statements.add(id(later_statement))
+    tracked_handles: set[str] = set()
+    for statement, storage in zip(tree.body, storages, strict=True):
+        load_finder = _NameLoadFinder(tracked_handles)
+        load_finder.visit(statement)
+        local_load_finder = _NameLoadFinder(storage.same_statement_handles)
+        local_load_finder.visit(statement)
+        aliases = (
+            _pure_handle_storage(statement, tracked_handles)
+            if load_finder.found
+            else None
+        )
+        if aliases is not None:
+            tracked_handles.update(aliases)
+        elif load_finder.found or local_load_finder.found:
+            consumer_statements.add(id(statement))
+            assigned = _AssignedHandleFinder()
+            assigned.visit(statement)
+            tracked_handles.update(assigned.names)
+        tracked_handles.update(storage.handles)
     return deferred_generators, consumer_statements
 
 

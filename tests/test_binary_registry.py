@@ -235,6 +235,33 @@ def test_save_binary_copy_failure_preserves_preexisting_empty_cache_dirs(
     assert not list(alias_dir.iterdir())
 
 
+def test_save_binary_copy_failure_preserves_error_if_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "rippled"
+    _write_fake_binary(source)
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError("copy failed")
+
+    def fail_cleanup(**_kwargs: object) -> None:
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(binary_registry.shutil, "copy2", fail_copy)
+    monkeypatch.setattr(binary_registry, "_cleanup_failed_save", fail_cleanup)
+
+    with pytest.raises(OSError, match="copy failed") as raised:
+        save_binary(
+            "@copy-failed",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert any("cleanup failed" in note for note in raised.value.__notes__)
+
+
 def test_save_binary_rejects_non_executable_file(tmp_path: Path) -> None:
     source = tmp_path / "rippled"
     source.write_text("")
@@ -560,6 +587,41 @@ def test_save_binary_build_unlock_failure_cleans_unpublished_generation(
 
     assert not manifest.exists()
     assert not cache.exists()
+
+
+def test_save_binary_build_unlock_failure_preserves_error_if_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    (source.parent / ".x-build-lock").write_text("builder\n")
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(_handle, operation: int) -> None:
+            if operation == FakeFcntl.LOCK_UN:
+                raise OSError("build unlock failed")
+
+    def fail_cleanup(**_kwargs: object) -> None:
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+    monkeypatch.setattr(binary_registry, "_cleanup_failed_save", fail_cleanup)
+
+    with pytest.raises(OSError, match="build unlock failed") as raised:
+        save_binary(
+            "@unlock-failed",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert any("cleanup failed" in note for note in raised.value.__notes__)
 
 
 def test_save_binary_ignores_nonzero_version_output(tmp_path: Path) -> None:

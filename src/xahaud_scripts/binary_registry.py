@@ -288,6 +288,7 @@ def save_binary(
     output_path = Path(os.path.abspath(source.expanduser()))
 
     generation_ready = False
+    published = False
     try:
         with _build_output_locks(output_path) as locked_canonical_source:
             # Recheck after acquiring the build lock: the output may have changed
@@ -348,39 +349,27 @@ def save_binary(
                     )
                 tmp_dest.replace(dest)
                 generation_ready = True
-            except BaseException:
-                _cleanup_failed_save(
-                    tmp_dest=tmp_dest,
-                    dest=dest,
-                    dest_dir=dest_dir,
-                    alias_dir=alias_dir,
-                    root=root,
-                    dest_dir_created=dest_dir_created,
-                    alias_dir_created=alias_dir_created,
-                    root_created=root_created,
-                )
+            except BaseException as exc:
+                try:
+                    _cleanup_failed_save(
+                        tmp_dest=tmp_dest,
+                        dest=dest,
+                        dest_dir=dest_dir,
+                        alias_dir=alias_dir,
+                        root=root,
+                        dest_dir_created=dest_dir_created,
+                        alias_dir_created=alias_dir_created,
+                        root_created=root_created,
+                    )
+                except BaseException as cleanup_exc:
+                    exc.add_note(
+                        "Additionally failed to clean incomplete saved binary "
+                        f"generation: {cleanup_exc}"
+                    )
                 raise
             with suppress(FileNotFoundError):
                 tmp_dest.unlink()
-    except BaseException:
-        # Releasing the build lock is still part of the pre-publication phase.
-        # If it fails after the copy was activated, do not leak an unreferenced
-        # cache generation that can never be reached through the manifest.
-        if generation_ready:
-            _cleanup_failed_save(
-                tmp_dest=tmp_dest,
-                dest=dest,
-                dest_dir=dest_dir,
-                alias_dir=alias_dir,
-                root=root,
-                dest_dir_created=dest_dir_created,
-                alias_dir_created=alias_dir_created,
-                root_created=root_created,
-            )
-        raise
 
-    published = False
-    try:
         worktree_path = _git_root(worktree or output_path.parent)
         entry = SavedBinary(
             name=name,
@@ -420,18 +409,24 @@ def save_binary(
                 raise
             else:
                 published = True
-    except BaseException:
-        if not published:
-            _cleanup_failed_save(
-                tmp_dest=tmp_dest,
-                dest=dest,
-                dest_dir=dest_dir,
-                alias_dir=alias_dir,
-                root=root,
-                dest_dir_created=dest_dir_created,
-                alias_dir_created=alias_dir_created,
-                root_created=root_created,
-            )
+    except BaseException as exc:
+        if generation_ready and not published:
+            try:
+                _cleanup_failed_save(
+                    tmp_dest=tmp_dest,
+                    dest=dest,
+                    dest_dir=dest_dir,
+                    alias_dir=alias_dir,
+                    root=root,
+                    dest_dir_created=dest_dir_created,
+                    alias_dir_created=alias_dir_created,
+                    root_created=root_created,
+                )
+            except BaseException as cleanup_exc:
+                exc.add_note(
+                    "Additionally failed to clean unpublished saved binary "
+                    f"generation: {cleanup_exc}"
+                )
         raise
     return entry
 
