@@ -680,8 +680,15 @@ def _stored_generator_nodes(node: ast.AST) -> list[ast.GeneratorExp]:
             *_stored_generator_nodes(node.body),
             *_stored_generator_nodes(node.orelse),
         ]
-    if isinstance(node, (ast.NamedExpr, ast.Starred)):
+    if isinstance(node, ast.NamedExpr):
         return _stored_generator_nodes(node.value)
+    if isinstance(node, ast.Starred):
+        # Starred displays consume their operand while building the container;
+        # a direct generator here is not deferred storage. Unpacking a literal
+        # container retains any generator values inside that container.
+        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+            return _stored_generator_nodes(node.value)
+        return []
     return []
 
 
@@ -694,6 +701,26 @@ def _target_root_names(node: ast.AST) -> set[str]:
     if isinstance(node, (ast.Tuple, ast.List)):
         return set().union(*(_target_root_names(item) for item in node.elts))
     return set()
+
+
+def _target_requires_unpack(node: ast.AST) -> bool:
+    """Return whether assignment to this target iterates the source value."""
+    return isinstance(node, (ast.Tuple, ast.List))
+
+
+def _direct_generator_value(node: ast.AST) -> bool:
+    """Return whether an expression itself can produce a generator value."""
+    if isinstance(node, ast.GeneratorExp):
+        return True
+    if isinstance(node, ast.NamedExpr):
+        return _direct_generator_value(node.value)
+    if isinstance(node, ast.BoolOp):
+        return any(_direct_generator_value(value) for value in node.values)
+    if isinstance(node, ast.IfExp):
+        return _direct_generator_value(node.body) or _direct_generator_value(
+            node.orelse
+        )
+    return False
 
 
 def _named_storage_handle_names(node: ast.AST) -> set[str]:
@@ -764,6 +791,11 @@ class _GeneratorStorageFinder(ast.NodeVisitor):
         return matched
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        if any(_target_requires_unpack(target) for target in node.targets) and (
+            _direct_generator_value(node.value)
+        ):
+            # Iterable assignment immediately consumes a direct generator RHS.
+            return
         handles = set().union(
             *(_target_root_names(target) for target in node.targets)
         ) | _named_storage_handle_names(node.value)
@@ -914,8 +946,17 @@ def _storage_expression_handle_state(
         return found, True
     if isinstance(node, (ast.Constant, ast.Slice)):
         return False, True
-    if isinstance(node, (ast.Attribute, ast.Starred, ast.NamedExpr)):
+    if isinstance(node, (ast.Attribute, ast.NamedExpr)):
         return _storage_expression_handle_state(node.value, handles)
+    if isinstance(node, ast.Starred):
+        # Starred displays unpack their operand immediately. A direct tracked
+        # handle is therefore iterated rather than merely retained. Unpacking
+        # a literal container merely copies the tracked values it contains.
+        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+            return _storage_expression_handle_state(node.value, handles)
+        finder = _NameLoadFinder(handles)
+        finder.visit(node.value)
+        return finder.found, not finder.found
     if isinstance(node, ast.Subscript):
         value_found, value_storage_only = _storage_expression_handle_state(
             node.value, handles
@@ -984,6 +1025,21 @@ def _storage_expression_handle_state(
     return finder.found, not finder.found
 
 
+def _direct_handle_value(node: ast.AST, handles: set[str]) -> bool:
+    """Return whether an expression may itself produce one tracked handle."""
+    if isinstance(node, ast.Name):
+        return node.id in handles and isinstance(node.ctx, ast.Load)
+    if isinstance(node, (ast.Attribute, ast.Subscript, ast.NamedExpr)):
+        return _direct_handle_value(node.value, handles)
+    if isinstance(node, ast.BoolOp):
+        return any(_direct_handle_value(value, handles) for value in node.values)
+    if isinstance(node, ast.IfExp):
+        return _direct_handle_value(node.body, handles) or _direct_handle_value(
+            node.orelse, handles
+        )
+    return False
+
+
 def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | None:
     """Return new aliases if a statement stores handles without consuming them."""
     values: tuple[ast.AST, ...]
@@ -991,13 +1047,32 @@ def _pure_handle_storage(statement: ast.stmt, handles: set[str]) -> set[str] | N
     if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
         if statement.value is None:
             return None
+        if (
+            isinstance(statement, ast.Assign)
+            and any(_target_requires_unpack(target) for target in statement.targets)
+            and _direct_handle_value(statement.value, handles)
+        ):
+            return None
         values = (statement.value,)
     elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        values = tuple(statement.decorator_list) + tuple(
+        defaults = tuple(
             default
             for default in (*statement.args.defaults, *statement.args.kw_defaults)
             if default is not None
         )
+        if statement.decorator_list:
+            # Decorator callables receive the completed function and can inspect
+            # any tracked generators retained in its defaults. A tracked value
+            # used as the decorator is itself invoked as well.
+            decorator_finder = _NameLoadFinder(handles)
+            for decorator in statement.decorator_list:
+                decorator_finder.visit(decorator)
+            default_finder = _NameLoadFinder(handles)
+            for default in defaults:
+                default_finder.visit(default)
+            if decorator_finder.found or default_finder.found:
+                return None
+        values = tuple(statement.decorator_list) + defaults
         extra_handles = {statement.name}.union(
             *(_named_storage_handle_names(value) for value in values)
         )

@@ -932,6 +932,92 @@ def test_preflight_rejects_generator_consumed_in_tracked_container_index(
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "deferred = ((scenario := None) for _ in [0])\n"
+            "async def scenario(ctx, log):\n"
+            "    pass\n"
+            "alias = [*deferred]\n"
+        ),
+        (
+            "async def scenario(ctx, log):\n"
+            "    pass\n"
+            "alias = [*((scenario := None) for _ in [0])]\n"
+        ),
+    ],
+    ids=["stored", "inline"],
+)
+def test_preflight_rejects_generator_consumed_by_starred_unpack(
+    source: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "starred_unpack_consumer.py"
+    script.write_text(source)
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: starred, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_allows_generator_retained_inside_starred_container(
+    tmp_path: Path,
+):
+    script = tmp_path / "starred_container_storage.py"
+    script.write_text(
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "alias = [*(((scenario := None) for _ in [0]),)]\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: starred, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+@pytest.mark.parametrize("inline", [False, True], ids=["stored", "inline"])
+def test_preflight_rejects_generator_consumed_by_assignment_unpack(
+    inline: bool,
+    tmp_path: Path,
+):
+    script = tmp_path / "assignment_unpack_consumer.py"
+    storage = "deferred = ((scenario := None) for _ in [0])\n" if not inline else ""
+    value = "((scenario := None) for _ in [0])" if inline else "deferred"
+    script.write_text(
+        storage
+        + "async def scenario(ctx, log):\n"
+        + "    pass\n"
+        + f"[alias] = {value}\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_rejects_tracked_default_consumed_by_decorator(tmp_path: Path):
+    script = tmp_path / "tracked_default_decorator.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "def consume_default(fn):\n"
+        "    next(fn.__defaults__[0])\n"
+        "    return fn\n"
+        "@consume_default\n"
+        "def helper(value=deferred):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: decorated, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+@pytest.mark.parametrize(
     "expression",
     ["holder or None", "deferred if holder else None"],
     ids=["boolean", "conditional"],
@@ -1137,6 +1223,67 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
     suite = SuiteConfig.from_yaml(suite_file)
     assert [test["name"] for test in _expand_tests(suite, tmp_path)] == [
         "dynamic@decorated"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("storage", "consumer", "label"),
+    [
+        (
+            "deferred = ((variants := [{'label': 'starred'}]) for _ in [0])\n",
+            "alias = [*deferred]\n",
+            "starred",
+        ),
+        (
+            "",
+            "alias = [*((variants := [{'label': 'inline'}]) for _ in [0])]\n",
+            "inline",
+        ),
+        (
+            "deferred = ((variants := [{'label': 'unpack'}]) for _ in [0])\n",
+            "[alias] = deferred\n",
+            "unpack",
+        ),
+        (
+            "",
+            "[alias] = ((variants := [{'label': 'inline_unpack'}]) for _ in [0])\n",
+            "inline_unpack",
+        ),
+        (
+            "deferred = ((variants := [{'label': 'decorated'}]) for _ in [0])\n",
+            "def consume_default(fn):\n"
+            "    next(fn.__defaults__[0])\n"
+            "    return fn\n"
+            "@consume_default\n"
+            "def helper(value=deferred):\n"
+            "    pass\n",
+            "decorated",
+        ),
+    ],
+    ids=[
+        "starred-unpack",
+        "inline-starred-unpack",
+        "assignment-unpack",
+        "inline-assignment-unpack",
+        "tracked-default-decorator",
+    ],
+)
+def test_stored_generator_consumers_expose_variants(
+    storage: str,
+    consumer: str,
+    label: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "stored_generator_variants.py"
+    script.write_text(
+        storage + consumer + "async def scenario(ctx, log, **params):\n" + "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    suite = SuiteConfig.from_yaml(suite_file)
+    assert [test["name"] for test in _expand_tests(suite, tmp_path)] == [
+        f"dynamic@{label}"
     ]
 
 

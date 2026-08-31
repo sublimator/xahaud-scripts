@@ -253,7 +253,16 @@ def _build_output_lock(source: Path):
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
             yield
-        finally:
+        except BaseException as exc:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+            except BaseException as unlock_exc:
+                exc.add_note(
+                    "Additionally failed to release the build-output lock: "
+                    f"{unlock_exc}"
+                )
+            raise
+        else:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
@@ -398,6 +407,10 @@ def save_binary(
         with _manifest_lock(manifest):
             data = load_manifest(manifest)
             data[name] = entry.as_dict()
+            # A signal can arrive after the atomic replacement succeeds but
+            # before this function returns to set a flag. Fail safe across that
+            # boundary, then prove non-publication under the lock on errors.
+            published = True
             try:
                 write_manifest(data, manifest)
             except BaseException as exc:
@@ -407,7 +420,6 @@ def save_binary(
                 # supersedes the alias before this caller handles the error.
                 # Assume publication succeeded until inspection proves otherwise:
                 # reconciliation failure must not make the manifest dangle.
-                published = True
                 try:
                     published = _manifest_references_destination(name, dest, manifest)
                 except BaseException as reconciliation_exc:
@@ -485,7 +497,17 @@ def _manifest_lock(path: Path | None = None):
             fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
             yield
-        finally:
+        except BaseException as exc:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                except BaseException as unlock_exc:
+                    exc.add_note(
+                        "Additionally failed to release the manifest lock: "
+                        f"{unlock_exc}"
+                    )
+            raise
+        else:
             if fcntl is not None:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 

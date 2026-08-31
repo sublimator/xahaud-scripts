@@ -146,6 +146,39 @@ def test_save_binary_manifest_failure_does_not_change_active_alias(
     assert set((cache / "rng-ce").iterdir()) == generations_before
 
 
+def test_save_binary_manifest_failure_preserves_error_if_unlock_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    manifest = tmp_path / "binaries.json"
+    cache = tmp_path / "cache"
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(_handle, operation: int) -> None:
+            if operation == FakeFcntl.LOCK_UN:
+                raise OSError("manifest unlock failed")
+
+    def fail_write(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("manifest write failed")
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+    monkeypatch.setattr(binary_registry, "write_manifest", fail_write)
+
+    with pytest.raises(ValueError, match="manifest write failed") as raised:
+        save_binary("@rng-ce", source, manifest=manifest, cache_dir=cache)
+
+    assert any("manifest unlock failed" in note for note in raised.value.__notes__)
+    assert not manifest.exists()
+    assert not cache.exists()
+
+
 def test_save_binary_reconciliation_failure_preserves_published_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -293,6 +326,42 @@ def test_save_binary_copy_failure_preserves_error_if_cleanup_fails(
         )
 
     assert any("cleanup failed" in note for note in raised.value.__notes__)
+
+
+def test_save_binary_copy_failure_preserves_error_if_build_unlock_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    (source.parent / ".x-build-lock").write_text("builder\n")
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(_handle, operation: int) -> None:
+            if operation == FakeFcntl.LOCK_UN:
+                raise OSError("build unlock failed")
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("copy failed")
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+    monkeypatch.setattr(binary_registry.shutil, "copy2", fail_copy)
+
+    with pytest.raises(ValueError, match="copy failed") as raised:
+        save_binary(
+            "@copy-failed",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert any("build unlock failed" in note for note in raised.value.__notes__)
+    assert not (tmp_path / "cache").exists()
 
 
 def test_save_binary_rejects_non_executable_file(tmp_path: Path) -> None:
