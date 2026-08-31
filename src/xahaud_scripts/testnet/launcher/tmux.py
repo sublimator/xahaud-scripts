@@ -37,6 +37,17 @@ def _process_output(value: str | bytes | None) -> str:
     return value.strip() if value else ""
 
 
+def _tmux_session_is_missing(result: subprocess.CompletedProcess[Any]) -> bool:
+    """Recognize tmux's explicit idempotent shutdown responses."""
+    message = "\n".join(
+        (_process_output(result.stdout), _process_output(result.stderr))
+    ).lower()
+    return any(
+        marker in message
+        for marker in ("can't find session", "no server running", "no sessions")
+    )
+
+
 # Shell function injected into each pane before launching a node.
 # Saves PID and exit status to the node's working directory.
 # Compatible with bash and zsh. Process runs in foreground (output
@@ -785,33 +796,39 @@ end tell
                 info = json.load(f)
             killed = len(info.get("nodes", []))
 
-        kill_attempt_completed = False
+        session_gone = False
         try:
             # Kill the entire tmux session - this terminates all panes and processes
             result = subprocess.run(
                 ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
                 capture_output=True,
             )
-            kill_attempt_completed = True
 
             if result.returncode == 0:
+                session_gone = True
                 logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
-            else:
-                # Session might not exist (already killed or never created)
+            elif _tmux_session_is_missing(result):
+                session_gone = True
                 logger.debug(
                     f"tmux session '{TMUX_SESSION_NAME}' not found or already killed"
                 )
                 killed = 0
+            else:
+                # Dispatching tmux is not proof that it completed the kill. Keep
+                # ownership state and stop Network.teardown() from deleting node
+                # directories while their processes may still be running.
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    result.args,
+                    output=result.stdout,
+                    stderr=result.stderr,
+                )
 
             # Close the iTerm window if one was created
             self._close_iterm_window(base_dir)
             return killed
         finally:
-            # Preserve owner tokens and commands when tmux could not even run:
-            # callers can fix the environment and retry without losing the only
-            # safe handles to the still-live panes. Once tmux returns, retain the
-            # legacy interpretation that a non-zero result means no session.
-            if kill_attempt_completed:
+            if session_gone:
                 self._reset_session_state()
 
     def _reset_session_state(self) -> None:

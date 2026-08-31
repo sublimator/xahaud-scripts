@@ -862,6 +862,60 @@ def test_tmux_shutdown_preserves_state_when_tmux_cannot_run(
     assert launcher._base_dir == tmp_path
 
 
+def test_tmux_shutdown_preserves_state_when_kill_command_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher._session_created = True
+    launcher._base_dir = tmp_path
+    launcher._pane_ids = {0: "%7"}
+    launcher._pane_owner_tokens = {0: "owner-token"}
+    launcher._launch_commands = {0: " command"}
+    before = launcher.launch_state
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 1, stdout=b"", stderr=b"server error"
+        ),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        launcher.shutdown(tmp_path, cast(Any, object()))
+
+    assert raised.value.returncode == 1
+    assert launcher.launch_state == before
+    assert launcher._session_created is True
+
+
+def test_tmux_shutdown_resets_state_when_session_is_already_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher._session_created = True
+    launcher._base_dir = tmp_path
+    launcher._pane_ids = {0: "%7"}
+    launcher._pane_owner_tokens = {0: "owner-token"}
+    launcher._launch_commands = {0: " command"}
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args,
+            1,
+            stdout=b"",
+            stderr=b"can't find session: xahaud-testnet",
+        ),
+    )
+
+    assert launcher.shutdown(tmp_path, cast(Any, object())) == 0
+    assert launcher.launch_state == {
+        "launcher": "tmux",
+        "pane_ids": {},
+        "pane_owner_tokens": {},
+        "launch_commands": {},
+    }
+    assert launcher._session_created is False
+
+
 def test_tmux_shutdown_resets_state_when_iterm_cleanup_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

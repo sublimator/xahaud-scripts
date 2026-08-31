@@ -423,9 +423,15 @@ class _ImportTimeBindingFinder(ast.NodeVisitor):
     are skipped, while expressions evaluated while defining them are retained.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        deferred_generators: set[int] | None = None,
+    ) -> None:
         self.name = name
         self.found = False
+        self.deferred_generators = deferred_generators or set()
 
     def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
         if node.id == self.name and isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -528,10 +534,15 @@ class _ImportTimeBindingFinder(ast.NodeVisitor):
         self._visit_comprehension((node.elt,), node.generators)
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
-        # Creating a generator evaluates only the outermost iterable. Its
-        # element, filters, and nested iterables remain deferred until
-        # iteration, so bindings there do not replace a module name at import.
-        self.visit(node.generators[0].iter)
+        if id(node) in self.deferred_generators:
+            # Creating a generator evaluates only the outermost iterable. Its
+            # element, filters, and nested iterables remain deferred until
+            # iteration; a later consumer is recorded as a separate binding event.
+            self.visit(node.generators[0].iter)
+        else:
+            # Calls and later module statements may iterate a generator during
+            # import. Conservatively retain bindings from bodies that can escape.
+            self._visit_comprehension((node.elt,), node.generators)
 
     def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
         self._visit_comprehension((node.key, node.value), node.generators)
@@ -567,8 +578,94 @@ class _ImportTimeBindingFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _statement_binds_name(statement: ast.stmt, name: str) -> bool:
-    finder = _ImportTimeBindingFinder(name)
+class _NameLoadFinder(ast.NodeVisitor):
+    """Find a later reference that may make a stored generator escape."""
+
+    def __init__(self, names: set[str]) -> None:
+        self.names = names
+        self.found = False
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        if node.id in self.names and isinstance(node.ctx, ast.Load):
+            self.found = True
+
+    def _visit_definition_expressions(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        # Decorators and defaults execute while the function is defined; its
+        # body remains deferred until a later call.
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._visit_definition_expressions(node)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        self._visit_definition_expressions(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+
+def _deferred_generator_bindings(
+    tree: ast.Module, name: str
+) -> tuple[set[int], set[int]]:
+    """Find stored generators and later statements that may consume them."""
+    deferred_generators: set[int] = set()
+    consumer_statements: set[int] = set()
+    for index, statement in enumerate(tree.body):
+        generator: ast.GeneratorExp | None = None
+        targets: set[str] = set()
+        if isinstance(statement, ast.Assign) and isinstance(
+            statement.value, ast.GeneratorExp
+        ):
+            if all(isinstance(target, ast.Name) for target in statement.targets):
+                generator = statement.value
+                targets = {
+                    target.id
+                    for target in statement.targets
+                    if isinstance(target, ast.Name)
+                }
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and isinstance(statement.value, ast.GeneratorExp)
+        ):
+            generator = statement.value
+            targets = {statement.target.id}
+
+        if generator is None:
+            continue
+        binding_finder = _ImportTimeBindingFinder(name)
+        binding_finder.visit(generator)
+        if not binding_finder.found:
+            continue
+        deferred_generators.add(id(generator))
+        for later_statement in tree.body[index + 1 :]:
+            load_finder = _NameLoadFinder(targets)
+            load_finder.visit(later_statement)
+            if load_finder.found:
+                consumer_statements.add(id(later_statement))
+    return deferred_generators, consumer_statements
+
+
+def _statement_binds_name(
+    statement: ast.stmt,
+    name: str,
+    *,
+    deferred_generators: set[int] | None = None,
+) -> bool:
+    finder = _ImportTimeBindingFinder(
+        name,
+        deferred_generators=deferred_generators,
+    )
     finder.visit(statement)
     return finder.found
 
@@ -588,7 +685,16 @@ def _script_may_define_variants(script_path: Path) -> bool:
         # Preserve the existing load error for unreadable/malformed scripts;
         # whole-suite preflight will still stop before lifecycle mutation.
         return True
-    return any(_statement_binds_name(statement, "variants") for statement in tree.body)
+    deferred_generators, generator_consumers = _deferred_generator_bindings(
+        tree, "variants"
+    )
+    return any(
+        id(statement) in generator_consumers
+        or _statement_binds_name(
+            statement, "variants", deferred_generators=deferred_generators
+        )
+        for statement in tree.body
+    )
 
 
 def _expand_tests(
@@ -1560,11 +1666,16 @@ def _validate_scenario_contract(
             f"Test '{test_name}' script failed preflight ({script_path}): {exc}"
         ) from exc
 
+    deferred_generators, generator_consumers = _deferred_generator_bindings(
+        tree, "scenario"
+    )
     active_definition: ast.AsyncFunctionDef | None = None
     for statement in tree.body:
         if isinstance(statement, ast.AsyncFunctionDef) and statement.name == "scenario":
             active_definition = statement
-        elif _statement_binds_name(statement, "scenario"):
+        elif id(statement) in generator_consumers or _statement_binds_name(
+            statement, "scenario", deferred_generators=deferred_generators
+        ):
             # The final import-time binding is what load_scenario_script sees.
             # A direct assignment, sync definition, import, delete, loop target,
             # or conditional binding after the async def invalidates it.

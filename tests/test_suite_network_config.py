@@ -689,6 +689,91 @@ def test_preflight_ignores_binding_deferred_in_generator_body(tmp_path: Path):
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
 
 
+@pytest.mark.parametrize(
+    "consumption",
+    [
+        "eager = list((scenario := None) for _ in [0])\n",
+        "deferred = ((scenario := None) for _ in [0])\nnext(deferred)\n",
+    ],
+    ids=["immediate-consumer", "later-consumer"],
+)
+def test_preflight_rejects_generator_binding_consumed_during_import(
+    consumption: str, tmp_path: Path
+):
+    script = tmp_path / "consumed_generator.py"
+    script.write_text("async def scenario(ctx, log):\n    pass\n" + consumption)
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: consumed, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_attributes_deferred_generator_binding_to_later_consumer(
+    tmp_path: Path,
+):
+    script = tmp_path / "late_consumed_generator.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "next(deferred)\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: consumed, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "def helper():\n    next(deferred)\n",
+        "async def helper():\n    next(deferred)\n",
+        "helper = lambda: next(deferred)\n",
+    ],
+    ids=["function", "async-function", "lambda"],
+)
+def test_preflight_ignores_generator_load_in_deferred_helper_body(
+    helper: str, tmp_path: Path
+):
+    script = tmp_path / "deferred_helper.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n" + helper
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: helper, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        "def helper(value=next(deferred)):\n    pass\n",
+        "class Helper:\n    next(deferred)\n",
+    ],
+    ids=["function-default", "class-body"],
+)
+def test_preflight_rejects_generator_load_in_definition_time_expression(
+    consumer: str, tmp_path: Path
+):
+    script = tmp_path / "definition_time_consumer.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n" + consumer
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: consumer, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
 def test_preflight_rejects_decorated_scenario_without_executing_decorator(
     tmp_path: Path,
 ):
@@ -777,6 +862,23 @@ def test_dynamic_variants_still_execute_for_expansion(tmp_path: Path):
 
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
     assert marker.read_text() == "executed"
+
+
+def test_generator_binding_consumed_during_import_exposes_variants(tmp_path: Path):
+    script = tmp_path / "generator_variants.py"
+    script.write_text(
+        "deferred = ((variants := [{'label': 'generated'}]) for _ in [0])\n"
+        "next(deferred)\n"
+        "async def scenario(ctx, log, **params):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: dynamic, script: {script}}}]\n")
+
+    suite = SuiteConfig.from_yaml(suite_file)
+    assert [test["name"] for test in _expand_tests(suite, tmp_path)] == [
+        "dynamic@generated"
+    ]
 
 
 def test_lambda_default_variants_are_discovered(tmp_path: Path):

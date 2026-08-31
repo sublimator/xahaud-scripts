@@ -287,61 +287,86 @@ def save_binary(
     # could miss ``build/.rippled.fith-receipt.json`` beside ``build/rippled``.
     output_path = Path(os.path.abspath(source.expanduser()))
 
-    with _build_output_locks(output_path) as locked_canonical_source:
-        # Recheck after acquiring the build lock: the output may have changed
-        # while this process waited for a build to finish.
-        if not output_path.exists():
-            raise FileNotFoundError(f"binary not found: {output_path}")
-        if not _is_executable_file(output_path):
-            raise ValueError(f"binary path is not an executable file: {output_path}")
-        canonical_source = output_path.resolve()
-        if canonical_source != locked_canonical_source:
-            raise OSError(
-                f"binary target changed while waiting for its build lock: {output_path}"
-            )
-        source_identity = _file_identity(output_path)
-        receipt_sources: tuple[Path, ...] = (output_path,)
-        if canonical_source != output_path:
-            receipt_sources += (canonical_source,)
+    generation_ready = False
+    try:
+        with _build_output_locks(output_path) as locked_canonical_source:
+            # Recheck after acquiring the build lock: the output may have changed
+            # while this process waited for a build to finish.
+            if not output_path.exists():
+                raise FileNotFoundError(f"binary not found: {output_path}")
+            if not _is_executable_file(output_path):
+                raise ValueError(
+                    f"binary path is not an executable file: {output_path}"
+                )
+            canonical_source = output_path.resolve()
+            if canonical_source != locked_canonical_source:
+                raise OSError(
+                    f"binary target changed while waiting for its build lock: {output_path}"
+                )
+            source_identity = _file_identity(output_path)
+            receipt_sources: tuple[Path, ...] = (output_path,)
+            if canonical_source != output_path:
+                receipt_sources += (canonical_source,)
 
-        # cppt installs the receipt before atomically activating its quick-linked
-        # output. Match the receipt's binary digest rather than its mere presence:
-        # a failed activation deliberately leaves a safely stale receipt beside
-        # the previous ordinary binary. Keep this guard in the registry as well as
-        # the x-run-tests CLI so direct API callers cannot launder a FITH artifact.
-        _reject_matching_fith_receipts(receipt_sources, output_path)
+            # cppt installs the receipt before atomically activating its quick-linked
+            # output. Match the receipt's binary digest rather than its mere presence:
+            # a failed activation deliberately leaves a safely stale receipt beside
+            # the previous ordinary binary. Keep this guard in the registry as well as
+            # the x-run-tests CLI so direct API callers cannot launder a FITH artifact.
+            _reject_matching_fith_receipts(receipt_sources, output_path)
 
-        root = binary_cache_dir(cache_dir)
-        alias_dir = root / name
-        saved_at = datetime.now(UTC)
-        token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
-        dest_dir = alias_dir / f"{token}-{uuid4().hex[:12]}"
-        dest = dest_dir / canonical_source.name
-        tmp_dest = dest_dir / f".{canonical_source.name}.{os.getpid()}.tmp"
-        root_created = False
-        alias_dir_created = False
-        dest_dir_created = False
-        try:
-            root_created = _ensure_directory(root, parents=True)
-            alias_dir_created = _ensure_directory(alias_dir)
-            dest_dir.mkdir(exist_ok=False)
-            dest_dir_created = True
-            shutil.copy2(output_path, tmp_dest)
-            # Re-read the receipt before the source identity. This ordering catches
-            # both FITH's receipt-before-activation protocol and an ordinary build
-            # that removes a receipt while replacing the target during this copy.
-            current_canonical_source = output_path.resolve()
-            current_receipt_sources = receipt_sources
-            if current_canonical_source not in current_receipt_sources:
-                current_receipt_sources += (current_canonical_source,)
-            _reject_matching_fith_receipts(current_receipt_sources, tmp_dest)
-            if (
-                current_canonical_source != canonical_source
-                or _file_identity(output_path) != source_identity
-            ):
-                raise OSError(f"binary changed while it was being saved: {output_path}")
-            tmp_dest.replace(dest)
-        except BaseException:
+            root = binary_cache_dir(cache_dir)
+            alias_dir = root / name
+            saved_at = datetime.now(UTC)
+            token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
+            dest_dir = alias_dir / f"{token}-{uuid4().hex[:12]}"
+            dest = dest_dir / canonical_source.name
+            tmp_dest = dest_dir / f".{canonical_source.name}.{os.getpid()}.tmp"
+            root_created = False
+            alias_dir_created = False
+            dest_dir_created = False
+            try:
+                root_created = _ensure_directory(root, parents=True)
+                alias_dir_created = _ensure_directory(alias_dir)
+                dest_dir.mkdir(exist_ok=False)
+                dest_dir_created = True
+                shutil.copy2(output_path, tmp_dest)
+                # Re-read the receipt before the source identity. This ordering catches
+                # both FITH's receipt-before-activation protocol and an ordinary build
+                # that removes a receipt while replacing the target during this copy.
+                current_canonical_source = output_path.resolve()
+                current_receipt_sources = receipt_sources
+                if current_canonical_source not in current_receipt_sources:
+                    current_receipt_sources += (current_canonical_source,)
+                _reject_matching_fith_receipts(current_receipt_sources, tmp_dest)
+                if (
+                    current_canonical_source != canonical_source
+                    or _file_identity(output_path) != source_identity
+                ):
+                    raise OSError(
+                        f"binary changed while it was being saved: {output_path}"
+                    )
+                tmp_dest.replace(dest)
+                generation_ready = True
+            except BaseException:
+                _cleanup_failed_save(
+                    tmp_dest=tmp_dest,
+                    dest=dest,
+                    dest_dir=dest_dir,
+                    alias_dir=alias_dir,
+                    root=root,
+                    dest_dir_created=dest_dir_created,
+                    alias_dir_created=alias_dir_created,
+                    root_created=root_created,
+                )
+                raise
+            with suppress(FileNotFoundError):
+                tmp_dest.unlink()
+    except BaseException:
+        # Releasing the build lock is still part of the pre-publication phase.
+        # If it fails after the copy was activated, do not leak an unreferenced
+        # cache generation that can never be reached through the manifest.
+        if generation_ready:
             _cleanup_failed_save(
                 tmp_dest=tmp_dest,
                 dest=dest,
@@ -352,9 +377,7 @@ def save_binary(
                 alias_dir_created=alias_dir_created,
                 root_created=root_created,
             )
-            raise
-        with suppress(FileNotFoundError):
-            tmp_dest.unlink()
+        raise
 
     published = False
     try:
