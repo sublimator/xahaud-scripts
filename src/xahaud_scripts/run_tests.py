@@ -35,6 +35,12 @@ from xahaud_scripts.build import (
     ccache_show_config as _ccache_show_config,
 )
 from xahaud_scripts.hook_toolchain import require_test_hook_toolchain
+from xahaud_scripts.ordinary_build_receipt import (
+    OrdinaryBuildReceiptError,
+    capture_ordinary_build_start,
+    ordinary_build_receipt_path,
+    publish_ordinary_build_receipt,
+)
 from xahaud_scripts.utils.lldb import create_lldb_script
 from xahaud_scripts.utils.logging import make_logger, setup_logging
 from xahaud_scripts.utils.paths import get_xahaud_root
@@ -177,6 +183,7 @@ def run_fith_quick_build(
         f"base={base}",
         f"strict={str(strict).lower()}",
         f"link-target={target}",
+        f"ordinary-baseline-receipt={ordinary_build_receipt_path(build_dir, target)}",
     ]
     if dry_run:
         cmd.append("dry-run=true")
@@ -311,6 +318,22 @@ def build_rippled(
     # nothing, so they neither need nor take the lock.
     lock = build_dir_lock(build_dir) if not dry_run else contextlib.nullcontext()
     with lock:
+        ordinary_build_start = None
+        if not use_fith and not dry_run:
+            try:
+                ordinary_build_start = capture_ordinary_build_start(
+                    xahaud_root,
+                    build_dir,
+                    target,
+                )
+            except (OrdinaryBuildReceiptError, OSError) as exc:
+                logger.error(f"Cannot establish ordinary-build baseline: {exc}")
+                logger.error(
+                    "The build was not started. Fix the Git/reflog evidence problem, "
+                    "then run one full ordinary build again."
+                )
+                return False
+
         # Run conan install if requested
         if use_conan and need_configure:
             success = conan_install(
@@ -382,6 +405,19 @@ def build_rippled(
             except ValueError as exc:
                 logger.error(str(exc))
                 return False
+            assert ordinary_build_start is not None
+            try:
+                receipt = publish_ordinary_build_receipt(ordinary_build_start)
+            except (OrdinaryBuildReceiptError, OSError) as exc:
+                logger.error(
+                    f"Ordinary build completed without a valid baseline: {exc}"
+                )
+                logger.error(
+                    "Do not use FITH yet; run one full ordinary build again without "
+                    "changing Git state during the build."
+                )
+                return False
+            logger.info(f"Published ordinary-build baseline receipt: {receipt}")
         return built
 
 

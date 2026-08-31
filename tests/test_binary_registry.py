@@ -894,6 +894,14 @@ def test_build_reconfigures_existing_build_dir_without_cmake_cache(
         "xahaud_scripts.run_tests.cmake_build",
         lambda build_dir_arg, **_kwargs: calls.append(("build", build_dir_arg)) or True,
     )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.capture_ordinary_build_start",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.publish_ordinary_build_receipt",
+        lambda _start: build_dir / ".rippled.ordinary-build-receipt.json",
+    )
 
     assert build_rippled(
         build_dir=str(build_dir),
