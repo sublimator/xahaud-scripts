@@ -1071,6 +1071,28 @@ def _generator_creation_consumes_handle(node: ast.AST, handles: set[str]) -> boo
     )
 
 
+def _call_positional_values(node: ast.AST) -> tuple[ast.AST, ...]:
+    """Return values a call may receive from one argument expression."""
+    if isinstance(node, ast.Starred):
+        value = node.value
+        if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+            return tuple(
+                positional
+                for item in value.elts
+                for positional in _call_positional_values(item)
+            )
+        if isinstance(value, ast.Dict):
+            positional: list[ast.AST] = []
+            for key, mapped in zip(value.keys, value.values, strict=True):
+                if key is not None:
+                    positional.append(key)
+                elif isinstance(mapped, ast.Dict):
+                    positional.extend(_call_positional_values(ast.Starred(mapped)))
+            return tuple(positional)
+        return (value,)
+    return (node,)
+
+
 class _FilterLoadFinder(_NameLoadFinder):
     """Find immediate handle use while respecting nested generator deferral."""
 
@@ -1085,12 +1107,16 @@ class _FilterLoadFinder(_NameLoadFinder):
         # value passed as a call argument may be evaluated by any/list/next and
         # similar, while a starred argument is iterated before the call. Handle
         # direct generators and the wrappers that can preserve their value.
+        # Star-unpacking a literal container yields its elements as call
+        # arguments; iterating the container itself does not consume a
+        # generator stored inside it.
         self.visit(node.func)
         for raw in (*node.args, *(keyword.value for keyword in node.keywords)):
-            arg = raw.value if isinstance(raw, ast.Starred) else raw
-            if _iterable_unpack_consumes_handle(arg, self.names):
-                self.found = True
-                return
+            for item in _call_positional_values(raw):
+                value = item.value if isinstance(item, ast.Starred) else item
+                if _iterable_unpack_consumes_handle(value, self.names):
+                    self.found = True
+                    return
             self.visit(raw)
 
 

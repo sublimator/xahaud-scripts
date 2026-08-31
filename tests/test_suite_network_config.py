@@ -1089,6 +1089,11 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "any((wrapped := (x for x in deferred)))",
         "any((x for x in deferred) if True else ())",
         "any(*((wrapped := (x for x in deferred))))",
+        "any(*((x for x in deferred),))",
+        "any(*[(x for x in deferred)])",
+        "any(*{(x for x in deferred): 1})",
+        "any(*(*[(x for x in deferred)],))",
+        "any(*{**{(x for x in deferred): 1}})",
     ],
     ids=[
         "any",
@@ -1099,6 +1104,11 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "named-expression",
         "conditional-expression",
         "starred-named-expression",
+        "starred-tuple",
+        "starred-list",
+        "starred-dict-key",
+        "nested-starred-list",
+        "starred-expanded-dict-key",
     ],
 )
 def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
@@ -1443,6 +1453,17 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
             "wrapped_call",
         ),
         (
+            "deferred = ((variants := [{'label': 'starred_tuple'}]) for _ in [0])\n",
+            "[alias] = (value for value in [1] if any(*((x for x in deferred),)))\n",
+            "starred_tuple",
+        ),
+        (
+            "deferred = ((variants := [{'label': 'expanded_dict'}]) for _ in [0])\n",
+            "[alias] = (value for value in [1] "
+            "if any(*{**{(x for x in deferred): 1}}))\n",
+            "expanded_dict",
+        ),
+        (
             "deferred = ((variants := [{'label': 'stored_wrapper'}]) for _ in [0])\n",
             "later = (x for x in next(deferred))\n",
             "stored_wrapper",
@@ -1472,6 +1493,8 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
         "nested-filter-assignment-unpack",
         "call-filter-assignment-unpack",
         "wrapped-call-filter-assignment-unpack",
+        "starred-tuple-call-filter-assignment-unpack",
+        "expanded-dict-call-filter-assignment-unpack",
         "stored-wrapper-creation",
         "inline-assignment-unpack",
         "tracked-default-decorator",
