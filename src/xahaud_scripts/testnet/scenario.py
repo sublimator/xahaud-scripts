@@ -1860,7 +1860,7 @@ class ScenarioContext:
         try:
             stopped = self.stop_node(node_id)
             if not stopped:
-                return {node_id: False}
+                raise RuntimeError(f"Failed to dispatch stop for n{node_id}")
 
             await self.wait_for_nodes(
                 lambda nid: self._network.get_exit_status(nid) is not None,
@@ -1876,8 +1876,10 @@ class ScenarioContext:
                 await asyncio.sleep(delay)
 
             started = self.start_node(node_id)
-            result = {node_id: started}
-            if verify_timeout > 0 and started:
+            if not started:
+                raise RuntimeError(f"Failed to dispatch start for n{node_id}")
+            result = {node_id: True}
+            if verify_timeout > 0:
                 await self.wait_for_nodes(
                     lambda nid: bool(self.rpc.server_info(nid)),
                     nodes=[node_id],
@@ -1980,6 +1982,10 @@ class ScenarioContext:
         result = self._network.restart_node_with_binary(
             node_id, binary_path, delay=delay, verify_timeout=0
         )
+        if not result.get(node_id):
+            raise RuntimeError(
+                f"Failed to dispatch binary restart for n{node_id} into {binary_path}"
+            )
         if verify_timeout > 0 and result.get(node_id):
             # wait_for_nodes raises TimeoutError if the node never answers RPC —
             # a failed rolling-upgrade restart should halt the scenario loudly.

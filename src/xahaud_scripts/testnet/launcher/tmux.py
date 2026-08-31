@@ -40,9 +40,11 @@ def _process_output(value: str | bytes | None) -> str:
 # Compatible with bash and zsh. Process runs in foreground (output
 # visible, Ctrl+C works). Leading space avoids zsh history.
 _XRUN_FUNC = (
-    ' _xrun() { "$@" & local p=$!; echo $p > .pid;'
+    ' _xrun() { rm -f .pid .exit_status; "$@" & local p=$!;'
+    ' local r="$$:$p:$RANDOM:$RANDOM"; printf "%s %s\\n" "$r" "$p" > .pid;'
     " trap 'kill $p 2>/dev/null' INT TERM;"
-    " wait $p; echo $? > .exit_status; }"
+    " wait $p; local s=$?; trap - INT TERM;"
+    ' printf "%s %s %s\\n" "$r" "$p" "$s" > .exit_status; }'
 )
 ITERM_WINDOW_FILE = ".tmux_iterm_window"
 
@@ -183,6 +185,8 @@ class TmuxLauncher:
         )
         pane_id = result.stdout.strip()
 
+        self._clear_node_markers(node.id)
+
         # Inject _xrun helper, then send the startup command
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],
@@ -230,6 +234,8 @@ class TmuxLauncher:
             check=True,
             capture_output=True,
         )
+
+        self._clear_node_markers(node.id)
 
         # Inject _xrun helper, then send the startup command
         subprocess.run(
@@ -317,11 +323,14 @@ class TmuxLauncher:
     @property
     def launch_state(self) -> dict[str, Any]:
         """Get launch state for persistence."""
-        return {
+        state: dict[str, Any] = {
             "launcher": "tmux",
             "pane_ids": {str(k): v for k, v in self._pane_ids.items()},
             "launch_commands": {str(k): v for k, v in self._launch_commands.items()},
         }
+        if self._base_dir is not None:
+            state["base_dir"] = str(self._base_dir)
+        return state
 
     def load_launch_state(self, state: dict[str, Any]) -> None:
         """Restore state from persisted launch_state."""
@@ -329,6 +338,47 @@ class TmuxLauncher:
         self._launch_commands = {
             int(k): v for k, v in state.get("launch_commands", {}).items()
         }
+        base_dir = state.get("base_dir")
+        if isinstance(base_dir, str) and base_dir:
+            self._base_dir = Path(base_dir)
+
+    def _clear_node_markers(self, node_id: int) -> None:
+        """Remove PID/status markers before dispatching a new process generation."""
+        if self._base_dir is None:
+            return
+        for name in (".pid", ".exit_status"):
+            (self._base_dir / f"n{node_id}" / name).unlink(missing_ok=True)
+
+    def _read_pid_record(self, node_id: int) -> tuple[str, int] | None:
+        """Read the generation-tagged PID marker written by ``_xrun``."""
+        if self._base_dir is None:
+            return None
+        try:
+            generation, pid_text = (
+                (self._base_dir / f"n{node_id}" / ".pid").read_text().split()
+            )
+            pid = int(pid_text)
+        except (FileNotFoundError, ValueError):
+            return None
+        if pid <= 1:
+            return None
+        return generation, pid
+
+    def _pid_belongs_to_node(self, pid: int, node_id: int) -> bool:
+        """Confirm a PID still runs this node's exact generated config."""
+        if self._base_dir is None:
+            return False
+        expected_config = str(self._base_dir / f"n{node_id}" / "xahaud.cfg")
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return expected_config in result.stdout
 
     def is_session_alive(self) -> bool:
         """Check if the tmux session is alive."""
@@ -419,26 +469,48 @@ class TmuxLauncher:
         """
         if not self._base_dir:
             return None
+        pid_record = self._read_pid_record(node_id)
+        if pid_record is None:
+            return None
+        generation, pid = pid_record
         status_file = self._base_dir / f"n{node_id}" / ".exit_status"
         try:
-            return int(status_file.read_text().strip())
+            status_generation, status_pid_text, status_text = (
+                status_file.read_text().split()
+            )
+            status_pid = int(status_pid_text)
+            status = int(status_text)
         except (FileNotFoundError, ValueError):
             return None
+        if status_generation != generation or status_pid != pid:
+            return None
+        return status
 
     def stop_node(self, node_id: int) -> bool:
         """Stop a node by sending SIGTERM to its process (via .pid file).
 
         Falls back to sending Ctrl+C to the tmux pane if no PID file found.
         """
-        # Try killing via PID file first (reliable with _xrun)
-        if self._base_dir:
-            pid_file = self._base_dir / f"n{node_id}" / ".pid"
-            try:
-                pid = int(pid_file.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
-                return True
-            except (FileNotFoundError, ValueError, ProcessLookupError):
-                pass
+        # Only signal a marker PID after verifying that its current command line
+        # still belongs to this exact node. PID reuse must never target an
+        # unrelated host process.
+        if self.get_exit_status(node_id) is not None:
+            logger.warning(f"Node {node_id} is already stopped")
+            return False
+        pid_record = self._read_pid_record(node_id)
+        if pid_record is not None:
+            _generation, pid = pid_record
+            if self._pid_belongs_to_node(pid, node_id):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    return True
+                except ProcessLookupError:
+                    pass
+            else:
+                logger.warning(
+                    f"Refusing to signal unverified PID {pid} for node {node_id}; "
+                    "falling back to its tmux pane"
+                )
 
         # Fallback: Ctrl+C to pane
         pane_id = self._validate_pane(node_id)
@@ -475,11 +547,7 @@ class TmuxLauncher:
                 check=True,
                 capture_output=True,
             )
-            # Clean up old status files
-            if self._base_dir:
-                for f in (".pid", ".exit_status"):
-                    p = self._base_dir / f"n{node_id}" / f
-                    p.unlink(missing_ok=True)
+            self._clear_node_markers(node_id)
             # Re-inject _xrun and send command
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id, _XRUN_FUNC, "Enter"],

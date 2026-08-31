@@ -36,6 +36,18 @@ logger = make_logger(__name__)
 console = Console()
 
 
+def _env_flag(name: str) -> bool:
+    """Resolve a conventional boolean environment flag."""
+    return os.environ.get(name, "").strip().lower() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+        "on",
+    }
+
+
 def format_uptime(seconds: float) -> str:
     """Format seconds as human-readable uptime."""
     if seconds < 60:
@@ -575,7 +587,7 @@ class NetworkMonitor:
         tracked_features: list[str] | None = None,
         base_dir: Path | None = None,
         start_time: float | None = None,
-        ai_sandboxed: bool = False,
+        ai_sandboxed: bool | None = None,
     ) -> None:
         """Initialize the network monitor.
 
@@ -587,13 +599,16 @@ class NetworkMonitor:
             start_time: Network launch timestamp (epoch seconds). If provided,
                 uptime is calculated from this instead of monitor start.
             ai_sandboxed: Skip optional host process introspection such as ps.
+                When omitted, resolves ``AI_SANDBOXED`` from the environment.
         """
         self.rpc_client = rpc_client
         self.network_config = network_config
         self.tracked_features = tracked_features or []
         self._base_dir = base_dir
         self._start_time: float | None = start_time
-        self._ai_sandboxed = ai_sandboxed
+        self._ai_sandboxed = (
+            _env_flag("AI_SANDBOXED") if ai_sandboxed is None else ai_sandboxed
+        )
 
         # Convergence tracking
         self._total_conv_sum: float = 0.0  # Sum of all convergence times

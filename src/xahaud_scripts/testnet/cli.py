@@ -2385,7 +2385,7 @@ def scenario_test_guide() -> None:
 @click.option(
     "--test-n",
     "test_n",
-    type=int,
+    type=click.IntRange(min=1),
     default=1,
     show_default=True,
     help="Run each test N times (useful for catching flaky tests).",

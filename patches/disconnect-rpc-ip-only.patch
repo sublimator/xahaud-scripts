@@ -3,6 +3,15 @@ Add a TESTNET-only admin RPC that disconnects active peers by IP address.
 This is derived from xahaud commit 6fc14f398d754283b5dee6576edb59dc2656eaaa,
 with port parsing and matching removed for distinct-IP local testnets.
 
+This patch is intentionally manual and is not applied by xr-build. It targets
+the compatible xahaud source shape before the commit above added its port-aware
+handler. Run `git apply --check` before `git apply`; a tree already containing
+that handler should fail the check.
+
+The RPC is registered as admin but has no compile-time TESTNET guard. Keep the
+admin endpoint local. One request stops every active peer sharing the supplied
+IP, so do not use this IP-only variant as a public/NAT gateway control.
+
 diff --git a/src/xrpld/rpc/detail/Handler.cpp b/src/xrpld/rpc/detail/Handler.cpp
 --- a/src/xrpld/rpc/detail/Handler.cpp
 +++ b/src/xrpld/rpc/detail/Handler.cpp

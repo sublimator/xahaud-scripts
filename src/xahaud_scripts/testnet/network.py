@@ -14,11 +14,13 @@ import shlex
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xahaud_scripts.testnet.config import NodeInfo
 from xahaud_scripts.testnet.generator import (
+    VALIDATOR_REVOCATION_RECOVERY_FILE,
     ValidatorKeysGenerator,
     generate_all_configs,
     update_config_section,
@@ -652,7 +654,10 @@ class TestNetwork:
 
             saved_type = self._launch_state.get("launcher")
             if isinstance(self._launcher, ControllableLauncher):
-                self._launcher.load_launch_state(self._launch_state)
+                launcher_state = dict(self._launch_state)
+                # Older network.json files predate persisted launcher base dirs.
+                launcher_state.setdefault("base_dir", str(self._base_dir))
+                self._launcher.load_launch_state(launcher_state)
             elif saved_type:
                 logger.warning(
                     f"Network was launched with '{saved_type}' launcher but "
@@ -831,6 +836,11 @@ class TestNetwork:
         keyfile = node.node_dir / "validator-keys.json"
         original_keyfile = keyfile.read_text()
         original_config = node.config_path.read_text()
+        network_file = self._base_dir / "network.json"
+        original_network_info = (
+            network_file.read_text() if network_file.exists() else None
+        )
+        node_index = self._nodes.index(node)
 
         try:
             rotation = ValidatorKeysGenerator().rotate(keyfile)
@@ -844,12 +854,19 @@ class TestNetwork:
             if not isinstance(token, str) or not isinstance(sequence, int):
                 raise RuntimeError("validator-keys returned invalid rotation metadata")
             update_config_section(node.config_path, "validator_token", token)
+            self._nodes[node_index] = replace(node, token=token)
+            self._save_network_info()
         except Exception:
             # validator-keys mutates its keyfile before printing the new token.
             # Keep the config/keyfile pair atomic if validation or config write
             # fails before the node is restarted.
             keyfile.write_text(original_keyfile)
             node.config_path.write_text(original_config)
+            self._nodes[node_index] = node
+            if original_network_info is None:
+                network_file.unlink(missing_ok=True)
+            else:
+                network_file.write_text(original_network_info)
             raise
 
         return {
@@ -873,13 +890,14 @@ class TestNetwork:
             raise ValueError(f"Unknown node: n{via_node_id}")
 
         keyfile = master.node_dir / "validator-keys.json"
-        original_keyfile = keyfile.read_text()
         original_config = via.config_path.read_text()
+        recovery_file: str | None = None
 
         try:
             result = ValidatorKeysGenerator().revoke(keyfile)
             public_key = result["public_key"]
             revocation = result["revocation"]
+            recovery_file = result.get("recovery_file")
             if public_key != master.public_key:
                 raise RuntimeError(
                     f"n{master_node_id} keyfile master does not match generated "
@@ -890,15 +908,57 @@ class TestNetwork:
                 "validator_key_revocation",
                 revocation,
             )
-        except Exception:
-            keyfile.write_text(original_keyfile)
-            via.config_path.write_text(original_config)
+        except Exception as exc:
+            # Once revoke_keys has minted a maximum-sequence manifest, restoring
+            # the old keyfile would make an irreversible action appear undone.
+            # Keep the revoked keyfile and restore only the relay config. The
+            # generator writes a standalone config block for recovery whenever
+            # it can parse the revocation output.
+            restore_error: OSError | None = None
+            try:
+                via.config_path.write_text(original_config)
+            except OSError as config_exc:
+                restore_error = config_exc
+            try:
+                key_state = ValidatorKeysGenerator._read_keyfile(keyfile)
+            except RuntimeError:
+                key_state = {}
+            if key_state.get("revoked") is True:
+                if recovery_file is None:
+                    candidate = keyfile.parent / VALIDATOR_REVOCATION_RECOVERY_FILE
+                    if candidate.exists():
+                        recovery_file = str(candidate)
+                recovery = (
+                    f" Recovery artifact: {recovery_file}."
+                    if recovery_file
+                    else (
+                        " Recover the retained manifest with: validator-keys "
+                        f"show_manifest base64 --keyfile {keyfile}."
+                    )
+                )
+                raise RuntimeError(
+                    f"Validator n{master_node_id} remains permanently revoked; "
+                    f"could not install its revocation on n{via_node_id}."
+                    f"{recovery}"
+                    + (
+                        f" Relay config restoration also failed: {restore_error}."
+                        if restore_error
+                        else ""
+                    )
+                ) from exc
+            if restore_error is not None:
+                raise RuntimeError(
+                    f"Revocation failed before n{master_node_id} was marked revoked, "
+                    f"and n{via_node_id}'s config could not be restored: "
+                    f"{restore_error}"
+                ) from exc
             raise
 
         return {
             "master_node_id": master_node_id,
             "via_node_id": via_node_id,
             "public_key": public_key,
+            "recovery_file": recovery_file,
         }
 
     def _validator_node(self, node_id: int) -> NodeInfo:

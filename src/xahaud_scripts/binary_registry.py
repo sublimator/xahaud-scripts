@@ -154,6 +154,18 @@ def save_binary(
     if not _is_executable_file(source):
         raise ValueError(f"binary path is not an executable file: {source}")
 
+    # cppt FITH writes this receipt beside its mixed-generation output.  A
+    # saved alias copies only the executable, so accepting it here would strip
+    # the evidence that the binary did not come from the ordinary build graph.
+    # Keep this guard in the registry as well as the x-run-tests CLI so direct
+    # API callers cannot accidentally launder a FITH artifact.
+    fith_receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    if fith_receipt.is_file():
+        raise ValueError(
+            f"refusing to save FITH output as an ordinary alias: {source} "
+            f"(receipt: {fith_receipt}); run a successful ordinary build first"
+        )
+
     root = binary_cache_dir(cache_dir)
     saved_at = datetime.now(UTC)
     token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")

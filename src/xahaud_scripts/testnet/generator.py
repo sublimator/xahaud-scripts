@@ -8,7 +8,7 @@ This module provides functions for:
 
 from __future__ import annotations
 
-import hashlib
+import hmac
 import json
 import re
 import subprocess
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from xahaud_scripts.testnet.config import NetworkConfig
 
 logger = make_logger(__name__)
+
+VALIDATOR_REVOCATION_RECOVERY_FILE = "validator-key-revocation.cfg"
 
 
 class ValidatorKeysGenerator:
@@ -162,8 +164,11 @@ class ValidatorKeysGenerator:
         if not revocation:
             raise RuntimeError(
                 "Could not extract validator revocation from validator-keys "
-                f"output:\n{result.stdout}"
+                f"output. The mutated keyfile was retained for recovery: {keyfile}"
             )
+
+        recovery_file = keyfile.parent / VALIDATOR_REVOCATION_RECOVERY_FILE
+        recovery_file.write_text(f"[validator_key_revocation]\n{revocation.strip()}\n")
 
         after = self._read_keyfile(keyfile)
         public_key = self._require_string(after, "public_key", keyfile)
@@ -172,7 +177,11 @@ class ValidatorKeysGenerator:
         if after.get("revoked") is not True:
             raise RuntimeError("validator-keys did not mark the keyfile revoked")
 
-        return {"public_key": public_key, "revocation": revocation}
+        return {
+            "public_key": public_key,
+            "revocation": revocation,
+            "recovery_file": str(recovery_file),
+        }
 
     def _run_key_command(
         self, command: str, keyfile: Path
@@ -320,16 +329,19 @@ LOG_LEVEL_SUITES: dict[str, dict[str, str]] = {
 }
 
 
-def _deterministic_node_seed(network_id: int, node_id: int) -> str:
-    """Return a stable, distinct secp256k1 node seed for a local test node.
+def _derive_node_seed(namespace: bytes, network_id: int, node_id: int) -> str:
+    """Return a stable, private secp256k1 node seed for one testnet instance.
 
     ``wallet.db`` normally owns the generated overlay identity.  Test scenarios
     can intentionally delete that database, so pin the identity in generated
-    config instead.  Namespacing by network and node keeps concurrent local
-    networks distinct while making regeneration and wallet resets stable.
+    config instead.  The random per-``NetworkConfig`` namespace keeps separate
+    instances distinct even when they use the default network ID, while the
+    network and node IDs keep identities stable within that instance.
     """
+    if len(namespace) < 16:
+        raise ValueError("node seed namespace must contain at least 16 bytes")
     material = f"x-testnet-node-v1:{network_id}:{node_id}".encode()
-    entropy = hashlib.sha256(material).digest()[:16]
+    entropy = hmac.digest(namespace, material, "sha256")[:16]
     return encode_seed(entropy, CryptoAlgorithm.SECP256K1)
 
 
@@ -393,7 +405,11 @@ def generate_node_config(
     port_peer = network_config.port_peer(node_id)
     port_rpc = network_config.port_rpc(node_id)
     port_ws = network_config.port_ws(node_id)
-    node_seed = _deterministic_node_seed(network_config.network_id, node_id)
+    node_seed = _derive_node_seed(
+        network_config.node_seed_namespace,
+        network_config.network_id,
+        node_id,
+    )
 
     fixed_peers_section = ""
     if network_config.fixed_peers:
@@ -571,6 +587,7 @@ def find_free_port_base(
                     base_port_peer=network_config.base_port_peer + offset,
                     base_port_rpc=network_config.base_port_rpc + offset,
                     base_port_ws=network_config.base_port_ws + offset,
+                    node_seed_namespace=network_config.node_seed_namespace,
                 )
             return network_config
 

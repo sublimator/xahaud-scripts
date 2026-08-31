@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import inspect
 import json
 import math
 import os
@@ -30,6 +31,7 @@ from rich.table import Table
 
 from xahaud_scripts.binary_registry import resolve_binary_spec
 from xahaud_scripts.testnet.config import (
+    MAX_NODE_COUNT,
     LaunchConfig,
     NetworkConfig,
     NodeInfo,
@@ -41,6 +43,7 @@ from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.scenario import (
+    load_scenario_script,
     load_scenario_variants,
     run_scenario_with_monitor,
 )
@@ -65,6 +68,56 @@ logger = make_logger(__name__)
 # defaults per-key).  All other network keys are replaced entirely.
 _DICT_MERGE_KEYS = {"log_levels", "env", "node_binaries"}
 
+# Closed suite schema. ``runtime_topology`` is the legacy spelling retained as
+# an intentional compatibility alias for ``topology``.
+_SUITE_KEYS = {"defaults", "tests"}
+_DEFAULT_KEYS = {"network", "params"}
+_TEST_KEYS = {"name", "script", "network", "params"}
+_NETWORK_KEYS = {
+    "desktop",
+    "env",
+    "extra_args",
+    "features",
+    "find_ports",
+    "fixed_peers",
+    "genesis_file",
+    "launcher",
+    "lldb",
+    "log_levels",
+    "majority_features",
+    "node_binaries",
+    "node_count",
+    "node_env",
+    "quorum",
+    "rc",
+    "runtime_topology",
+    "slave_delay",
+    "start_ledger",
+    "topology",
+    "track_features",
+    "unl_report",
+    "validators",
+}
+_TOPOLOGY_KEYS = {
+    "bidirectional",
+    "connect",
+    "disconnect",
+    "edges",
+    "exact",
+    "nodes",
+    "poll_interval",
+    "rpc_timeout",
+    "settle_timeout",
+    "stable_for",
+    "timeout",
+}
+
+# Test names become directory names below .testnet/output/runs. Keep the
+# grammar deliberately filesystem-portable; ``@`` is needed by expanded
+# variant names (``base@label``).
+_TEST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]*$")
+_MISSING = object()
+
 
 def _require_non_empty_str(value: Any, label: str) -> str:
     """Require a non-empty string leaf."""
@@ -74,13 +127,21 @@ def _require_non_empty_str(value: Any, label: str) -> str:
     return value
 
 
-def _require_int(value: Any, label: str, *, minimum: int | None = None) -> int:
+def _require_int(
+    value: Any,
+    label: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     """Require an integer leaf. bool is an int in Python, so exclude it."""
     if isinstance(value, bool) or not isinstance(value, int):
         got = type(value).__name__
         raise ValueError(f"{label} must be an integer, got {got}")
     if minimum is not None and value < minimum:
         raise ValueError(f"{label} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{label} must be <= {maximum}, got {value}")
     return value
 
 
@@ -129,6 +190,34 @@ def _require_mapping(value: Any, label: str) -> None:
     if not isinstance(value, dict):
         got = type(value).__name__
         raise ValueError(f"{label} must be a mapping, got {got}")
+
+
+def _reject_unknown_keys(value: dict[Any, Any], allowed: set[str], label: str) -> None:
+    """Reject misspelled/unsupported schema keys instead of ignoring them."""
+    unknown = sorted((key for key in value if key not in allowed), key=repr)
+    if unknown:
+        rendered = ", ".join(repr(key) for key in unknown)
+        raise ValueError(f"{label} has unknown key(s): {rendered}")
+
+
+def _validated_test_name(value: Any, label: str = "Test name") -> str:
+    """Validate one filesystem-safe suite/expanded test name."""
+    name = _require_non_empty_str(value, label)
+    if not _TEST_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"{label} must start with a letter or digit and use only letters, "
+            f"digits, '.', '_', '@', or '-', got {name!r}"
+        )
+    return name
+
+
+def _contained_run_dir(runs_dir: Path, *parts: str) -> Path:
+    """Build a run-output path and reject existing symlink escapes."""
+    candidate = runs_dir.joinpath(*parts)
+    root = runs_dir.resolve()
+    if not candidate.resolve().is_relative_to(root):
+        raise ValueError(f"Run output path escapes {runs_dir}: {candidate}")
+    return candidate
 
 
 @dataclass
@@ -182,11 +271,18 @@ class SuiteConfig:
             raw = yaml.safe_load(f)
 
         _require_mapping(raw, "Suite file")
+        _reject_unknown_keys(raw, _SUITE_KEYS, "Suite file")
 
         defaults = raw.get("defaults", {})
         _require_mapping(defaults, "'defaults'")
+        _reject_unknown_keys(defaults, _DEFAULT_KEYS, "'defaults'")
         if "network" in defaults:
             _require_mapping(defaults["network"], "'defaults.network'")
+            _reject_unknown_keys(
+                defaults["network"],
+                _NETWORK_KEYS,
+                "'defaults.network'",
+            )
         _validated_params(defaults.get("params"), "'defaults.params'")
 
         tests = raw.get("tests")
@@ -195,14 +291,20 @@ class SuiteConfig:
 
         for i, test in enumerate(tests):
             _require_mapping(test, f"Test #{i + 1}")
+            _reject_unknown_keys(test, _TEST_KEYS, f"Test #{i + 1}")
             if "name" not in test:
                 raise ValueError(f"Test #{i + 1} missing required 'name' key")
-            _require_non_empty_str(test["name"], f"Test #{i + 1} 'name'")
+            _validated_test_name(test["name"], f"Test #{i + 1} 'name'")
             if "script" not in test:
                 raise ValueError(f"Test '{test['name']}' missing required 'script' key")
             _require_non_empty_str(test["script"], f"Test '{test['name']}' 'script'")
             if "network" in test:
                 _require_mapping(test["network"], f"Test '{test['name']}' 'network'")
+                _reject_unknown_keys(
+                    test["network"],
+                    _NETWORK_KEYS,
+                    f"Test '{test['name']}' 'network'",
+                )
             _validated_params(test.get("params"), f"Test '{test['name']}' 'params'")
 
         return cls(
@@ -317,8 +419,12 @@ def _expand_tests(
 
         variants: list[dict[str, Any]] | None = None
         if script_path.exists():
-            with contextlib.suppress(Exception):
+            try:
                 variants = load_scenario_variants(script_path)
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not load scenario variants from {script_path}: {exc}"
+                ) from exc
 
         if variants:
             base_name = test["name"]
@@ -358,7 +464,11 @@ def _validated_env_mapping(raw: Any, *, label: str) -> dict[str, str]:
     return result
 
 
-def _validated_node_env(raw: Any) -> dict[int, dict[str, str]]:
+def _validated_node_env(
+    raw: Any,
+    *,
+    node_count: int,
+) -> dict[int, dict[str, str]]:
     """Validate and stringify the YAML node_env mapping."""
     if raw is None:
         return {}
@@ -368,11 +478,19 @@ def _validated_node_env(raw: Any) -> dict[int, dict[str, str]]:
     result: dict[int, dict[str, str]] = {}
     for node_id_raw, env_dict in raw.items():
         try:
-            node_id = int(node_id_raw)
-        except (TypeError, ValueError) as exc:
+            node_id = parse_node_ref(node_id_raw)
+        except ValueError as exc:
             raise ValueError(
-                f"network.node_env key must be an integer node id: {node_id_raw!r}"
+                f"network.node_env key must be a node id: {node_id_raw!r}"
             ) from exc
+        if node_id < 0 or node_id >= node_count:
+            raise ValueError(
+                f"network.node_env n{node_id} is outside this {node_count}-node network"
+            )
+        if node_id in result:
+            raise ValueError(
+                f"network.node_env contains duplicate aliases for n{node_id}"
+            )
         result[node_id] = _validated_env_mapping(
             env_dict,
             label=f"network.node_env.{node_id}",
@@ -529,10 +647,10 @@ def _merge_env_override(
     }
 
 
-def _validate_network_env(config: dict[str, Any]) -> None:
+def _validate_network_env(config: dict[str, Any], *, node_count: int) -> None:
     """Validate env-bearing network config without mutating it."""
     _validated_env_mapping(config.get("env", {}), label="network.env")
-    _validated_node_env(config.get("node_env", {}))
+    _validated_node_env(config.get("node_env", {}), node_count=node_count)
 
 
 def _validated_params(raw: Any, label: str) -> dict[str, Any] | None:
@@ -607,6 +725,16 @@ def _validate_log_levels(raw: Any) -> None:
             )
 
 
+def _selected_topology(config: dict[str, Any]) -> Any:
+    """Return the configured topology block, preserving malformed falsy values."""
+    present = [key for key in ("topology", "runtime_topology") if key in config]
+    if len(present) > 1:
+        raise ValueError(
+            "network may define only one of 'topology' or 'runtime_topology'"
+        )
+    return config[present[0]] if present else _MISSING
+
+
 def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
     """Validate statically-checkable topology fields before launch.
 
@@ -618,6 +746,7 @@ def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
     before being rejected.
     """
     _require_mapping(raw, "network.topology")
+    _reject_unknown_keys(raw, _TOPOLOGY_KEYS, "network.topology")
 
     selected: list[int] | None = None
     nodes = raw.get("nodes")
@@ -657,7 +786,7 @@ def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
                     )
 
     for key in ("bidirectional", "exact"):
-        if raw.get(key) is not None:
+        if key in raw:
             _require_bool(raw[key], f"network.topology.{key}")
     for key in (
         "settle_timeout",
@@ -666,8 +795,18 @@ def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
         "stable_for",
         "rpc_timeout",
     ):
-        if raw.get(key) is not None:
+        if key in raw:
             _require_number(raw[key], f"network.topology.{key}", minimum=0)
+
+    timeout_value = raw.get("settle_timeout")
+    if timeout_value is None:
+        timeout_value = raw.get("timeout", 60)
+    stable_for = raw.get("stable_for", 2)
+    if stable_for > timeout_value:
+        raise ValueError(
+            "network.topology.stable_for cannot exceed its settle timeout "
+            f"({stable_for} > {timeout_value})"
+        )
 
     # Cross-field invariants, mirroring _apply_runtime_topology. Both default
     # the same way it does: exact is true unless set, fixed_peers is true
@@ -700,11 +839,18 @@ def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> No
     until after it had already torn down the previous network and regenerated
     node directories. Rejecting up front keeps a typo cheap.
     """
+    _reject_unknown_keys(config, _NETWORK_KEYS, "network")
+
     # Core sizing first: everything below is expressed relative to node_count,
     # and a bad value here used to survive preflight only to blow up inside
     # generate()'s range(node_count) — after teardown() had already run.
     node_count = config.get("node_count", 5)
-    _require_int(node_count, "network.node_count", minimum=1)
+    _require_int(
+        node_count,
+        "network.node_count",
+        minimum=1,
+        maximum=MAX_NODE_COUNT,
+    )
 
     validators = config.get("validators")
     if validators is not None:
@@ -731,15 +877,15 @@ def _validate_network_config(config: dict[str, Any], *, xahaud_root: Path) -> No
     if config.get("log_levels") is not None:
         _validate_log_levels(config["log_levels"])
     _validated_launcher(config.get("launcher"))
-    topology = config.get("topology") or config.get("runtime_topology")
-    if topology is not None:
+    topology = _selected_topology(config)
+    if topology is not _MISSING:
         _validate_topology(
             topology,
             node_count=node_count,
             fixed_peers=config.get("fixed_peers", True),
         )
 
-    _validate_network_env(config)
+    _validate_network_env(config, node_count=node_count)
     _validated_node_binaries(config.get("node_binaries", {}), node_count=node_count)
     _validated_lldb_nodes(config.get("lldb"), node_count=node_count)
     _validated_genesis_file(config.get("genesis_file"), xahaud_root=xahaud_root)
@@ -753,11 +899,12 @@ def _snapshot_test(network: TestNetwork, dest: Path) -> None:
 
 
 def _unique_failure_dir(runs_dir: Path, name: str) -> Path:
+    _validated_test_name(name)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    candidate = runs_dir / f"{timestamp}-{name}"
+    candidate = _contained_run_dir(runs_dir, f"{timestamp}-{name}")
     suffix = 2
     while candidate.exists():
-        candidate = runs_dir / f"{timestamp}-{name}-{suffix}"
+        candidate = _contained_run_dir(runs_dir, f"{timestamp}-{name}-{suffix}")
         suffix += 1
     return candidate
 
@@ -770,8 +917,9 @@ def archive_failed_run(
     scenario_log: Path | None = None,
 ) -> Path:
     """Archive a failed run under output/runs/latest and a timestamped dir."""
+    _validated_test_name(name)
     runs_dir = runs_dir or (network.base_dir.parent / ".testnet" / "output" / "runs")
-    latest_dir = runs_dir / "latest" / name
+    latest_dir = _contained_run_dir(runs_dir, "latest", name)
     latest_dir.mkdir(parents=True, exist_ok=True)
 
     _snapshot_test(network, latest_dir)
@@ -875,7 +1023,10 @@ def _build_launch_config(
     extra_env = _validated_env_mapping(config.get("env", {}), label="network.env")
 
     # Per-node environment variables: node_env: {3: {KEY: VAL}, 4: {KEY: VAL}}
-    node_env = _validated_node_env(config.get("node_env", {}))
+    node_env = _validated_node_env(
+        config.get("node_env", {}),
+        node_count=network_config.node_count,
+    )
     node_rippled_paths = _validated_node_binaries(
         config.get("node_binaries", {}),
         node_count=network_config.node_count,
@@ -995,11 +1146,13 @@ def _wait_for_topology(
 
 def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> None:
     """Apply suite-level runtime topology before scenario execution."""
-    topo = config.get("topology") or config.get("runtime_topology")
-    if not topo:
+    topo = _selected_topology(config)
+    if topo is _MISSING:
         return
     if not isinstance(topo, dict):
         raise ValueError("network topology must be a mapping")
+    if not topo:
+        return
 
     _wait_for_rpc(network, timeout=float(topo.get("rpc_timeout", 30)))
 
@@ -1093,6 +1246,45 @@ def _apply_runtime_topology(network: TestNetwork, config: dict[str, Any]) -> Non
         require_rpc_success(result, f"n{source}->n{target} connect")
 
 
+def _resolved_script_path(test: dict[str, Any], xahaud_root: Path) -> Path:
+    """Resolve a suite script path relative to the xahaud checkout."""
+    script_path = Path(test["script"])
+    return script_path if script_path.is_absolute() else xahaud_root / script_path
+
+
+def _preflight_selected_tests(
+    suite: SuiteConfig,
+    tests: list[dict[str, Any]],
+    *,
+    xahaud_root: Path,
+    env_override: dict[str, str] | None,
+) -> None:
+    """Validate every selected test before the first lifecycle mutation."""
+    runs_dir = xahaud_root / ".testnet" / "output" / "runs"
+    for test in tests:
+        name = _validated_test_name(test["name"])
+        _contained_run_dir(runs_dir, "latest", name)
+
+        _validated_params(test.get("_params"), f"Test '{name}' effective params")
+        config = suite.effective_network(test)
+        _merge_env_override(config, env_override)
+        _validate_network_config(config, xahaud_root=xahaud_root)
+
+        script_path = _resolved_script_path(test, xahaud_root)
+        if not script_path.is_file():
+            raise ValueError(f"Script is not a file: {script_path}")
+        try:
+            scenario_fn = load_scenario_script(script_path)
+        except Exception as exc:
+            raise ValueError(
+                f"Test '{name}' script failed preflight ({script_path}): {exc}"
+            ) from exc
+        if not inspect.iscoroutinefunction(scenario_fn):
+            raise ValueError(
+                f"Test '{name}' script must define 'async def scenario': {script_path}"
+            )
+
+
 def _run_one_test(
     xahaud_root: Path,
     suite: SuiteConfig,
@@ -1108,10 +1300,8 @@ def _run_one_test(
     testnet_dir: Path | None = None,
 ) -> TestResult:
     """Run a single test with full network lifecycle."""
-    name = test["name"]
-    script_path = Path(test["script"])
-    if not script_path.is_absolute():
-        script_path = xahaud_root / script_path
+    name = _validated_test_name(test["name"])
+    script_path = _resolved_script_path(test, xahaud_root)
 
     if not script_path.exists():
         return TestResult(
@@ -1147,7 +1337,7 @@ def _run_one_test(
 
     # Prepare output dirs
     runs_dir = xahaud_root / ".testnet" / "output" / "runs"
-    latest_dir = runs_dir / "latest" / name
+    latest_dir = _contained_run_dir(runs_dir, "latest", name)
     latest_dir.mkdir(parents=True, exist_ok=True)
 
     per_test_log = latest_dir / "scenario.log"
@@ -1304,6 +1494,7 @@ def run_suite(
     Returns:
         List of TestResult for all executed tests.
     """
+    _require_int(test_n, "test_n", minimum=1)
     suite = SuiteConfig.from_yaml(suite_path)
     _validated_params(params_override, "params_override")
 
@@ -1319,6 +1510,13 @@ def run_suite(
             raise ValueError(
                 f"No tests match filter {test_filter}. Available: {available}"
             )
+
+    _preflight_selected_tests(
+        suite,
+        tests,
+        xahaud_root=xahaud_root,
+        env_override=env_override,
+    )
 
     if dry_run:
         console = Console(stderr=True)

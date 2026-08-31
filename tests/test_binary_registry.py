@@ -148,6 +148,23 @@ def test_save_binary_rejects_non_executable_file(tmp_path: Path) -> None:
         save_binary("@not-executable", source, manifest=tmp_path / "binaries.json")
 
 
+def test_save_binary_rejects_fith_output_and_preserves_receipt(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text('{"kind": "fith"}\n')
+    manifest = tmp_path / "binaries.json"
+    cache = tmp_path / "cache"
+
+    with pytest.raises(ValueError, match="refusing to save FITH output"):
+        save_binary("@heuristic", source, manifest=manifest, cache_dir=cache)
+
+    assert receipt.read_text() == '{"kind": "fith"}\n'
+    assert not manifest.exists()
+    assert not cache.exists()
+
+
 def test_save_binary_ignores_nonzero_version_output(tmp_path: Path) -> None:
     source = tmp_path / "rippled"
     _write_failing_binary(source)

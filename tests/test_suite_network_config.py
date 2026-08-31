@@ -12,10 +12,13 @@ from xahaud_scripts.testnet.launcher.iterm import ITermLauncher
 from xahaud_scripts.testnet.launcher.iterm_panes import ITermPanesLauncher
 from xahaud_scripts.testnet.launcher.tmux import TmuxLauncher
 from xahaud_scripts.testnet.suite import (
+    SuiteConfig,
+    _contained_run_dir,
     _validate_network_config,
     _validated_desktop,
     _validated_extra_args,
     _validated_genesis_file,
+    run_suite,
 )
 
 
@@ -217,6 +220,73 @@ def test_suite_yaml_shape_errors_are_value_errors(
         SuiteConfig.from_yaml(path)
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["/tmp/victim", "../victim", "nested/victim", ".", "has space"],
+)
+def test_suite_test_name_must_be_a_safe_path_component(name: str, tmp_path: Path):
+    path = tmp_path / "suite.yml"
+    path.write_text(f"tests: [{{name: {name!r}, script: scenario.py}}]\n")
+
+    with pytest.raises(ValueError, match="must start with a letter or digit"):
+        SuiteConfig.from_yaml(path)
+
+
+def test_expanded_variant_name_grammar_remains_supported(tmp_path: Path):
+    path = tmp_path / "suite.yml"
+    path.write_text("tests: [{name: test-name_1.2@manual, script: scenario.py}]\n")
+
+    suite = SuiteConfig.from_yaml(path)
+
+    assert suite.tests[0]["name"] == "test-name_1.2@manual"
+
+
+def test_run_output_path_rejects_existing_symlink_escape(tmp_path: Path):
+    runs_dir = tmp_path / "runs"
+    latest_dir = runs_dir / "latest"
+    outside = tmp_path / "outside"
+    latest_dir.mkdir(parents=True)
+    outside.mkdir()
+    (latest_dir / "safe").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes"):
+        _contained_run_dir(runs_dir, "latest", "safe")
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            "version: 1\ntests: [{name: a, script: b}]\n",
+            r"Suite file has unknown key\(s\): 'version'",
+        ),
+        (
+            "defaults: {metadata: x}\ntests: [{name: a, script: b}]\n",
+            r"'defaults' has unknown key\(s\): 'metadata'",
+        ),
+        (
+            "tests: [{name: a, script: b, skip: true}]\n",
+            r"Test #1 has unknown key\(s\): 'skip'",
+        ),
+        (
+            "defaults: {network: {node_cout: 2}}\ntests: [{name: a, script: b}]\n",
+            r"'defaults.network' has unknown key\(s\): 'node_cout'",
+        ),
+        (
+            "tests: [{name: a, script: b, network: {find_port: true}}]\n",
+            r"Test 'a' 'network' has unknown key\(s\): 'find_port'",
+        ),
+    ],
+    ids=["suite", "defaults", "test", "defaults-network", "test-network"],
+)
+def test_suite_schema_rejects_unknown_keys(body: str, match: str, tmp_path: Path):
+    path = tmp_path / "suite.yml"
+    path.write_text(body)
+
+    with pytest.raises(ValueError, match=match):
+        SuiteConfig.from_yaml(path)
+
+
 # --- required leaf fields ---------------------------------------------------
 
 
@@ -282,6 +352,46 @@ def test_core_network_leaves_are_validated(config: dict, match: str, tmp_path: P
     range(node_count) — after teardown() had already destroyed the prior run."""
     with pytest.raises(ValueError, match=match):
         _validate_network_config(config, xahaud_root=tmp_path)
+
+
+def test_network_config_rejects_unknown_key_for_programmatic_callers(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"unknown key\(s\): 'node_cout'"):
+        _validate_network_config({"node_cout": 2}, xahaud_root=tmp_path)
+
+
+def test_network_config_enforces_cli_node_count_limit(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"node_count must be <= 20"):
+        _validate_network_config({"node_count": 21}, xahaud_root=tmp_path)
+
+
+@pytest.mark.parametrize("node_id", [True, 1.5, "1.5", -1, 2, "n2"])
+def test_node_env_requires_exact_in_range_node_ids(node_id: object, tmp_path: Path):
+    with pytest.raises(ValueError, match=r"node_env"):
+        _validate_network_config(
+            {"node_count": 2, "node_env": {node_id: {"EXAMPLE": "1"}}},
+            xahaud_root=tmp_path,
+        )
+
+
+def test_node_env_accepts_numeric_and_n_prefixed_ids(tmp_path: Path):
+    _validate_network_config(
+        {
+            "node_count": 2,
+            "node_env": {0: {"ZERO": 0}, "n1": {"ONE": 1}},
+        },
+        xahaud_root=tmp_path,
+    )
+
+
+def test_node_env_rejects_duplicate_aliases(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"duplicate aliases for n1"):
+        _validate_network_config(
+            {
+                "node_count": 2,
+                "node_env": {1: {"FIRST": 1}, "n1": {"SECOND": 2}},
+            },
+            xahaud_root=tmp_path,
+        )
 
 
 # --- deterministic semantics (round-5 findings) -----------------------------
@@ -381,6 +491,140 @@ def test_params_keys_must_be_strings(body: str, match: str, tmp_path: Path):
         SuiteConfig.from_yaml(path)
 
 
+# --- whole-suite preflight ---------------------------------------------------
+
+
+def _scenario_file(path: Path) -> None:
+    path.write_text("async def scenario(ctx, log):\n    pass\n")
+
+
+def test_real_run_preflights_all_configs_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_script = tmp_path / "first.py"
+    second_script = tmp_path / "second.py"
+    _scenario_file(first_script)
+    _scenario_file(second_script)
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        "tests:\n"
+        f"  - {{name: first, script: {first_script}}}\n"
+        f"  - name: second\n    script: {second_script}\n"
+        "    network: {node_count: 0}\n"
+    )
+    dispatched: list[str] = []
+
+    def record_dispatch(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        dispatched.append(args[2]["name"])
+        raise AssertionError("no test may dispatch before whole-suite preflight")
+
+    monkeypatch.setattr("xahaud_scripts.testnet.suite._run_one_test", record_dispatch)
+
+    with pytest.raises(ValueError, match=r"node_count must be >= 1"):
+        run_suite(suite_file, tmp_path)
+
+    assert dispatched == []
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_real_run_preflights_all_scripts_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_script = tmp_path / "first.py"
+    _scenario_file(first_script)
+    missing_script = tmp_path / "missing.py"
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        "tests:\n"
+        f"  - {{name: first, script: {first_script}}}\n"
+        f"  - {{name: second, script: {missing_script}}}\n"
+    )
+    dispatched = False
+
+    def record_dispatch(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal dispatched
+        dispatched = True
+        raise AssertionError("no test may dispatch before whole-suite preflight")
+
+    monkeypatch.setattr("xahaud_scripts.testnet.suite._run_one_test", record_dispatch)
+
+    with pytest.raises(ValueError, match=r"Script is not a file"):
+        run_suite(suite_file, tmp_path)
+
+    assert dispatched is False
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_real_run_preflights_scenario_contract_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    script = tmp_path / "not_async.py"
+    script.write_text("def scenario(ctx, log):\n    pass\n")
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: bad, script: {script}}}]\n")
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.suite._run_one_test",
+        lambda *args, **kwargs: pytest.fail("preflight must reject before dispatch"),
+    )
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path)
+
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_malformed_variants_are_not_silently_ignored(tmp_path: Path):
+    script = tmp_path / "bad_variants.py"
+    script.write_text(
+        "variants = [{'label': '../escape'}]\nasync def scenario(ctx, log):\n    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: bad, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"Could not load scenario variants"):
+        run_suite(suite_file, tmp_path)
+
+    assert not (tmp_path / ".testnet").exists()
+
+
+def test_preflight_only_applies_to_selected_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    selected_script = tmp_path / "selected.py"
+    _scenario_file(selected_script)
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(
+        "tests:\n"
+        f"  - {{name: selected, script: {selected_script}}}\n"
+        "  - name: ignored\n    script: missing.py\n"
+        "    network: {node_count: 0}\n"
+    )
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.suite._run_one_test",
+        lambda *args, **kwargs: pytest.fail("dry-run must not dispatch"),
+    )
+
+    assert (
+        run_suite(
+            suite_file,
+            tmp_path,
+            test_filter=["selected"],
+            dry_run=True,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("test_n", [0, -1, True])
+def test_run_suite_rejects_non_positive_or_boolean_test_count(
+    test_n: object, tmp_path: Path
+):
+    with pytest.raises(ValueError, match=r"test_n"):
+        run_suite(tmp_path / "does-not-need-to-exist.yml", tmp_path, test_n=test_n)  # type: ignore[arg-type]
+
+
 # --- topology cross-field invariants ----------------------------------------
 
 
@@ -421,5 +665,58 @@ def test_non_exact_shaping_is_allowed_with_fixed_peers(tmp_path: Path):
     """Additive (exact: false) shaping stays legal on a fixed-peer mesh."""
     _validate_network_config(
         {"node_count": 2, "topology": {"edges": ["n0->n1"], "exact": False}},
+        xahaud_root=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("topology", [None, [], "", 0, False])
+def test_present_topology_must_be_a_mapping(topology: object, tmp_path: Path):
+    with pytest.raises(ValueError, match=r"topology must be a mapping"):
+        _validate_network_config({"topology": topology}, xahaud_root=tmp_path)
+
+
+def test_topology_rejects_unknown_key(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"topology has unknown key\(s\): 'wait'"):
+        _validate_network_config(
+            {"topology": {"wait": 3}},
+            xahaud_root=tmp_path,
+        )
+
+
+def test_topology_aliases_are_mutually_exclusive(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"only one of 'topology'"):
+        _validate_network_config(
+            {"topology": {}, "runtime_topology": {}},
+            xahaud_root=tmp_path,
+        )
+
+
+def test_legacy_runtime_topology_alias_remains_supported(tmp_path: Path):
+    _validate_network_config(
+        {
+            "fixed_peers": False,
+            "runtime_topology": {"edges": [], "exact": True},
+        },
+        xahaud_root=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        {"timeout": 1, "stable_for": 2},
+        {"settle_timeout": 1, "timeout": 10, "stable_for": 2},
+    ],
+)
+def test_topology_stability_cannot_exceed_effective_timeout(
+    topology: dict, tmp_path: Path
+):
+    with pytest.raises(ValueError, match=r"stable_for cannot exceed"):
+        _validate_network_config({"topology": topology}, xahaud_root=tmp_path)
+
+
+def test_topology_stability_may_equal_effective_timeout(tmp_path: Path):
+    _validate_network_config(
+        {"topology": {"timeout": 2, "stable_for": 2}},
         xahaud_root=tmp_path,
     )

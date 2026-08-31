@@ -16,7 +16,7 @@ Build and run xahaud tests with conan, ccache, coverage, and lldb support.
 x-run-tests -- ripple.app.Import                          # build + run test
 x-run-tests --times 5 -- ripple.app.Import                # repeat 5x
 x-run-tests --times=0                                     # build only
-x-run-tests --times=0 --save-binary @rng-ce               # build + save named binary
+x-run-tests --no-fith --times=0 --save-binary @rng-ce     # ordinary build + saved binary
 x-run-tests --compile-hooks src/test/app/Export_test.cpp -- ripple.app.Export
 x-run-tests --lldb -- ripple.app.Import                   # debug with lldb
 x-run-tests --ccache --build-type Release -- unit_test_hook
@@ -30,10 +30,13 @@ Key options:
 - Always builds first — `--no-build` was removed deliberately (tests against a
   stale binary present green results as evidence for code they never ran); an
   up-to-date incremental build is a cheap no-op
-- `--fith` enables the `cppt beta fith` compile fan-out preflight before the
-  ordinary target build. It is deliberately strict beta plumbing: failures
-  stop the run; use `--no-fith` to override the legacy
+- `--fith` replaces the ordinary target build with the heuristic `cppt beta
+  fith` compile-and-link path. Incomplete dependency evidence warns by default;
+  `--fith-strict` opts into refusal. Use `--no-fith` to override the legacy
   `XAHAU_SCRIPTS_FITH_BETA=1` opt-in.
+- FITH output is a mixed-generation development binary and cannot be stored as
+  an ordinary `@name` alias. `--save-binary` refuses explicit or environment-
+  enabled FITH; use `--no-fith` to perform the authoritative build first.
 - Builds hold an exclusive per-build-dir lock (`build*/.x-build-lock`) and
   recompact ninja's databases after success — overlapping/killed ninja
   invocations corrupt `.ninja_deps`, which ninja never self-repairs (the
@@ -44,7 +47,8 @@ Key options:
 - `--ccache/--no-ccache` - ccache with worktree cache sharing
 - `--build-type Debug|Release|Coverage`
 - `--target rippled|xrpld`
-- `--save-binary @name` - Copy the built `rippled` into the local binary registry
+- `--save-binary @name` - Copy an ordinary `rippled` build into the local binary
+  registry (incompatible with FITH)
 - `--coverage` - Enable coverage instrumentation
 - `--coverage-version v1|v2|auto` - v1=llvm-cov, v2=gcovr
 - `--diff-cover` - Show uncovered lines in git diff
@@ -80,6 +84,12 @@ Key options:
 - `--patches/--no-patches` - Apply bundled patches (default: enabled)
 - `--clean/--clean-build` - Clean build artifacts
 - `--jobs N` - Parallel build jobs
+
+The root-level `patches/disconnect-rpc-ip-only.patch` is not one of xr-build's
+bundled patches. It is a manual xahaud testnet-only admin RPC, and automatically
+adding it to xrpld or every xahaud build would be a product/security boundary
+violation. See README.md for exact `git apply --check` / `git apply` commands,
+compatible source intent, and the IP-wide disconnect warning.
 
 ### xr-coverage-diff
 

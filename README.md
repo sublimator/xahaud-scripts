@@ -53,20 +53,51 @@ The default diff is the dirty worktree (`--fith-base HEAD`). Use
 `--fith-base origin/dev` deliberately for the full branch delta.
 `XAHAU_SCRIPTS_FITH_BETA=1` remains a compatibility opt-in. A quick-linked
 binary stays at the ordinary target path and carries an adjacent hidden FITH
-receipt; a successful ordinary build removes that receipt.
+receipt; a successful ordinary build removes that receipt. FITH outputs cannot
+be saved into the ordinary `@name` binary registry: `--save-binary` refuses the
+combination, including when FITH came from the environment opt-in. Pass
+`--no-fith` to perform an ordinary build before saving an alias.
 
 ## Saved Test Binaries
 
 Use `@name` aliases to keep local mixed-binary testnets readable:
 
 ```bash
-x-run-tests --times=0 --save-binary @rng-ce
+x-run-tests --no-fith --times=0 --save-binary @rng-ce
 x-testnet --rippled-path @rng-ce run
 x-testnet run --node-binary n0:@old --node-binary n1:@new
 ```
 
 Saved binaries are copied under `~/.cache/xahaud-scripts/binaries/`; metadata is
 written to `~/.config/xahaud-scripts/binaries.json`.
+
+## Optional xahaud Disconnect RPC Patch
+
+`patches/disconnect-rpc-ip-only.patch` is a manual, xahaud testnet-only patch.
+It was derived from xahaud commit `6fc14f398d754283b5dee6576edb59dc2656eaaa`
+with port parsing and matching removed, and targets the compatible source shape
+before that commit added its port-aware handler. A tree that already contains
+that handler should fail the check rather than receive the patch twice.
+
+From anywhere, use absolute checkout paths and check before applying:
+
+```bash
+git -C /path/to/xahaud apply --check \
+  /path/to/xahaud-scripts/patches/disconnect-rpc-ip-only.patch
+git -C /path/to/xahaud apply \
+  /path/to/xahaud-scripts/patches/disconnect-rpc-ip-only.patch
+```
+
+The patch registers an admin RPC unconditionally; “testnet-only” is an
+operational policy, not a compile-time guard. Keep admin RPC bound to trusted
+local callers. A request disconnects every active peer with the supplied IP,
+so this IP-only variant is for distinct-IP local testnets and is unsafe as a
+public/NAT gateway control where several peers may share an address.
+
+`xr-build --patches` deliberately does not apply this patch. That command
+builds xrpld and applies only its packaged general-purpose patches; silently
+adding a xahaud-specific admin RPC to every build would cross both product and
+security boundaries.
 
 ## Development
 

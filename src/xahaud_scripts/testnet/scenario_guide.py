@@ -414,9 +414,10 @@ revocation; it does not accumulate a list.
 
 Config and keyfile are committed before the restart. If the restart then
 fails, the new consistent pair stays installed for the next start. The
-helpers do not roll that pair back to the pre-mutation files. Check the
-returned `restart` map: `False` means the mutation committed but restart
-dispatch did not complete.
+helpers do not roll that pair back to the pre-mutation files, and restart
+dispatch failures raise so the scenario cannot silently pass. Revocation also
+writes `validator-key-revocation.cfg` beside the master keyfile as a recovery
+artifact before changing the relay config.
 """)
 
     # -- Parameterized tests --

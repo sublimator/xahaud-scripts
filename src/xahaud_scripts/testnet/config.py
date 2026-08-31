@@ -13,6 +13,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -424,6 +425,8 @@ class NetworkConfig:
         base_port_rpc: Base port for RPC connections (node N uses base + N)
         base_port_ws: Base port for WebSocket connections (node N uses base + N)
         fixed_peers: If True, generated configs include full-mesh [ips_fixed].
+        node_seed_namespace: Private per-instance entropy used to derive stable
+            node identities without making their private seeds predictable.
     """
 
     network_id: int = DEFAULT_NETWORK_ID
@@ -433,6 +436,11 @@ class NetworkConfig:
     base_port_peer: int = DEFAULT_BASE_PORT_PEER
     base_port_rpc: int = DEFAULT_BASE_PORT_RPC
     base_port_ws: int = DEFAULT_BASE_PORT_WS
+    node_seed_namespace: bytes = field(
+        default_factory=lambda: secrets.token_bytes(32),
+        repr=False,
+        compare=False,
+    )
 
     @property
     def validator_count(self) -> int:

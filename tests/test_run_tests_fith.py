@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from xahaud_scripts.run_tests import (
     FITH_BETA_ENV,
@@ -11,6 +12,9 @@ from xahaud_scripts.run_tests import (
     env_flag_enabled,
     fith_enabled,
     run_fith_quick_build,
+)
+from xahaud_scripts.run_tests import (
+    main as run_tests_main,
 )
 
 
@@ -31,6 +35,38 @@ def test_fith_requires_beta_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fith_enabled(None)
     assert fith_enabled(True)
     assert not fith_enabled(False)
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "env", "enabled_by"),
+    [
+        (["--fith"], {}, "--fith"),
+        ([], {FITH_BETA_ENV: "1"}, f"{FITH_BETA_ENV}=1"),
+    ],
+)
+def test_fith_binary_cannot_be_saved_without_provenance(
+    extra_args: list[str],
+    env: dict[str, str],
+    enabled_by: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_root_probe() -> str:
+        raise AssertionError("FITH/save validation must happen before build setup")
+
+    monkeypatch.setattr(
+        "xahaud_scripts.run_tests.get_xahaud_root", unexpected_root_probe
+    )
+
+    result = CliRunner().invoke(
+        run_tests_main,
+        [*extra_args, "--save-binary", "@candidate", "--times=0"],
+        env=env,
+    )
+
+    assert result.exit_code != 0
+    assert "--save-binary cannot be used while FITH is enabled" in result.output
+    assert enabled_by in result.output
+    assert "Use --no-fith" in result.output
 
 
 def test_run_fith_quick_build_invokes_cppt_with_target(

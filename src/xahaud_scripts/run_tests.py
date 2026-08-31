@@ -662,7 +662,10 @@ def run_rippled(
     "--save-binary",
     default=None,
     metavar="@NAME",
-    help="After a successful build, copy the rippled binary into the @NAME registry.",
+    help=(
+        "After a successful ordinary build, copy rippled into the @NAME registry. "
+        "Refused while FITH is enabled."
+    ),
 )
 @click.option(
     "-j",
@@ -838,6 +841,22 @@ def main(
             "as xahaud testnet node binaries."
         )
 
+    # A FITH output is a deliberately heuristic, mixed-generation development
+    # binary.  The adjacent receipt is the evidence that distinguishes it from
+    # an ordinary build, but the saved-binary registry copies only the
+    # executable.  Refuse the combination before touching the build tree so an
+    # alias can never silently shed that provenance.  This also covers the
+    # legacy environment opt-in; --no-fith remains the explicit escape hatch.
+    use_fith = fith_enabled(fith)
+    if save_binary and use_fith:
+        source = "--fith" if fith is True else f"{FITH_BETA_ENV}=1"
+        raise click.UsageError(
+            f"--save-binary cannot be used while FITH is enabled by {source}; "
+            "FITH outputs are heuristic development binaries and cannot be "
+            "stored as ordinary aliases. Use --no-fith to perform the "
+            "ordinary build before saving."
+        )
+
     # Auto-enable coverage when diff-cover is requested
     if diff_cover and not coverage:
         logger.info(
@@ -947,7 +966,6 @@ def main(
         tee_file.parent.mkdir(parents=True, exist_ok=True)
         tee_file.write_text("")  # truncate at session start
         logger.info(f"Output tee: {tee_file}")
-        use_fith = fith_enabled(fith)
         if use_fith:
             source = "--fith" if fith is True else f"{FITH_BETA_ENV}=1"
             logger.info(f"{source}: using cppt FITH instead of the ordinary build")

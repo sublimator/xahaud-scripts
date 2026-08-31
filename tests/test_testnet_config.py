@@ -39,7 +39,8 @@ from xahaud_scripts.testnet.config import (
 )
 from xahaud_scripts.testnet.generator import (
     ValidatorKeysGenerator,
-    _deterministic_node_seed,
+    _derive_node_seed,
+    find_free_port_base,
     generate_node_config,
     update_config_section,
 )
@@ -412,29 +413,51 @@ def test_generate_node_config_full_mesh_fixed_peers_by_default(tmp_path: Path):
     assert f"127.0.0.3 {DEFAULT_BASE_PORT_PEER + 2}" in text
 
 
-def test_generate_node_config_pins_deterministic_node_identity(tmp_path: Path):
+def test_generate_node_config_pins_private_instance_node_identity(tmp_path: Path):
     node_dir = tmp_path / "n0"
     node_dir.mkdir()
     validators_file = node_dir / "validators.txt"
     validators_file.write_text("")
+    config = NetworkConfig(network_id=31337, node_count=2)
 
     cfg_path = generate_node_config(
         node_id=0,
         node_dir=node_dir,
         validator_token="token",
         validators_file=validators_file,
-        network_config=NetworkConfig(network_id=31337, node_count=2),
+        network_config=config,
     )
 
-    assert "\n[node_seed]\nssGn2RwhoWE5M7VgNDk986v9m87zL\n" in cfg_path.read_text()
+    seed = _derive_node_seed(config.node_seed_namespace, 31337, 0)
+    assert f"\n[node_seed]\n{seed}\n" in cfg_path.read_text()
 
 
-def test_deterministic_node_seed_is_stable_and_namespaced():
-    seed = _deterministic_node_seed(31337, 0)
+def test_node_seed_is_stable_within_instance_and_private_between_instances():
+    namespace = bytes(range(32))
+    seed = _derive_node_seed(namespace, 31337, 0)
 
-    assert seed == "ssGn2RwhoWE5M7VgNDk986v9m87zL"
-    assert seed != _deterministic_node_seed(31337, 1)
-    assert seed != _deterministic_node_seed(21337, 0)
+    assert seed == _derive_node_seed(namespace, 31337, 0)
+    assert seed != _derive_node_seed(namespace, 31337, 1)
+    assert seed != _derive_node_seed(namespace, 21337, 0)
+    assert seed != _derive_node_seed(b"different private namespace!!", 31337, 0)
+
+    first = NetworkConfig()
+    second = NetworkConfig()
+    assert _derive_node_seed(first.node_seed_namespace, 99999, 0) != _derive_node_seed(
+        second.node_seed_namespace, 99999, 0
+    )
+
+
+def test_find_free_ports_preserves_private_node_seed_namespace():
+    class BusyFirstPort:
+        def get_port_state(self, port: int):
+            return [{"process": "busy"}] if port == DEFAULT_BASE_PORT_PEER else []
+
+    config = NetworkConfig(node_count=1)
+    adjusted = find_free_port_base(config, BusyFirstPort())
+
+    assert adjusted is not config
+    assert adjusted.node_seed_namespace is config.node_seed_namespace
 
 
 def test_validator_keys_rotate_requires_same_master_and_next_sequence(
@@ -512,7 +535,11 @@ def test_validator_keys_revoke_extracts_config_manifest(
     assert result == {
         "public_key": "master-public",
         "revocation": "revocation-base64",
+        "recovery_file": str(tmp_path / "validator-key-revocation.cfg"),
     }
+    assert (tmp_path / "validator-key-revocation.cfg").read_text() == (
+        "[validator_key_revocation]\nrevocation-base64\n"
+    )
 
 
 def test_update_config_section_replaces_token_and_appends_revocation(tmp_path: Path):
@@ -806,6 +833,26 @@ def test_suite_cli_resolves_ai_sandbox_mode(
 
     assert result.exit_code == 0, result.output
     assert seen["ai_sandboxed"] is expected
+
+
+def test_suite_cli_rejects_non_positive_test_count(tmp_path: Path) -> None:
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text("tests: []\n")
+
+    result = CliRunner().invoke(
+        testnet,
+        [
+            "--xahaud-root",
+            str(tmp_path),
+            "suite",
+            str(suite_file),
+            "--test-n",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "0 is not in the range x>=1" in result.output
 
 
 @pytest.mark.parametrize(

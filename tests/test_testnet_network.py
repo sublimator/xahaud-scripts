@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 import logging
 import shlex
 import subprocess
@@ -217,6 +218,9 @@ def test_rotate_validator_manifest_updates_generated_token(
     assert keyfile.read_text() == "rotated-keyfile"
     assert "[validator_token]\nrotated-token\n" in node.config_path.read_text()
     assert "old-token" not in node.config_path.read_text()
+    assert net.nodes[0].token == "rotated-token"
+    network_info = json.loads((tmp_path / "network.json").read_text())
+    assert network_info["nodes"][0]["token"] == "rotated-token"
 
 
 def test_revoke_validator_installs_revocation_on_via_node(
@@ -237,9 +241,12 @@ def test_revoke_validator_installs_revocation_on_via_node(
     def revoke(_self: ValidatorKeysGenerator, path: Path):
         assert path == keyfile
         path.write_text("revoked-keyfile")
+        recovery_file = path.parent / "validator-key-revocation.cfg"
+        recovery_file.write_text("[validator_key_revocation]\nrevocation-base64\n")
         return {
             "public_key": master.public_key,
             "revocation": "revocation-base64",
+            "recovery_file": str(recovery_file),
         }
 
     monkeypatch.setattr(ValidatorKeysGenerator, "revoke", revoke)
@@ -250,6 +257,7 @@ def test_revoke_validator_installs_revocation_on_via_node(
         "master_node_id": 0,
         "via_node_id": 1,
         "public_key": "pk0",
+        "recovery_file": str(master.node_dir / "validator-key-revocation.cfg"),
     }
     assert keyfile.read_text() == "revoked-keyfile"
     assert via.config_path.read_text().endswith(
@@ -295,6 +303,86 @@ def test_rotate_validator_manifest_rolls_back_keyfile_and_config_on_mismatch(
     assert node.config_path.read_text() == "[validator_token]\nold-token\n"
 
 
+def test_rotate_validator_manifest_rolls_back_metadata_when_persistence_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=1, validators=1)
+    node = _node(tmp_path, 0)
+    net._nodes = [node]
+    node.node_dir.mkdir(parents=True)
+    node.config_path.write_text("[validator_token]\nold-token\n")
+    keyfile = node.node_dir / "validator-keys.json"
+    keyfile.write_text("old-keyfile")
+    network_file = tmp_path / "network.json"
+    network_file.write_text("original-network-info")
+
+    def rotate(_self: ValidatorKeysGenerator, path: Path):
+        path.write_text("rotated-keyfile")
+        return {
+            "public_key": node.public_key,
+            "sequence": 2,
+            "token": "rotated-token",
+        }
+
+    def fail_save() -> None:
+        network_file.write_text("partial-network-info")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ValidatorKeysGenerator, "rotate", rotate)
+    monkeypatch.setattr(net, "_save_network_info", fail_save)
+
+    with pytest.raises(OSError, match="disk full"):
+        net.rotate_validator_manifest(0)
+
+    assert keyfile.read_text() == "old-keyfile"
+    assert node.config_path.read_text() == "[validator_token]\nold-token\n"
+    assert net.nodes[0].token == node.token
+    assert network_file.read_text() == "original-network-info"
+
+
+def test_revoke_validator_preserves_revoked_key_and_recovery_artifact_on_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    net = _network(tmp_path, _NoBuilderLauncher())
+    net._config = NetworkConfig(node_count=2, validators=1)
+    master = _node(tmp_path, 0)
+    via = _node(tmp_path, 1)
+    net._nodes = [master, via]
+    master.node_dir.mkdir(parents=True)
+    via.node_dir.mkdir(parents=True)
+    keyfile = master.node_dir / "validator-keys.json"
+    keyfile.write_text(json.dumps({"public_key": master.public_key, "revoked": False}))
+    via.config_path.write_text("[server]\npeer\n")
+    recovery_file = master.node_dir / "validator-key-revocation.cfg"
+
+    def revoke(_self: ValidatorKeysGenerator, path: Path):
+        path.write_text(json.dumps({"public_key": master.public_key, "revoked": True}))
+        recovery_file.write_text("[validator_key_revocation]\nrevocation-base64\n")
+        return {
+            "public_key": master.public_key,
+            "revocation": "revocation-base64",
+            "recovery_file": str(recovery_file),
+        }
+
+    def fail_config(*_args: object, **_kwargs: object) -> None:
+        via.config_path.write_text("partially-written")
+        raise OSError("relay config is read-only")
+
+    monkeypatch.setattr(ValidatorKeysGenerator, "revoke", revoke)
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.network.update_config_section", fail_config
+    )
+
+    with pytest.raises(RuntimeError, match="remains permanently revoked") as exc_info:
+        net.revoke_validator(0, 1)
+
+    assert str(recovery_file) in str(exc_info.value)
+    assert json.loads(keyfile.read_text())["revoked"] is True
+    assert recovery_file.read_text().endswith("revocation-base64\n")
+    assert via.config_path.read_text() == "[server]\npeer\n"
+
+
 class _RestartRPC:
     def __init__(self, network: _RestartScenarioNetwork) -> None:
         self._network = network
@@ -305,11 +393,14 @@ class _RestartRPC:
 
 
 class _RestartScenarioNetwork:
-    def __init__(self, *, stop_success: bool = True) -> None:
+    def __init__(
+        self, *, stop_success: bool = True, start_success: bool = True
+    ) -> None:
         self.events: list[str] = []
         self.running = True
         self.exit_status: int | None = None
         self.stop_success = stop_success
+        self.start_success = start_success
         self.rpc_client = _RestartRPC(self)
 
     def stop_nodes(self, node_ids: list[int]) -> dict[int, bool]:
@@ -324,6 +415,8 @@ class _RestartScenarioNetwork:
     def start_nodes(self, node_ids: list[int]) -> dict[int, bool]:
         node_id = node_ids[0]
         self.events.append(f"start:{node_id}")
+        if not self.start_success:
+            return {node_id: False}
         self.exit_status = None
         self.running = True
         return {node_id: True}
@@ -426,6 +519,95 @@ def test_tmux_launcher_preserves_text_stderr_on_launch_failure(
     assert "tmux stderr: fork blocked" in caplog.text
 
 
+def test_tmux_exit_status_must_match_current_pid_generation(tmp_path: Path):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state({"base_dir": str(tmp_path)})
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    (node_dir / ".pid").write_text("current-generation 123\n")
+    (node_dir / ".exit_status").write_text("stale-generation 123 0\n")
+
+    assert launcher.get_exit_status(0) is None
+
+    (node_dir / ".exit_status").write_text("current-generation 123 17\n")
+    assert launcher.get_exit_status(0) == 17
+
+    # Legacy untagged markers are deliberately not trusted.
+    (node_dir / ".exit_status").write_text("0\n")
+    assert launcher.get_exit_status(0) is None
+
+
+def test_tmux_stop_refuses_unverified_marker_pid_and_uses_pane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state({"base_dir": str(tmp_path), "pane_ids": {"0": "%0"}})
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    (node_dir / ".pid").write_text("generation 4242\n")
+
+    monkeypatch.setattr(launcher, "_pid_belongs_to_node", lambda _pid, _nid: False)
+    monkeypatch.setattr(launcher, "_validate_pane", lambda _nid: "%0")
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.os.kill",
+        lambda *_args: pytest.fail("an unverified PID must not be signaled"),
+    )
+    sent: list[list[str]] = []
+
+    def record_run(args: list[str], **_kwargs: Any):
+        sent.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run", record_run
+    )
+
+    assert launcher.stop_node(0) is True
+    assert sent == [["tmux", "send-keys", "-t", "%0", "C-c", ""]]
+
+
+def test_load_network_info_restores_tmux_base_dir_for_exit_status(tmp_path: Path):
+    launcher = TmuxLauncher()
+    net = _network(tmp_path, launcher)
+    node = _node(tmp_path, 0)
+    node.node_dir.mkdir(parents=True)
+    (node.node_dir / ".pid").write_text("generation 123\n")
+    (node.node_dir / ".exit_status").write_text("generation 123 0\n")
+    (tmp_path / "network.json").write_text(
+        json.dumps(
+            {
+                "network_id": net.config.network_id,
+                "node_count": 1,
+                "validators": 1,
+                "fixed_peers": True,
+                "base_port_peer": 21235,
+                "base_port_rpc": 5005,
+                "base_port_ws": 6005,
+                "nodes": [
+                    {
+                        "id": 0,
+                        "public_key": node.public_key,
+                        "token": node.token,
+                        "config": str(node.config_path),
+                        "port_peer": node.port_peer,
+                        "port_rpc": node.port_rpc,
+                        "port_ws": node.port_ws,
+                    }
+                ],
+                "launch_state": {
+                    "launcher": "tmux",
+                    "pane_ids": {"0": "%0"},
+                    "launch_commands": {"0": "command"},
+                },
+            }
+        )
+    )
+
+    net._load_network_info()
+
+    assert launcher.get_exit_status(0) == 0
+
+
 def test_launch_env_labels_runtime_config_branch_support(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ):
@@ -484,11 +666,20 @@ def test_scenario_manifest_mutation_stays_committed_when_stop_fails():
     network = _RestartScenarioNetwork(stop_success=False)
     ctx = ScenarioContext(cast(Any, network))
 
-    result = asyncio.run(ctx.rotate_validator_manifest(1))
+    with pytest.raises(RuntimeError, match="Failed to dispatch stop for n1"):
+        asyncio.run(ctx.rotate_validator_manifest(1))
 
-    assert result["sequence"] == 2
-    assert result["restart"] == {1: False}
     assert network.events == ["rotate:1", "stop:1"]
+
+
+def test_scenario_restart_start_dispatch_failure_is_fatal():
+    network = _RestartScenarioNetwork(start_success=False)
+    ctx = ScenarioContext(cast(Any, network))
+
+    with pytest.raises(RuntimeError, match="Failed to dispatch start for n2"):
+        asyncio.run(ctx.restart_node(2))
+
+    assert network.events == ["stop:2", "exit-status:2", "start:2"]
 
 
 class _RecordingLauncher:
