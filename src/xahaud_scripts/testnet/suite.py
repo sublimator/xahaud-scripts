@@ -1078,45 +1078,196 @@ def _call_positional_values(node: ast.AST) -> tuple[ast.AST, ...]:
     return (node,)
 
 
+_UNKNOWN_SUBSCRIPT = object()
+
+
+def _static_subscript(slice_node: ast.AST) -> object:
+    """Return a literal index, key, or slice, or the unknown sentinel."""
+    if isinstance(slice_node, ast.Slice):
+        parts: list[object] = []
+        for bound in (slice_node.lower, slice_node.upper, slice_node.step):
+            if bound is None:
+                parts.append(None)
+                continue
+            try:
+                parts.append(ast.literal_eval(bound))
+            except (ValueError, TypeError):
+                return _UNKNOWN_SUBSCRIPT
+        return slice(*parts)
+    try:
+        return ast.literal_eval(slice_node)
+    except (ValueError, TypeError):
+        return _UNKNOWN_SUBSCRIPT
+
+
+def _literal_sequence_items(container: ast.AST) -> tuple[ast.AST, ...] | None:
+    """Expand an exact builtin tuple/list display into its runtime items."""
+    if isinstance(container, ast.NamedExpr):
+        return _literal_sequence_items(container.value)
+    if not isinstance(container, (ast.Tuple, ast.List)):
+        return None
+    items: list[ast.AST] = []
+    for item in container.elts:
+        if not isinstance(item, ast.Starred):
+            items.append(item)
+            continue
+        expanded = _literal_sequence_items(item.value)
+        if expanded is None:
+            return None
+        items.extend(expanded)
+    return tuple(items)
+
+
+def _index_literal_sequence(
+    items: tuple[ast.AST, ...], index: object
+) -> tuple[ast.AST, ...] | None:
+    """Index or slice a resolved sequence of AST items."""
+    if isinstance(index, slice):
+        try:
+            return tuple(items[index])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(index, int):
+        try:
+            return (items[index],)
+        except IndexError:
+            return ()
+    return None
+
+
+def _literal_dict_entries(
+    container: ast.AST,
+) -> tuple[tuple[object, ast.AST], ...] | None:
+    """Resolve entries from an exact builtin dict display, in update order."""
+    if isinstance(container, ast.NamedExpr):
+        return _literal_dict_entries(container.value)
+    if isinstance(container, ast.BoolOp):
+        selected = _static_boolop_value(container)
+        if selected is None:
+            return None
+        return _literal_dict_entries(selected)
+    if isinstance(container, ast.IfExp):
+        truth = _static_truth_value(container.test)
+        if truth is None:
+            return None
+        return _literal_dict_entries(container.body if truth else container.orelse)
+    if isinstance(container, ast.Subscript):
+        subscript = _static_subscript(container.slice)
+        if subscript is _UNKNOWN_SUBSCRIPT or isinstance(subscript, slice):
+            return None
+        selected_values = _literal_subscript_values(container)
+        if selected_values is None or len(selected_values) != 1:
+            return None
+        return _literal_dict_entries(selected_values[0])
+    if not isinstance(container, ast.Dict):
+        return None
+    entries: list[tuple[object, ast.AST]] = []
+    for key, mapped in zip(container.keys, container.values, strict=True):
+        if key is None:
+            expanded = _literal_dict_entries(mapped)
+            if expanded is None:
+                return None
+            entries.extend(expanded)
+            continue
+        try:
+            literal_key = ast.literal_eval(key)
+            hash(literal_key)
+        except (ValueError, TypeError):
+            return None
+        entries.append((literal_key, mapped))
+    return tuple(entries)
+
+
+def _literal_dict_lookup(node: ast.Dict, index: object) -> tuple[ast.AST, ...] | None:
+    """Return the last equal-key value from an exact literal dict display."""
+    if isinstance(index, slice):
+        return None
+    try:
+        hash(index)
+    except TypeError:
+        return None
+    entries = _literal_dict_entries(node)
+    if entries is None:
+        return None
+    selected: tuple[ast.AST, ...] = ()
+    for literal_key, mapped in entries:
+        if literal_key == index:
+            selected = (mapped,)
+    return selected
+
+
+def _static_truth_value(node: ast.AST) -> bool | None:
+    """Return the truth of an exact literal, or None when it is not static."""
+    if isinstance(node, ast.NamedExpr):
+        return _static_truth_value(node.value)
+    try:
+        return bool(ast.literal_eval(node))
+    except (ValueError, TypeError):
+        return None
+
+
+def _static_boolop_value(node: ast.BoolOp) -> ast.AST | None:
+    """Return the operand selected by an exact builtin boolean expression."""
+    for operand in node.values[:-1]:
+        truth = _static_truth_value(operand)
+        if truth is None:
+            return None
+        if (isinstance(node.op, ast.Or) and truth) or (
+            isinstance(node.op, ast.And) and not truth
+        ):
+            return operand
+    return node.values[-1]
+
+
+def _index_literal_container(
+    container: ast.AST, index: object
+) -> tuple[ast.AST, ...] | None:
+    """Index a builtin literal tuple/list/dict, including wrapper bases."""
+    if isinstance(container, ast.NamedExpr):
+        return _index_literal_container(container.value, index)
+    if isinstance(container, ast.IfExp):
+        left = _index_literal_container(container.body, index)
+        right = _index_literal_container(container.orelse, index)
+        if left is None or right is None:
+            return None
+        return (*left, *right)
+    if isinstance(container, ast.BoolOp):
+        selected = _static_boolop_value(container)
+        if selected is None:
+            return None
+        return _index_literal_container(selected, index)
+    if isinstance(container, ast.Subscript):
+        inner = _literal_subscript_values(container)
+        if inner is None:
+            return None
+        # A slice produces a new top-level sequence. A later subscript indexes
+        # that result, not the contents of its sole selected AST item.
+        if isinstance(_static_subscript(container.slice), slice):
+            return _index_literal_sequence(inner, index)
+        if len(inner) == 1 and isinstance(
+            inner[0],
+            (ast.Tuple, ast.List, ast.Dict, ast.NamedExpr, ast.IfExp, ast.BoolOp),
+        ):
+            return _index_literal_container(inner[0], index)
+        return _index_literal_sequence(inner, index)
+    if isinstance(container, (ast.Tuple, ast.List)):
+        items = _literal_sequence_items(container)
+        if items is None:
+            return None
+        return _index_literal_sequence(items, index)
+    if isinstance(container, ast.Dict):
+        return _literal_dict_lookup(container, index)
+    return None
+
+
 def _literal_subscript_values(
     node: ast.Subscript,
 ) -> tuple[ast.AST, ...] | None:
     """Return a statically selected literal container item, when exact."""
-    try:
-        index = ast.literal_eval(node.slice)
-    except (ValueError, TypeError):
+    index = _static_subscript(node.slice)
+    if index is _UNKNOWN_SUBSCRIPT:
         return None
-    if isinstance(node.value, (ast.Tuple, ast.List)):
-        if any(isinstance(item, ast.Starred) for item in node.value.elts):
-            return None
-        if not isinstance(index, int):
-            return None
-        try:
-            return (node.value.elts[index],)
-        except IndexError:
-            return ()
-    if isinstance(node.value, ast.Dict):
-        # An unpacked mapping or nonliteral key can supply or override this
-        # lookup, so retain the ordinary conservative fallback in those cases.
-        if any(key is None for key in node.value.keys):
-            return None
-        try:
-            hash(index)
-        except TypeError:
-            return None
-        selected: tuple[ast.AST, ...] = ()
-        for key, mapped in zip(node.value.keys, node.value.values, strict=True):
-            assert key is not None
-            try:
-                literal_key = ast.literal_eval(key)
-                hash(literal_key)
-            except (ValueError, TypeError):
-                return None
-            if literal_key == index:
-                # Dict displays retain the value from the last equal key.
-                selected = (mapped,)
-        return selected
-    return None
+    return _index_literal_container(node.value, index)
 
 
 def _starred_call_values(value: ast.AST) -> tuple[ast.AST, ...]:
@@ -1137,6 +1288,10 @@ def _starred_call_values(value: ast.AST) -> tuple[ast.AST, ...]:
     if isinstance(value, ast.Subscript):
         selected = _literal_subscript_values(value)
         if selected is not None:
+            # A slice result is itself starred exactly once: its top-level
+            # elements become arguments, but nested literal containers do not.
+            if isinstance(_static_subscript(value.slice), slice):
+                return selected
             return tuple(
                 positional
                 for item in selected

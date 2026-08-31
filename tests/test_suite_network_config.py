@@ -1102,6 +1102,20 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "any(*{**({(x for x in deferred): 1},)[0]})",
         "any(*{0: ((x for x in deferred),)}[0])",
         "any(*{0: (True,), 0: ((x for x in deferred),)}[0])",
+        "any(*{None: ((x for x in deferred),)}[None])",
+        "any(*((*((x for x in deferred),),)[0]))",
+        "any(*([*[(x for x in deferred)]][0]))",
+        "any(*((*((x for x in deferred),),)[0:1]))",
+        "any(*{0: ([False],), **{0: ((x for x in deferred),)}}[0])",
+        "any(*{**(False or {0: ((x for x in deferred),)})}[0])",
+        "any(*{**({0: ((x for x in deferred),)} if True else {})}[0])",
+        "any(*{**(({0: ((x for x in deferred),)},)[0])}[0])",
+        "any(*((t := ((x for x in deferred),))[0]))",
+        "any(*(((((x for x in deferred),) if True else ())[0])))",
+        "any(*((False or ((x for x in deferred),))[0]))",
+        "any(*(((x for x in deferred),)[0:1]))",
+        "any(*([(x for x in deferred)][0:1]))",
+        "any(*((((x for x in deferred),),)[0][0:]))",
     ],
     ids=[
         "any",
@@ -1124,6 +1138,20 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "starred-subscript-expanded-dict",
         "starred-literal-dict-subscript",
         "starred-duplicate-dict-subscript",
+        "starred-none-key-dict-subscript",
+        "starred-expanded-tuple-subscript",
+        "starred-expanded-list-subscript",
+        "starred-expanded-tuple-slice",
+        "starred-expanded-dict-subscript",
+        "starred-boolop-expanded-dict-subscript",
+        "starred-ifexp-expanded-dict-subscript",
+        "starred-selected-expanded-dict-subscript",
+        "starred-named-subscript-base",
+        "starred-ifexp-subscript-base",
+        "starred-boolop-subscript-base",
+        "starred-tuple-slice",
+        "starred-list-slice",
+        "starred-nested-subscript-slice",
     ],
 )
 def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
@@ -1142,6 +1170,61 @@ def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
 
     with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
         run_suite(suite_file, tmp_path, dry_run=True)
+
+
+@pytest.mark.parametrize(
+    ("setup", "consumer"),
+    [
+        ("", "any(*((((x for x in deferred),),)[0:1]))"),
+        (
+            "flag = (([False],),)\n",
+            "any(*((flag or (((x for x in deferred),),))[0]))",
+        ),
+        (
+            "",
+            "any(*{0: ((x for x in deferred),), **{0: ([False],)}}[0])",
+        ),
+        (
+            "unknown = (([False],),)\n",
+            "any(*((*unknown, ((x for x in deferred),))[0]))",
+        ),
+        ("", "any*((((((x for x in deferred),),),)[0:1])[0])"),
+        ("", "any(*(((x for x in deferred),)['bad':]))"),
+        (
+            "",
+            "any(*{**(False or {0: ((x for x in deferred),)}), 0: ([False],)}[0])",
+        ),
+        (
+            "mapping = {0: ([False],)}\n",
+            "any(*{**(mapping or {0: ((x for x in deferred),)})}[0])",
+        ),
+    ],
+    ids=[
+        "one-level-slice",
+        "unresolved-boolop",
+        "later-dict-override",
+        "unknown-sequence-expansion",
+        "slice-then-index-one-level",
+        "invalid-literal-slice",
+        "later-override-after-boolop-mapping",
+        "unknown-boolop-mapping",
+    ],
+)
+def test_preflight_allows_nonconsuming_literal_subscript_wrappers(
+    setup: str,
+    consumer: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "nonconsuming_literal_subscript.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n" + setup + f"[alias] = (value for value in [1] if {consumer})\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
 
 
 def test_preflight_rejects_consuming_generator_created_in_unpack_filter(
