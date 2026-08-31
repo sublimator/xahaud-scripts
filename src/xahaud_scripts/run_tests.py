@@ -20,7 +20,7 @@ from pathlib import Path
 
 import click
 
-from xahaud_scripts.binary_registry import alias_name
+from xahaud_scripts.binary_registry import alias_name, discard_stale_fith_receipts
 from xahaud_scripts.build import (
     CMakeOptions,
     ccache_show_stats,
@@ -374,7 +374,14 @@ def build_rippled(
         )
         if built and not dry_run:
             recompact_ninja_dbs(build_dir)
-            fith_receipt_path(build_dir, target).unlink(missing_ok=True)
+            output = Path(target)
+            if not output.is_absolute():
+                output = Path(build_dir) / output
+            try:
+                discard_stale_fith_receipts(output)
+            except ValueError as exc:
+                logger.error(str(exc))
+                return False
         return built
 
 

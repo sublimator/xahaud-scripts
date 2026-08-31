@@ -1050,6 +1050,75 @@ def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
     assert run_suite(suite_file, tmp_path, dry_run=True) == []
 
 
+@pytest.mark.parametrize(
+    "storage",
+    [
+        "later = (x for x in next(deferred))\n",
+        "later = [(x for x in next(deferred))]\n",
+        "def helper(value=(x for x in next(deferred))):\n    pass\n",
+        "later = True and (x for x in next(deferred))\n",
+        "later = (x for x in (y for y in next(deferred)))\n",
+    ],
+    ids=["assign", "list-container", "function-default", "boolop", "nested-outer-iter"],
+)
+def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
+    storage: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "stored_wrapper_consumer.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n" + storage
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: wrapper, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        "any(x for x in deferred)",
+        "list(x for x in deferred)",
+        "next(x for x in deferred)",
+        "tuple(x for x in deferred)",
+        "any(*(x for x in deferred))",
+        "any((wrapped := (x for x in deferred)))",
+        "any((x for x in deferred) if True else ())",
+        "any(*((wrapped := (x for x in deferred))))",
+    ],
+    ids=[
+        "any",
+        "list",
+        "next",
+        "tuple",
+        "starred-any",
+        "named-expression",
+        "conditional-expression",
+        "starred-named-expression",
+    ],
+)
+def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
+    consumer: str,
+    tmp_path: Path,
+):
+    script = tmp_path / "unpack_filter_call_consumer.py"
+    script.write_text(
+        "deferred = ((scenario := None) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        f"[alias] = (value for value in [1] if {consumer})\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
 def test_preflight_rejects_consuming_generator_created_in_unpack_filter(
     tmp_path: Path,
 ):
@@ -1363,6 +1432,22 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
             "nested_filter",
         ),
         (
+            "deferred = ((variants := [{'label': 'call_filter'}]) for _ in [0])\n",
+            "[alias] = (value for value in [1] if any(x for x in deferred))\n",
+            "call_filter",
+        ),
+        (
+            "deferred = ((variants := [{'label': 'wrapped_call'}]) for _ in [0])\n",
+            "[alias] = (value for value in [1] "
+            "if any((wrapped := (x for x in deferred))))\n",
+            "wrapped_call",
+        ),
+        (
+            "deferred = ((variants := [{'label': 'stored_wrapper'}]) for _ in [0])\n",
+            "later = (x for x in next(deferred))\n",
+            "stored_wrapper",
+        ),
+        (
             "",
             "[alias] = ((variants := [{'label': 'inline_unpack'}]) for _ in [0])\n",
             "inline_unpack",
@@ -1385,6 +1470,9 @@ def test_decorator_consumed_generator_default_exposes_variants(tmp_path: Path):
         "wrapped-assignment-unpack",
         "iterable-expression-assignment-unpack",
         "nested-filter-assignment-unpack",
+        "call-filter-assignment-unpack",
+        "wrapped-call-filter-assignment-unpack",
+        "stored-wrapper-creation",
         "inline-assignment-unpack",
         "tracked-default-decorator",
     ],

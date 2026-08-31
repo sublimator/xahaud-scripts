@@ -1014,8 +1014,12 @@ def _storage_expression_handle_state(
             ]
         )
     if isinstance(node, ast.GeneratorExp):
-        # Its body remains deferred and the new generator retains anything it
-        # references. Propagate that dependency to the assignment target.
+        # Creating a generator evaluates only its outermost iterable. If that
+        # iterable consumes a tracked handle, this expression is not storage.
+        # Otherwise the body remains deferred and the new generator retains
+        # anything it references.
+        if _generator_creation_consumes_handle(node, handles):
+            return True, False
         finder = _NameLoadFinder(handles)
         finder.visit(node)
         return finder.found, True
@@ -1075,6 +1079,19 @@ class _FilterLoadFinder(_NameLoadFinder):
         # can recursively create generators in its outermost iterable.
         if _generator_creation_consumes_handle(node, self.names):
             self.found = True
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        # A bare generator in a filter is only truth-tested. A generator
+        # value passed as a call argument may be evaluated by any/list/next and
+        # similar, while a starred argument is iterated before the call. Handle
+        # direct generators and the wrappers that can preserve their value.
+        self.visit(node.func)
+        for raw in (*node.args, *(keyword.value for keyword in node.keywords)):
+            arg = raw.value if isinstance(raw, ast.Starred) else raw
+            if _iterable_unpack_consumes_handle(arg, self.names):
+                self.found = True
+                return
+            self.visit(raw)
 
 
 def _iterable_unpack_consumes_handle(node: ast.AST, handles: set[str]) -> bool:

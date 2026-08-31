@@ -16,6 +16,7 @@ from xahaud_scripts.binary_registry import (
     binary_cache_dir,
     cache_dir,
     config_dir,
+    discard_stale_fith_receipts,
     is_binary_alias,
     load_manifest,
     manifest_path,
@@ -485,6 +486,61 @@ def test_save_binary_rejects_symlink_retargeted_during_copy(
     assert not (tmp_path / "cache").exists()
 
 
+def test_discard_stale_fith_receipts_refuses_matching_digest(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    payload = {"binary_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+    receipt.write_text(json.dumps(payload) + "\n")
+
+    with pytest.raises(ValueError, match="matching FITH receipt"):
+        discard_stale_fith_receipts(source)
+
+    assert json.loads(receipt.read_text()) == payload
+
+
+def test_discard_stale_fith_receipts_removes_mismatched_receipt(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text(json.dumps({"binary_sha256": "0" * 64}) + "\n")
+
+    discard_stale_fith_receipts(source)
+
+    assert not receipt.exists()
+
+
+def test_discard_stale_fith_receipts_refuses_missing_output_with_receipt(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text(json.dumps({"binary_sha256": "0" * 64}) + "\n")
+
+    with pytest.raises(ValueError, match="is missing"):
+        discard_stale_fith_receipts(source)
+
+    assert receipt.exists()
+
+
+def test_discard_stale_fith_receipts_refuses_non_file_receipt(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.mkdir()
+
+    with pytest.raises(ValueError, match="invalid receipt"):
+        discard_stale_fith_receipts(source)
+
+    assert receipt.is_dir()
+
+
 def test_save_binary_allows_hash_mismatched_stale_fith_receipt(tmp_path: Path) -> None:
     source = tmp_path / "build" / "rippled"
     source.parent.mkdir()
@@ -517,6 +573,25 @@ def test_save_binary_rejects_invalid_fith_receipt(tmp_path: Path) -> None:
             manifest=tmp_path / "binaries.json",
             cache_dir=tmp_path / "cache",
         )
+
+
+def test_save_binary_rejects_non_file_fith_receipt(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.mkdir()
+
+    with pytest.raises(ValueError, match="invalid receipt"):
+        save_binary(
+            "@unknown",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (tmp_path / "binaries.json").exists()
+    assert not (tmp_path / "cache").exists()
 
 
 def test_save_binary_rejects_source_replaced_during_copy(

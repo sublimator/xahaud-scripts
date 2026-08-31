@@ -157,8 +157,12 @@ def _file_sha256(path: Path) -> str:
 def _fith_receipt_digest(source: Path) -> tuple[Path, str] | None:
     """Read the digest from an adjacent FITH receipt, failing closed if invalid."""
     receipt = source.with_name(f".{source.name}.fith-receipt.json")
-    if not receipt.is_file():
+    if not receipt.exists() and not receipt.is_symlink():
         return None
+    if not receipt.is_file():
+        raise ValueError(
+            f"refusing to save FITH output with an invalid receipt: {receipt}"
+        )
     try:
         payload = json.loads(receipt.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -189,6 +193,43 @@ def _reject_matching_fith_receipts(sources: tuple[Path, ...], candidate: Path) -
     """Reject a candidate covered by any operator-visible or canonical receipt."""
     for source in sources:
         _reject_matching_fith_receipt(source, candidate)
+
+
+def discard_stale_fith_receipts(source: Path) -> None:
+    """Remove mismatched FITH receipts after a successful ordinary build.
+
+    A receipt whose digest still matches ``source`` means cmake/ninja did not
+    replace the heuristic binary. Leave that evidence in place and refuse so
+    ``save_binary`` cannot treat the FITH output as an ordinary alias.
+    """
+    output = Path(os.path.abspath(source.expanduser()))
+    canonical = output.resolve()
+    sources: tuple[Path, ...] = (output,)
+    if canonical != output:
+        sources += (canonical,)
+
+    matching: list[Path] = []
+    stale: list[Path] = []
+    for candidate in sources:
+        receipt = _fith_receipt_digest(candidate)
+        if receipt is None:
+            continue
+        receipt_path, expected_digest = receipt
+        if not output.exists():
+            raise ValueError(
+                f"refusing to discard FITH receipt {receipt_path}: {output} is missing"
+            )
+        if _file_sha256(output) == expected_digest:
+            matching.append(receipt_path)
+        elif receipt_path not in stale:
+            stale.append(receipt_path)
+    if matching:
+        raise ValueError(
+            f"ordinary build left a matching FITH receipt beside {output} "
+            f"(receipt: {matching[0]}); the heuristic binary was not replaced"
+        )
+    for receipt_path in stale:
+        receipt_path.unlink(missing_ok=True)
 
 
 def _cleanup_failed_save(

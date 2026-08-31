@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import stat
 import subprocess
 from pathlib import Path
 
@@ -185,17 +188,12 @@ def test_build_uses_fith_instead_of_ordinary_target_build(
     assert calls == ["check", "fith:strict=false:target=rippled", "recompact"]
 
 
-def test_ordinary_build_removes_matching_fith_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "repo"
-    build_dir = root / "build"
-    build_dir.mkdir(parents=True)
-    (build_dir / "CMakeCache.txt").write_text("# configured\n")
-    receipt = build_dir / ".rippled.fith-receipt.json"
-    receipt.write_text("{}\n")
+def _write_fake_binary(path: Path, version: str = "xahaud-test 1.2.3") -> None:
+    path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
+
+def _stub_ordinary_build(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     monkeypatch.setattr("xahaud_scripts.run_tests.get_xahaud_root", lambda: str(root))
     monkeypatch.setattr(
         "xahaud_scripts.run_tests.conan_toolchain_present", lambda _build_dir: True
@@ -209,6 +207,56 @@ def test_ordinary_build_removes_matching_fith_receipt(
     monkeypatch.setattr(
         "xahaud_scripts.run_tests.recompact_ninja_dbs", lambda _build_dir: None
     )
+
+
+def test_ordinary_build_keeps_matching_fith_receipt_and_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    build_dir = root / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "CMakeCache.txt").write_text("# configured\n")
+    binary = build_dir / "rippled"
+    _write_fake_binary(binary)
+    receipt = build_dir / ".rippled.fith-receipt.json"
+    payload = {"binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+    receipt.write_text(json.dumps(payload) + "\n")
+    _stub_ordinary_build(monkeypatch, root)
+
+    assert not build_rippled(build_dir=str(build_dir), use_fith=False)
+    assert json.loads(receipt.read_text()) == payload
+
+
+def test_ordinary_build_refuses_invalid_fith_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    build_dir = root / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "CMakeCache.txt").write_text("# configured\n")
+    _write_fake_binary(build_dir / "rippled")
+    receipt = build_dir / ".rippled.fith-receipt.json"
+    receipt.write_text("{}\n")
+    _stub_ordinary_build(monkeypatch, root)
+
+    assert not build_rippled(build_dir=str(build_dir), use_fith=False)
+    assert receipt.exists()
+
+
+def test_ordinary_build_removes_mismatched_fith_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    build_dir = root / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "CMakeCache.txt").write_text("# configured\n")
+    _write_fake_binary(build_dir / "rippled")
+    receipt = build_dir / ".rippled.fith-receipt.json"
+    receipt.write_text(json.dumps({"binary_sha256": "0" * 64}) + "\n")
+    _stub_ordinary_build(monkeypatch, root)
 
     assert build_rippled(build_dir=str(build_dir), use_fith=False)
     assert not receipt.exists()
