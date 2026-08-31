@@ -1030,8 +1030,9 @@ def test_preflight_rejects_tracked_generator_consumed_inside_assignment_unpack(
         "(next(deferred) for _ in [0])",
         "(outer for outer in (next(deferred) for _ in [0]))",
         "(outer for outer in (inner for inner in [0] if next(deferred)))",
+        "bool(*{0: ((next(deferred) for _ in [0]),), 0: (True,)}[0])",
     ],
-    ids=["body", "nested-body", "nested-filter"],
+    ids=["body", "nested-body", "nested-filter", "overridden-dict-value"],
 )
 def test_preflight_allows_deferred_generator_used_as_assignment_unpack_filter(
     condition: str,
@@ -1094,6 +1095,13 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "any(*{(x for x in deferred): 1})",
         "any(*(*[(x for x in deferred)],))",
         "any(*{**{(x for x in deferred): 1}})",
+        "any(*((wrapped := ((x for x in deferred),))))",
+        "any(*(False or ((x for x in deferred),)))",
+        "any(*{**(wrapped := {(x for x in deferred): 1})})",
+        "any(*(((x for x in deferred),),)[0])",
+        "any(*{**({(x for x in deferred): 1},)[0]})",
+        "any(*{0: ((x for x in deferred),)}[0])",
+        "any(*{0: (True,), 0: ((x for x in deferred),)}[0])",
     ],
     ids=[
         "any",
@@ -1109,6 +1117,13 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "starred-dict-key",
         "nested-starred-list",
         "starred-expanded-dict-key",
+        "starred-named-tuple",
+        "starred-boolop-tuple",
+        "starred-named-expanded-dict",
+        "starred-literal-subscript",
+        "starred-subscript-expanded-dict",
+        "starred-literal-dict-subscript",
+        "starred-duplicate-dict-subscript",
     ],
 )
 def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(

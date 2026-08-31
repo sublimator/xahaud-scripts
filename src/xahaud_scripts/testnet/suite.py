@@ -1074,23 +1074,92 @@ def _generator_creation_consumes_handle(node: ast.AST, handles: set[str]) -> boo
 def _call_positional_values(node: ast.AST) -> tuple[ast.AST, ...]:
     """Return values a call may receive from one argument expression."""
     if isinstance(node, ast.Starred):
-        value = node.value
-        if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+        return _starred_call_values(node.value)
+    return (node,)
+
+
+def _literal_subscript_values(
+    node: ast.Subscript,
+) -> tuple[ast.AST, ...] | None:
+    """Return a statically selected literal container item, when exact."""
+    try:
+        index = ast.literal_eval(node.slice)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(node.value, (ast.Tuple, ast.List)):
+        if any(isinstance(item, ast.Starred) for item in node.value.elts):
+            return None
+        if not isinstance(index, int):
+            return None
+        try:
+            return (node.value.elts[index],)
+        except IndexError:
+            return ()
+    if isinstance(node.value, ast.Dict):
+        # An unpacked mapping or nonliteral key can supply or override this
+        # lookup, so retain the ordinary conservative fallback in those cases.
+        if any(key is None for key in node.value.keys):
+            return None
+        try:
+            hash(index)
+        except TypeError:
+            return None
+        selected: tuple[ast.AST, ...] = ()
+        for key, mapped in zip(node.value.keys, node.value.values, strict=True):
+            assert key is not None
+            try:
+                literal_key = ast.literal_eval(key)
+                hash(literal_key)
+            except (ValueError, TypeError):
+                return None
+            if literal_key == index:
+                # Dict displays retain the value from the last equal key.
+                selected = (mapped,)
+        return selected
+    return None
+
+
+def _starred_call_values(value: ast.AST) -> tuple[ast.AST, ...]:
+    """Return values yielded by starring one expression as a call argument."""
+    if isinstance(value, ast.NamedExpr):
+        return _starred_call_values(value.value)
+    if isinstance(value, ast.IfExp):
+        return (
+            *_starred_call_values(value.body),
+            *_starred_call_values(value.orelse),
+        )
+    if isinstance(value, ast.BoolOp):
+        return tuple(
+            positional
+            for operand in value.values
+            for positional in _starred_call_values(operand)
+        )
+    if isinstance(value, ast.Subscript):
+        selected = _literal_subscript_values(value)
+        if selected is not None:
             return tuple(
                 positional
-                for item in value.elts
-                for positional in _call_positional_values(item)
+                for item in selected
+                for positional in _starred_call_values(item)
             )
-        if isinstance(value, ast.Dict):
-            positional: list[ast.AST] = []
-            for key, mapped in zip(value.keys, value.values, strict=True):
-                if key is not None:
-                    positional.append(key)
-                elif isinstance(mapped, ast.Dict):
-                    positional.extend(_call_positional_values(ast.Starred(mapped)))
-            return tuple(positional)
-        return (value,)
-    return (node,)
+    if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+        return tuple(
+            positional
+            for item in value.elts
+            for positional in _call_positional_values(item)
+        )
+    if isinstance(value, ast.Dict):
+        positional: list[ast.AST] = []
+        for key, mapped in zip(value.keys, value.values, strict=True):
+            if key is not None:
+                positional.extend(_call_positional_values(key))
+            elif isinstance(
+                mapped,
+                (ast.Dict, ast.NamedExpr, ast.IfExp, ast.BoolOp, ast.Subscript),
+            ):
+                positional.extend(_starred_call_values(mapped))
+        return tuple(positional)
+    return (value,)
 
 
 class _FilterLoadFinder(_NameLoadFinder):
