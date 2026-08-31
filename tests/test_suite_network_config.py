@@ -1116,6 +1116,7 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "any(*(((x for x in deferred),)[0:1]))",
         "any(*([(x for x in deferred)][0:1]))",
         "any(*((((x for x in deferred),),)[0][0:]))",
+        "any(*(() if False else ((x for x in deferred),)))",
     ],
     ids=[
         "any",
@@ -1152,6 +1153,7 @@ def test_preflight_rejects_generator_consumed_by_stored_wrapper_creation(
         "starred-tuple-slice",
         "starred-list-slice",
         "starred-nested-subscript-slice",
+        "starred-ifexp-false-else-tuple",
     ],
 )
 def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
@@ -1164,6 +1166,26 @@ def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
         "async def scenario(ctx, log):\n"
         "    pass\n"
         f"[alias] = (value for value in [1] if {consumer})\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
+
+    with pytest.raises(ValueError, match=r"must define 'async def scenario'"):
+        run_suite(suite_file, tmp_path, dry_run=True)
+
+
+def test_preflight_does_not_treat_shadowable_set_call_as_static_truth(
+    tmp_path: Path,
+):
+    script = tmp_path / "shadowed_set_truth.py"
+    script.write_text(
+        "def set():\n"
+        "    return True\n"
+        "deferred = ((scenario := [1]) for _ in [0])\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+        "[alias] = (value for value in [1] "
+        "if any(*(((x for x in deferred),) if set() else (True,))))\n"
     )
     suite_file = tmp_path / "suite.yml"
     suite_file.write_text(f"tests: [{{name: unpack, script: {script}}}]\n")
@@ -1188,7 +1210,7 @@ def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
             "unknown = (([False],),)\n",
             "any(*((*unknown, ((x for x in deferred),))[0]))",
         ),
-        ("", "any*((((((x for x in deferred),),),)[0:1])[0])"),
+        ("", "any(*((((((x for x in deferred),),),)[0:1])[0]))"),
         ("", "any(*(((x for x in deferred),)['bad':]))"),
         (
             "",
@@ -1198,6 +1220,9 @@ def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
             "mapping = {0: ([False],)}\n",
             "any(*{**(mapping or {0: ((x for x in deferred),)})}[0])",
         ),
+        ("", "any(*(() if True else ((x for x in deferred),)))"),
+        ("", "any(*(([] if True else ((x for x in deferred),))[0]))"),
+        ("", "any(*(True or ((x for x in deferred),)))"),
     ],
     ids=[
         "one-level-slice",
@@ -1208,6 +1233,9 @@ def test_preflight_rejects_generator_consumed_by_call_in_unpack_filter(
         "invalid-literal-slice",
         "later-override-after-boolop-mapping",
         "unknown-boolop-mapping",
+        "static-ifexp-true-empty",
+        "static-ifexp-index-true-empty",
+        "static-boolop-true-or",
     ],
 )
 def test_preflight_allows_nonconsuming_literal_subscript_wrappers(

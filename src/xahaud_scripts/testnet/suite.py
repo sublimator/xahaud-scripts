@@ -1104,6 +1104,16 @@ def _literal_sequence_items(container: ast.AST) -> tuple[ast.AST, ...] | None:
     """Expand an exact builtin tuple/list display into its runtime items."""
     if isinstance(container, ast.NamedExpr):
         return _literal_sequence_items(container.value)
+    if isinstance(container, ast.IfExp):
+        truth = _static_truth_value(container.test)
+        if truth is None:
+            return None
+        return _literal_sequence_items(container.body if truth else container.orelse)
+    if isinstance(container, ast.BoolOp):
+        selected = _static_boolop_value(container)
+        if selected is None:
+            return None
+        return _literal_sequence_items(selected)
     if not isinstance(container, (ast.Tuple, ast.List)):
         return None
     items: list[ast.AST] = []
@@ -1200,6 +1210,10 @@ def _static_truth_value(node: ast.AST) -> bool | None:
     """Return the truth of an exact literal, or None when it is not static."""
     if isinstance(node, ast.NamedExpr):
         return _static_truth_value(node.value)
+    # ``ast.literal_eval`` accepts ``set()`` as an empty-set representation,
+    # but real source resolves it as a shadowable function call.
+    if isinstance(node, ast.Call):
+        return None
     try:
         return bool(ast.literal_eval(node))
     except (ValueError, TypeError):
@@ -1226,6 +1240,11 @@ def _index_literal_container(
     if isinstance(container, ast.NamedExpr):
         return _index_literal_container(container.value, index)
     if isinstance(container, ast.IfExp):
+        truth = _static_truth_value(container.test)
+        if truth is not None:
+            return _index_literal_container(
+                container.body if truth else container.orelse, index
+            )
         left = _index_literal_container(container.body, index)
         right = _index_literal_container(container.orelse, index)
         if left is None or right is None:
@@ -1275,11 +1294,17 @@ def _starred_call_values(value: ast.AST) -> tuple[ast.AST, ...]:
     if isinstance(value, ast.NamedExpr):
         return _starred_call_values(value.value)
     if isinstance(value, ast.IfExp):
+        truth = _static_truth_value(value.test)
+        if truth is not None:
+            return _starred_call_values(value.body if truth else value.orelse)
         return (
             *_starred_call_values(value.body),
             *_starred_call_values(value.orelse),
         )
     if isinstance(value, ast.BoolOp):
+        boolop_selected = _static_boolop_value(value)
+        if boolop_selected is not None:
+            return _starred_call_values(boolop_selected)
         return tuple(
             positional
             for operand in value.values
