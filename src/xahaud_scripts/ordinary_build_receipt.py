@@ -114,14 +114,33 @@ def _stable_file_sha256(
     return resolved, bytes_read, digest.hexdigest()
 
 
+def _controlled_git_environment() -> dict[str, str]:
+    """Observe the workspace repository, not GIT_* overrides.
+
+    cpp-tools FITH (4366ddd) strips every GIT_* key and pins config/locks
+    before reading HEAD/ref/reflog. The writer must use the same identity or
+    a receipt can bind this workspace to another repository's Git state.
+    """
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
 def _git_bytes(root: Path, *args: str) -> bytes:
-    env = os.environ.copy()
-    env["GIT_OPTIONAL_LOCKS"] = "0"
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         check=False,
         capture_output=True,
-        env=env,
+        env=_controlled_git_environment(),
     )
     if result.returncode:
         message = result.stderr.decode(errors="replace").strip()
@@ -132,13 +151,11 @@ def _git_bytes(root: Path, *args: str) -> bytes:
 
 
 def _current_branch(root: Path) -> str | None:
-    env = os.environ.copy()
-    env["GIT_OPTIONAL_LOCKS"] = "0"
     result = subprocess.run(
         ["git", "-C", str(root), "symbolic-ref", "--quiet", "HEAD"],
         check=False,
         capture_output=True,
-        env=env,
+        env=_controlled_git_environment(),
     )
     if result.returncode == 1:
         return None

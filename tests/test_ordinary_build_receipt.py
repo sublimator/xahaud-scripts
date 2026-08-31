@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 from datetime import datetime
@@ -18,11 +19,17 @@ from xahaud_scripts.ordinary_build_receipt import (
 
 
 def _git(repo: Path, *args: str) -> str:
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
     return result.stdout.strip()
 
@@ -153,6 +160,36 @@ def test_switch_away_and_back_refuses_from_reflog_and_preserves_previous_receipt
     ):
         publish_ordinary_build_receipt(started)
     assert receipt.read_bytes() == previous
+
+
+def test_git_identity_ignores_git_dir_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, build, _target = _make_workspace(tmp_path)
+    poison = tmp_path / "poison"
+    poison.mkdir()
+    _git(poison, "init")
+    _git(poison, "config", "user.name", "Poison")
+    _git(poison, "config", "user.email", "poison@example.invalid")
+    (poison / "other.cpp").write_text("int x;\n")
+    _git(poison, "add", "other.cpp")
+    _git(poison, "commit", "-m", "poison")
+    workspace_head = _git(root, "rev-parse", "HEAD")
+    workspace_branch = _git(root, "symbolic-ref", "HEAD")
+    poison_head = _git(poison, "rev-parse", "HEAD")
+    assert workspace_head != poison_head
+
+    monkeypatch.setenv("GIT_DIR", str((poison / ".git").resolve()))
+    monkeypatch.setenv("GIT_WORK_TREE", str(poison.resolve()))
+    started = capture_ordinary_build_start(root, build, "rippled")
+    receipt = publish_ordinary_build_receipt(started)
+    payload = json.loads(receipt.read_text())
+
+    assert payload["workspace_realpath"] == str(root.resolve())
+    assert payload["git"]["head"] == workspace_head
+    assert payload["git"]["branch"] == workspace_branch
+    assert payload["git"]["head"] != poison_head
 
 
 def test_publish_failure_preserves_previous_receipt(
