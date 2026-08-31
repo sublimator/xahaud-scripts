@@ -1,8 +1,8 @@
 # Xahaud Scripts
 
-Developer tooling for xahaud and xrpld worktrees. Python 3.13+, Click CLIs, Rich
-output. Install once, then run the commands from the checkout you mean to
-affect.
+Developer tooling for xahaud and xrpld worktrees. Python 3.13+ command-line
+tools (Click or argparse) with Rich output. Install once, then run the commands
+from the checkout you mean to affect.
 
 ## Installation
 
@@ -38,7 +38,7 @@ same program as `x-quick-check`.
 | Command | What it does | Typical invocation |
 | --- | --- | --- |
 | `x-get-job` | Fetches GitHub Actions job steps and logs. Public repos work without a token; `"<clip>"` reads the URL from the clipboard. | `x-get-job "<clip>"` |
-| `x-run-tests` | Always builds, then runs the trailing unittest filter. Conan/ccache/coverage/lldb are opt-in; `--no-build` does not exist. `--fith` is a heuristic quick-link, not an ordinary binary; `--save-binary @name` needs `--no-fith`. | `x-run-tests -- ripple.app.Import` |
+| `x-run-tests` | Always builds first (`--times=0` is build-only; `--no-build` does not exist), then runs the trailing unittest filter. `--conan` is on by default; ccache/coverage/lldb are opt-in. `--fith` is a heuristic quick-link, not an ordinary binary; `--save-binary @name` needs `--no-fith`. | `x-run-tests -- ripple.app.Import` |
 | `x-run-tests-tail` | Follows this worktree's tee log under `~/.config/xahaud-scripts/outputs/`. Waits for the file; run it from the xahaud checkout. | `x-run-tests-tail --build-type debug` |
 | `x-coverage-diff` | Uncovered lines in the git diff from existing `.gcda` / `.profraw` — no rebuild. Default `--since origin/dev`. Choose `--coverage-impl gcov` or `llvm-injected`. | `x-coverage-diff --since origin/dev` |
 | `x-coverage-report` | Full JSON/HTML (gcov) or json/lcov/summary (llvm) from artifacts already on disk. | `x-coverage-report --coverage-impl gcov` |
@@ -65,14 +65,16 @@ x-run-tests --coverage --diff-cover -- unit_test_hook
 x-run-tests-tail
 ```
 
-Always builds first: an incremental no-op is cheap, and a stale binary used to
-present greens for code that never ran. Builds take `build*/.x-build-lock` and
-recompact ninja after success — do not run raw `ninja` / `cmake -B` against a
-shared build dir.
+Always builds first (`--times=0` skips the test run). An incremental no-op is
+cheap, and a stale binary used to present greens for code that never ran.
+Builds take `build*/.x-build-lock` and recompact ninja after success — do not
+run raw `ninja` / `cmake -B` against a shared build dir.
 
-`--fith` calls `cppt beta fith`: compile the current diff's slice and quick-link
-the target. Default base is the dirty worktree (`--fith-base HEAD`); use
-`--fith-base origin/dev` for the full branch. Incomplete graph evidence warns;
+`--fith` calls `cppt beta fith` and always hands it the last ordinary-build
+receipt. `--fith-base` defaults to `HEAD` (dirty tree vs HEAD); with a valid
+receipt, cppt widens that default to the receipt HEAD so committed changes
+since the last ordinary build are compiled too. An explicit `--fith-base` that
+is not that receipt HEAD is refused. Incomplete graph evidence warns;
 `--fith-strict` refuses. `XAHAU_SCRIPTS_FITH_BETA=1` is a legacy opt-in;
 `--no-fith` overrides it. FITH binaries cannot be `--save-binary`'d.
 
@@ -102,8 +104,9 @@ test gets a fresh net; teardown keeps node dirs so `debug.log` survives.
 `run` launches and monitors only. `check` requires an amendment hash.
 
 Peer addressing is distinct-IP everywhere (`127.0.0.<id+1>`). Reusing
-`127.0.0.1` collapses the mesh. On macOS, `setup-aliases` must run first; a
-missing alias fails late as `actual=[]` in a topology diff.
+`127.0.0.1` collapses the mesh. On macOS, `setup-aliases` must run first;
+fixed-peer `run` and runtime connects fail immediately with that remedy if an
+alias is missing.
 
 `x-testnet` finds the repo with `git rev-parse --show-toplevel` from CWD and
 does **not** honor `XAHAUD_ROOT`.
