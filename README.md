@@ -32,27 +32,27 @@ be run from inside a xahaud (or xrpld) git checkout.
 
 ## Command catalogue
 
-Every entry in `[project.scripts]` (`pyproject.toml`). `xr-quick-check` is the
+Rows follow `[project.scripts]` in `pyproject.toml`. `xr-quick-check` is the
 same program as `x-quick-check`.
 
-| Command | Workflow | What it does | Typical invocation |
-| --- | --- | --- | --- |
-| `x-run-tests` | Build & test (xahaud) | Always builds, then runs the trailing unittest filter. Conan/ccache/coverage/lldb are opt-in; `--no-build` does not exist. `--fith` is a heuristic quick-link, not an ordinary binary; `--save-binary @name` needs `--no-fith`. | `x-run-tests -- ripple.app.Import` |
-| `x-run-tests-tail` | Build & test (xahaud) | Follows this worktree's tee log under `~/.config/xahaud-scripts/outputs/`. Waits for the file; run it from the xahaud checkout. | `x-run-tests-tail --build-type debug` |
-| `xr-build` | Build & test (xrpld) | Builds xrpld with optional coverage, sanitizers, and bundled cmake patches. Refuses to run inside a xahaud tree (hooks trees) so it cannot pollute that checkout. | `xr-build --coverage --test ripple.app.Import` |
-| `x-coverage-diff` | Coverage (xahaud) | Uncovered lines in the git diff from existing `.gcda` / `.profraw` — no rebuild. Default `--since origin/dev`. Choose `--coverage-impl gcov` or `llvm-injected`. | `x-coverage-diff --since origin/dev` |
-| `x-coverage-report` | Coverage (xahaud) | Full JSON/HTML (gcov) or json/lcov/summary (llvm) from artifacts already on disk. | `x-coverage-report --coverage-impl gcov` |
-| `xr-coverage-diff` | Coverage (xrpld) | Uncovered diff lines from a previous `xr-build --coverage` `coverage.json`. Default `--since origin/develop`. | `xr-coverage-diff --since origin/develop` |
-| `x-codecov` | Coverage (PR) | Public Codecov API only (no auth): PR summary, uncovered added lines, gap to the patch target, and ranked clusters. | `x-codecov pull 1234` |
-| `x-testnet` | Local network | Generate, launch, and inspect a distinct-IP local xahaud net; `suite` is the scenario runner. `run` does not run scenarios. macOS needs `setup-aliases` first. | `x-testnet suite .testnet/scenarios/suite.yml` |
-| `x-inspect-net` | Live networks | Amendment tables, overlay version crawl, and zombie/stale-build check against a local xahaud source tree. XRPL has no anonymous amendment table, so it is crawl-only. | `x-inspect-net amendments` |
-| `x-binary-features` | Live networks | Reads amendment declarations from git refs/tags in a xahaud checkout (what that source knew how to register/vote). Pair with `x-inspect-net zombies`. | `x-binary-features --observed-xahau` |
-| `x-build-test-hooks` | Hooks | Thin shim over `hookz build-test-hooks`. Default input is `SetHook_test.cpp` when you are in a xahaud tree. JS/TS fixtures need `jshookz` as well. | `x-build-test-hooks -j 4` |
-| `x-format-changed` | Maintenance | Formats dirty C++, Python, shell, and CMake (clang-format 18, ruff, shfmt, cmake-format). `--since` for a branch delta; `--stage` git-adds the result. | `x-format-changed --since origin/dev` |
-| `x-quick-check` | Maintenance | Syntax-checks dirty C/C++ TUs via `compile_commands.json`. No link, no tests. `--tu` adds a translation unit for header-only edits. | `x-quick-check --dry-run` |
-| `xr-quick-check` | Maintenance | Alias of `x-quick-check` (same entry point). | `xr-quick-check --since origin/dev` |
-| `x-get-job` | CI | Fetches GitHub Actions job steps and logs. Public repos work without a token; `"<clip>"` reads the URL from the clipboard. | `x-get-job "<clip>"` |
-| `x-run-stats` | CI | Build/test timings from the local runs database (`~/.xahaud-scripts/runs.db`). Telemetry, not correctness evidence. | `x-run-stats -d 7` |
+| Command | What it does | Typical invocation |
+| --- | --- | --- |
+| `x-get-job` | Fetches GitHub Actions job steps and logs. Public repos work without a token; `"<clip>"` reads the URL from the clipboard. | `x-get-job "<clip>"` |
+| `x-run-tests` | Always builds, then runs the trailing unittest filter. Conan/ccache/coverage/lldb are opt-in; `--no-build` does not exist. `--fith` is a heuristic quick-link, not an ordinary binary; `--save-binary @name` needs `--no-fith`. | `x-run-tests -- ripple.app.Import` |
+| `x-run-tests-tail` | Follows this worktree's tee log under `~/.config/xahaud-scripts/outputs/`. Waits for the file; run it from the xahaud checkout. | `x-run-tests-tail --build-type debug` |
+| `x-coverage-diff` | Uncovered lines in the git diff from existing `.gcda` / `.profraw` — no rebuild. Default `--since origin/dev`. Choose `--coverage-impl gcov` or `llvm-injected`. | `x-coverage-diff --since origin/dev` |
+| `x-coverage-report` | Full JSON/HTML (gcov) or json/lcov/summary (llvm) from artifacts already on disk. | `x-coverage-report --coverage-impl gcov` |
+| `x-codecov` | Public Codecov API only (no auth): PR summary, uncovered added lines, gap to the patch target, and ranked clusters. | `x-codecov pull 1234` |
+| `x-build-test-hooks` | Thin shim over `hookz build-test-hooks`. Default input is `SetHook_test.cpp` when you are in a xahaud tree. JS/TS fixtures need `jshookz` as well. | `x-build-test-hooks -j 4` |
+| `x-format-changed` | Formats dirty C++, Python, shell, and CMake (clang-format 18, ruff, shfmt, cmake-format). `--since` for a branch delta; `--stage` git-adds the result. | `x-format-changed --since origin/dev` |
+| `x-quick-check` | Syntax-checks dirty C/C++ TUs via `compile_commands.json`. No link, no tests. `--tu` adds a translation unit for header-only edits. | `x-quick-check --dry-run` |
+| `xr-quick-check` | Alias of `x-quick-check` (same entry point). | `xr-quick-check --since origin/dev` |
+| `x-testnet` | Generate, launch, and inspect a distinct-IP local xahaud net; `suite` is the scenario runner. `run` does not run scenarios. macOS needs `setup-aliases` first. | `x-testnet suite .testnet/scenarios/suite.yml` |
+| `x-inspect-net` | Amendment tables, overlay version crawl, and zombie/stale-build check against a local xahaud source tree. XRPL has no anonymous amendment table, so it is crawl-only. | `x-inspect-net amendments` |
+| `x-binary-features` | Reads amendment declarations from git refs/tags in a xahaud checkout (what that source knew how to register/vote). Pair with `x-inspect-net zombies`. | `x-binary-features --observed-xahau` |
+| `x-run-stats` | Build/test timings from the local runs database (`~/.xahaud-scripts/runs.db`). Telemetry, not correctness evidence. | `x-run-stats -d 7` |
+| `xr-build` | Builds xrpld with optional coverage, sanitizers, and bundled cmake patches. Refuses to run inside a xahaud tree (hooks trees) so it cannot pollute that checkout. | `xr-build --coverage --test ripple.app.Import` |
+| `xr-coverage-diff` | Uncovered diff lines from a previous `xr-build --coverage` `coverage.json`. Default `--since origin/develop`. | `xr-coverage-diff --since origin/develop` |
 
 ### `x-run-tests` and FITH
 
