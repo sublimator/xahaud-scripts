@@ -8,6 +8,7 @@ restarted manually since the shell stays alive.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -378,7 +379,13 @@ class TmuxLauncher:
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return expected_config in result.stdout
+        # The config path must be the complete --conf value.  A raw substring
+        # check would accept an unrelated command using e.g. xahaud.cfg.backup
+        # and could signal that process after PID reuse.
+        pattern = re.compile(
+            rf"(?:^|\s)--conf\s+{re.escape(expected_config)}(?=\s+--|\s*$)"
+        )
+        return pattern.search(result.stdout) is not None
 
     def is_session_alive(self) -> bool:
         """Check if the tmux session is alive."""
@@ -408,6 +415,27 @@ class TmuxLauncher:
         except subprocess.CalledProcessError:
             return set()
 
+    def _pane_current_path(self, pane_id: str) -> Path | None:
+        """Return the working directory of the process currently in a pane."""
+        try:
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane_id,
+                    "#{pane_current_path}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = result.stdout.strip()
+        return Path(value) if value else None
+
     def _validate_pane(self, node_id: int) -> str | None:
         """Get pane ID for node, validating it still exists.
 
@@ -424,6 +452,15 @@ class TmuxLauncher:
                 f"(was it manually closed?). Live panes: {live}"
             )
             return None
+        if self._base_dir is not None:
+            expected_path = (self._base_dir / f"n{node_id}").resolve()
+            current_path = self._pane_current_path(pane_id)
+            if current_path is None or current_path.resolve() != expected_path:
+                logger.error(
+                    f"Refusing pane {pane_id} for node {node_id}: current path "
+                    f"{current_path!s} does not match {expected_path}"
+                )
+                return None
         return pane_id
 
     def capture_output(self, node_id: int, lines: int = 1000) -> str | None:

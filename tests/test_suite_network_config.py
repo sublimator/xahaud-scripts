@@ -574,6 +574,26 @@ def test_real_run_preflights_scenario_contract_before_dispatch(
     assert not (tmp_path / ".testnet").exists()
 
 
+def test_preflight_does_not_execute_scenario_module(tmp_path: Path):
+    marker = tmp_path / "module-executed"
+    script = tmp_path / "scenario_with_side_effect.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "async def scenario(ctx, log):\n"
+        "    pass\n"
+    )
+    suite_file = tmp_path / "suite.yml"
+    # Explicit params skip variant discovery, which intentionally imports a
+    # scenario to support dynamically constructed variant lists.
+    suite_file.write_text(
+        f"tests:\n  - name: side-effect\n    script: {script}\n    params: {{}}\n"
+    )
+
+    assert run_suite(suite_file, tmp_path, dry_run=True) == []
+    assert not marker.exists()
+
+
 def test_malformed_variants_are_not_silently_ignored(tmp_path: Path):
     script = tmp_path / "bad_variants.py"
     script.write_text(
@@ -706,17 +726,42 @@ def test_legacy_runtime_topology_alias_remains_supported(tmp_path: Path):
     [
         {"timeout": 1, "stable_for": 2},
         {"settle_timeout": 1, "timeout": 10, "stable_for": 2},
+        {"timeout": 2, "stable_for": 2},
     ],
 )
-def test_topology_stability_cannot_exceed_effective_timeout(
+def test_topology_stability_must_be_less_than_effective_timeout(
     topology: dict, tmp_path: Path
 ):
-    with pytest.raises(ValueError, match=r"stable_for cannot exceed"):
-        _validate_network_config({"topology": topology}, xahaud_root=tmp_path)
+    with pytest.raises(ValueError, match=r"stable_for must be less than"):
+        _validate_network_config(
+            {"fixed_peers": False, "topology": {**topology, "edges": []}},
+            xahaud_root=tmp_path,
+        )
 
 
-def test_topology_stability_may_equal_effective_timeout(tmp_path: Path):
+def test_topology_requires_positive_effective_timeout_for_edges(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"settle timeout must be > 0"):
+        _validate_network_config(
+            {
+                "fixed_peers": False,
+                "topology": {"edges": [], "timeout": 0, "stable_for": 0},
+            },
+            xahaud_root=tmp_path,
+        )
+
+
+def test_non_empty_topology_requires_positive_rpc_timeout(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"rpc_timeout must be > 0"):
+        _validate_network_config(
+            {"topology": {"connect": [], "rpc_timeout": 0}},
+            xahaud_root=tmp_path,
+        )
+
+
+def test_unused_stability_fields_do_not_constrain_connect_only_topology(
+    tmp_path: Path,
+):
     _validate_network_config(
-        {"topology": {"timeout": 2, "stable_for": 2}},
+        {"topology": {"connect": [], "timeout": 1, "stable_for": 2}},
         xahaud_root=tmp_path,
     )

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import stat
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
+import xahaud_scripts.binary_registry as binary_registry
 from xahaud_scripts.binary_registry import (
     alias_name,
     binary_cache_dir,
@@ -153,16 +156,115 @@ def test_save_binary_rejects_fith_output_and_preserves_receipt(tmp_path: Path) -
     source.parent.mkdir()
     _write_fake_binary(source)
     receipt = source.with_name(f".{source.name}.fith-receipt.json")
-    receipt.write_text('{"kind": "fith"}\n')
+    binary_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    receipt.write_text(json.dumps({"binary_sha256": binary_sha256}) + "\n")
     manifest = tmp_path / "binaries.json"
     cache = tmp_path / "cache"
 
     with pytest.raises(ValueError, match="refusing to save FITH output"):
         save_binary("@heuristic", source, manifest=manifest, cache_dir=cache)
 
-    assert receipt.read_text() == '{"kind": "fith"}\n'
+    assert json.loads(receipt.read_text()) == {"binary_sha256": binary_sha256}
     assert not manifest.exists()
     assert not cache.exists()
+
+
+def test_save_binary_allows_hash_mismatched_stale_fith_receipt(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text(json.dumps({"binary_sha256": "0" * 64}) + "\n")
+
+    saved = save_binary(
+        "@ordinary",
+        source,
+        manifest=tmp_path / "binaries.json",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert saved.path.read_bytes() == source.read_bytes()
+    assert receipt.exists()
+
+
+def test_save_binary_rejects_invalid_fith_receipt(tmp_path: Path) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    receipt.write_text('{"kind": "fith"}\n')
+
+    with pytest.raises(ValueError, match="invalid receipt"):
+        save_binary(
+            "@unknown",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+
+def test_save_binary_rejects_source_replaced_during_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source, "ordinary")
+    real_copy2 = shutil.copy2
+
+    def copy_then_activate_fith(source_path: Path, destination: Path) -> None:
+        real_copy2(source_path, destination)
+        replacement = source.with_name(".rippled.fith-output")
+        _write_fake_binary(replacement, "heuristic")
+        binary_sha256 = hashlib.sha256(replacement.read_bytes()).hexdigest()
+        source.with_name(".rippled.fith-receipt.json").write_text(
+            json.dumps({"binary_sha256": binary_sha256}) + "\n"
+        )
+        replacement.replace(source)
+
+    monkeypatch.setattr(
+        "xahaud_scripts.binary_registry.shutil.copy2", copy_then_activate_fith
+    )
+
+    with pytest.raises(OSError, match="binary changed while it was being saved"):
+        save_binary(
+            "@raced",
+            source,
+            manifest=tmp_path / "binaries.json",
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (tmp_path / "binaries.json").exists()
+
+
+def test_save_binary_joins_existing_build_directory_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "build" / "rippled"
+    source.parent.mkdir()
+    _write_fake_binary(source)
+    (source.parent / ".x-build-lock").write_text("builder\n")
+    calls: list[tuple[str, int]] = []
+
+    class FakeFcntl:
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(handle, operation: int) -> None:
+            calls.append((Path(handle.name).name, operation))
+
+    monkeypatch.setattr(binary_registry, "fcntl", FakeFcntl)
+
+    save_binary(
+        "@locked",
+        source,
+        manifest=tmp_path / "binaries.json",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert calls[:2] == [(".x-build-lock", 2), (".x-build-lock", 8)]
 
 
 def test_save_binary_ignores_nonzero_version_output(tmp_path: Path) -> None:

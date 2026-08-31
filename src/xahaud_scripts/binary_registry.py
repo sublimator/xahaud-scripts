@@ -6,6 +6,7 @@ operator-chosen id; the JSON manifest records where the binary came from.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,7 +26,9 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 APP_DIR_NAME = "xahaud-scripts"
 
+_BUILD_LOCK_NAME = ".x-build-lock"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,66 @@ def resolve_binary_spec(spec: str | Path) -> Path:
     return resolve_binary_alias(spec) if is_binary_alias(spec) else Path(spec)
 
 
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    """Return the fields that change when a build replaces or rewrites a target."""
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fith_receipt_digest(source: Path) -> tuple[Path, str] | None:
+    """Read the digest from an adjacent FITH receipt, failing closed if invalid."""
+    receipt = source.with_name(f".{source.name}.fith-receipt.json")
+    if not receipt.is_file():
+        return None
+    try:
+        payload = json.loads(receipt.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"refusing to save FITH output with an unreadable receipt: {receipt}"
+        ) from exc
+    digest = payload.get("binary_sha256") if isinstance(payload, dict) else None
+    if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+        raise ValueError(
+            f"refusing to save FITH output with an invalid receipt: {receipt}"
+        )
+    return receipt, digest.lower()
+
+
+def _reject_matching_fith_receipt(source: Path, candidate: Path) -> None:
+    receipt = _fith_receipt_digest(source)
+    if receipt is None:
+        return
+    receipt_path, expected_digest = receipt
+    if _file_sha256(candidate) == expected_digest:
+        raise ValueError(
+            f"refusing to save FITH output as an ordinary alias: {source} "
+            f"(receipt: {receipt_path}); run a successful ordinary build first"
+        )
+
+
+@contextmanager
+def _build_output_lock(source: Path):
+    """Join x-run-tests' persistent build-dir lock when one is present."""
+    lock_path = source.parent / _BUILD_LOCK_NAME
+    if fcntl is None or not lock_path.is_file():
+        yield
+        return
+    with lock_path.open("a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def save_binary(
     alias: str,
     source: Path,
@@ -154,31 +217,34 @@ def save_binary(
     if not _is_executable_file(source):
         raise ValueError(f"binary path is not an executable file: {source}")
 
-    # cppt FITH writes this receipt beside its mixed-generation output.  A
-    # saved alias copies only the executable, so accepting it here would strip
-    # the evidence that the binary did not come from the ordinary build graph.
-    # Keep this guard in the registry as well as the x-run-tests CLI so direct
-    # API callers cannot accidentally launder a FITH artifact.
-    fith_receipt = source.with_name(f".{source.name}.fith-receipt.json")
-    if fith_receipt.is_file():
-        raise ValueError(
-            f"refusing to save FITH output as an ordinary alias: {source} "
-            f"(receipt: {fith_receipt}); run a successful ordinary build first"
-        )
+    with _build_output_lock(source):
+        # cppt installs the receipt before atomically activating its quick-linked
+        # output. Match the receipt's binary digest rather than its mere presence:
+        # a failed activation deliberately leaves a safely stale receipt beside
+        # the previous ordinary binary. Keep this guard in the registry as well as
+        # the x-run-tests CLI so direct API callers cannot launder a FITH artifact.
+        _reject_matching_fith_receipt(source, source)
 
-    root = binary_cache_dir(cache_dir)
-    saved_at = datetime.now(UTC)
-    token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
-    dest_dir = root / name / f"{token}-{uuid4().hex[:12]}"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / source.name
-    tmp_dest = dest_dir / f".{source.name}.{os.getpid()}.tmp"
-    try:
-        shutil.copy2(source, tmp_dest)
-        tmp_dest.replace(dest)
-    finally:
-        if tmp_dest.exists():
-            tmp_dest.unlink()
+        root = binary_cache_dir(cache_dir)
+        saved_at = datetime.now(UTC)
+        token = saved_at.strftime("%Y%m%dT%H%M%S%fZ")
+        dest_dir = root / name / f"{token}-{uuid4().hex[:12]}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / source.name
+        tmp_dest = dest_dir / f".{source.name}.{os.getpid()}.tmp"
+        source_identity = _file_identity(source)
+        try:
+            shutil.copy2(source, tmp_dest)
+            # Re-read the receipt before the source identity. This ordering catches
+            # both FITH's receipt-before-activation protocol and an ordinary build
+            # that removes a receipt while replacing the target during this copy.
+            _reject_matching_fith_receipt(source, tmp_dest)
+            if _file_identity(source) != source_identity:
+                raise OSError(f"binary changed while it was being saved: {source}")
+            tmp_dest.replace(dest)
+        finally:
+            if tmp_dest.exists():
+                tmp_dest.unlink()
 
     worktree_path = _git_root(worktree or source.parent)
     entry = SavedBinary(

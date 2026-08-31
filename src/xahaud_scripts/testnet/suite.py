@@ -14,7 +14,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
-import inspect
 import json
 import math
 import os
@@ -43,7 +42,6 @@ from xahaud_scripts.testnet.network import TestNetwork
 from xahaud_scripts.testnet.process import UnixProcessManager
 from xahaud_scripts.testnet.rpc import RequestsRPCClient
 from xahaud_scripts.testnet.scenario import (
-    load_scenario_script,
     load_scenario_variants,
     run_scenario_with_monitor,
 )
@@ -798,21 +796,26 @@ def _validate_topology(raw: Any, *, node_count: int, fixed_peers: bool) -> None:
         if key in raw:
             _require_number(raw[key], f"network.topology.{key}", minimum=0)
 
+    # Cross-field invariants, mirroring _apply_runtime_topology. Both default
+    # the same way it does: exact is true unless set, fixed_peers is true
+    # unless set.
+    if raw and raw.get("rpc_timeout", 30) <= 0:
+        raise ValueError("network.topology.rpc_timeout must be > 0")
+    if "edges" not in raw:
+        return
+
     timeout_value = raw.get("settle_timeout")
     if timeout_value is None:
         timeout_value = raw.get("timeout", 60)
     stable_for = raw.get("stable_for", 2)
-    if stable_for > timeout_value:
+    if timeout_value <= 0:
+        raise ValueError("network.topology settle timeout must be > 0")
+    if stable_for >= timeout_value:
         raise ValueError(
-            "network.topology.stable_for cannot exceed its settle timeout "
-            f"({stable_for} > {timeout_value})"
+            "network.topology.stable_for must be less than its settle timeout "
+            f"({stable_for} >= {timeout_value})"
         )
 
-    # Cross-field invariants, mirroring _apply_runtime_topology. Both default
-    # the same way it does: exact is true unless set, fixed_peers is true
-    # unless set.
-    if "edges" not in raw:
-        return
     exact = bool(raw.get("exact", True))
     expected = parse_edge_specs(
         raw.get("edges") or [],
@@ -1252,6 +1255,35 @@ def _resolved_script_path(test: dict[str, Any], xahaud_root: Path) -> Path:
     return script_path if script_path.is_absolute() else xahaud_root / script_path
 
 
+def _validate_scenario_contract(script_path: Path, *, test_name: str) -> None:
+    """Validate the scenario entry point without executing user code.
+
+    Importing a scenario for preflight runs its module body. The real scenario
+    loader imports it again, so doing that here repeats arbitrary top-level
+    side effects before the first lifecycle mutation. The documented contract
+    requires a top-level ``async def scenario`` and can be checked from the
+    syntax tree instead.
+    """
+    try:
+        source = script_path.read_text()
+        tree = ast.parse(source, filename=str(script_path))
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        raise ValueError(
+            f"Test '{test_name}' script failed preflight ({script_path}): {exc}"
+        ) from exc
+
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name == "scenario"
+    ]
+    if not definitions or not isinstance(definitions[-1], ast.AsyncFunctionDef):
+        raise ValueError(
+            f"Test '{test_name}' script must define 'async def scenario': {script_path}"
+        )
+
+
 def _preflight_selected_tests(
     suite: SuiteConfig,
     tests: list[dict[str, Any]],
@@ -1273,16 +1305,7 @@ def _preflight_selected_tests(
         script_path = _resolved_script_path(test, xahaud_root)
         if not script_path.is_file():
             raise ValueError(f"Script is not a file: {script_path}")
-        try:
-            scenario_fn = load_scenario_script(script_path)
-        except Exception as exc:
-            raise ValueError(
-                f"Test '{name}' script failed preflight ({script_path}): {exc}"
-            ) from exc
-        if not inspect.iscoroutinefunction(scenario_fn):
-            raise ValueError(
-                f"Test '{name}' script must define 'async def scenario': {script_path}"
-            )
+        _validate_scenario_contract(script_path, test_name=name)
 
 
 def _run_one_test(

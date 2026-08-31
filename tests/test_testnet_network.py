@@ -566,6 +566,44 @@ def test_tmux_stop_refuses_unverified_marker_pid_and_uses_pane(
     assert sent == [["tmux", "send-keys", "-t", "%0", "C-c", ""]]
 
 
+def test_tmux_pid_ownership_requires_exact_config_argument(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state({"base_dir": str(tmp_path)})
+    config_path = tmp_path / "n0" / "xahaud.cfg"
+    output = {"value": f"/opt/xahaud --conf {config_path}.backup --ledgerfile genesis"}
+
+    def fake_run(args: list[str], **_kwargs: Any):
+        return subprocess.CompletedProcess(args, 0, stdout=output["value"], stderr="")
+
+    monkeypatch.setattr("xahaud_scripts.testnet.launcher.tmux.subprocess.run", fake_run)
+
+    assert launcher._pid_belongs_to_node(4242, 0) is False
+
+    output["value"] = f"/opt/xahaud --conf {config_path} --ledgerfile genesis"
+    assert launcher._pid_belongs_to_node(4242, 0) is True
+
+
+def test_tmux_refuses_reused_pane_from_another_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    launcher = TmuxLauncher()
+    launcher.load_launch_state({"base_dir": str(tmp_path), "pane_ids": {"0": "%0"}})
+    monkeypatch.setattr(launcher, "_list_live_pane_ids", lambda: {"%0"})
+    monkeypatch.setattr(
+        launcher, "_pane_current_path", lambda _pane: tmp_path / "other" / "n0"
+    )
+    monkeypatch.setattr(
+        "xahaud_scripts.testnet.launcher.tmux.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a pane owned by another network must not receive Ctrl+C"
+        ),
+    )
+
+    assert launcher.stop_node(0) is False
+
+
 def test_load_network_info_restores_tmux_base_dir_for_exit_status(tmp_path: Path):
     launcher = TmuxLauncher()
     net = _network(tmp_path, launcher)
