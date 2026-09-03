@@ -537,6 +537,15 @@ def generate(
     "will be cleared. Use with --start-ledger 255. Supports @Name or hex hash.",
 )
 @click.option(
+    "--seed-unl-report",
+    "seed_unl_report",
+    is_flag=True,
+    default=False,
+    help="Seed a UNLReport SLE listing the UNL validators (n0..V-1) into genesis, so "
+    "ledger-anchored active-validator consumers (RNG tiers, Export witnesses) work "
+    "from the first ledger instead of after the first flag-ledger cycle.",
+)
+@click.option(
     "--fast-bootstrap/--no-fast-bootstrap",
     "fast_bootstrap",
     default=True,
@@ -568,6 +577,7 @@ def run(
     lldb_spec: str | None,
     start_ledger: int | None,
     majority_features: tuple[str, ...],
+    seed_unl_report: bool,
     fast_bootstrap: bool,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -610,16 +620,25 @@ def run(
 
     # Prepare genesis file with feature modifications, start ledger, and majority seeding
     base_genesis = genesis_file or get_bundled_genesis_file()
+    unl_report_keys = None
+    if seed_unl_report:
+        validator_count = network.config.validator_count
+        unl_report_keys = [
+            node.public_key for node in network.nodes if node.id < validator_count
+        ]
     effective_genesis = prepare_genesis_file(
         base_genesis,
         list(features),
         start_ledger=start_ledger,
         majority_features=list(majority_features) if majority_features else None,
+        unl_report_keys=unl_report_keys,
     )
 
     # Log if modifications were made
     if start_ledger is not None:
         logger.info(f"Starting ledger sequence: {start_ledger}")
+    if unl_report_keys:
+        logger.info(f"Seeding UNLReport with {len(unl_report_keys)} validator key(s)")
     if majority_features:
         logger.info(f"Pre-seeding majority for {len(majority_features)} feature(s)")
         for mf in majority_features:
