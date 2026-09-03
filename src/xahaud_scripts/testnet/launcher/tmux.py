@@ -36,7 +36,9 @@ def session_name_for(base_dir: Path | None) -> str:
     The default layout (<xahaud-root>/testnet) keeps the historical
     "xahaud-testnet"; any other directory (e.g. ~/fleet/nets/export-rng-693)
     gets "xahaud-<dirname>", so two networks on one box never share, or kill,
-    a session. Targets use tmux's "=name" form for exact matching.
+    a session. Targets use tmux's exact-match form: "=name" for session
+    targets (kill-session, has-session), "=name:" for window/pane targets
+    (split-window, select-layout, list-panes).
     """
     if base_dir is None or base_dir.name == "testnet":
         return TMUX_SESSION_NAME
@@ -276,7 +278,7 @@ class TmuxLauncher:
                 "tmux",
                 "split-window",
                 "-t",
-                f"={self.session_name}",
+                f"={self.session_name}:",
                 "-c",
                 str(node.node_dir),
                 "-P",
@@ -293,7 +295,7 @@ class TmuxLauncher:
 
             # Rebalance panes to tiled layout
             subprocess.run(
-                ["tmux", "select-layout", "-t", f"={self.session_name}", "tiled"],
+                ["tmux", "select-layout", "-t", f"={self.session_name}:", "tiled"],
                 check=True,
                 capture_output=True,
             )
@@ -474,7 +476,7 @@ class TmuxLauncher:
                     "tmux",
                     "list-panes",
                     "-t",
-                    f"={self.session_name}",
+                    f"={self.session_name}:",
                     "-F",
                     "#{pane_id}",
                 ],
