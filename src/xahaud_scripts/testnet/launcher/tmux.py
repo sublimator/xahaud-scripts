@@ -30,6 +30,19 @@ logger = make_logger(__name__)
 TMUX_SESSION_NAME = "xahaud-testnet"
 
 
+def session_name_for(base_dir: Path | None) -> str:
+    """One tmux session per network, named after its directory.
+
+    The default layout (<xahaud-root>/testnet) keeps the historical
+    "xahaud-testnet"; any other directory (e.g. ~/fleet/nets/export-rng-693)
+    gets "xahaud-<dirname>", so two networks on one box never share, or kill,
+    a session. Targets use tmux's "=name" form for exact matching.
+    """
+    if base_dir is None or base_dir.name == "testnet":
+        return TMUX_SESSION_NAME
+    return f"xahaud-{base_dir.name}"
+
+
 def _process_output(value: str | bytes | None) -> str:
     """Normalize captured subprocess output without assuming byte mode."""
     if isinstance(value, bytes):
@@ -181,6 +194,11 @@ class TmuxLauncher:
                 logger.error(f"  tmux stdout: {stdout}")
             return False
 
+    @property
+    def session_name(self) -> str:
+        """tmux session for this network (see session_name_for)."""
+        return session_name_for(self._base_dir)
+
     def _create_session(self, node: NodeInfo, cmd: str) -> str:
         """Create the tmux session with the first node.
 
@@ -192,7 +210,7 @@ class TmuxLauncher:
 
         # Kill any existing session
         subprocess.run(
-            ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
+            ["tmux", "kill-session", "-t", f"={self.session_name}"],
             capture_output=True,
         )
 
@@ -205,7 +223,7 @@ class TmuxLauncher:
                 "new-session",
                 "-d",
                 "-s",
-                TMUX_SESSION_NAME,
+                self.session_name,
                 "-n",
                 window_name,
                 "-c",
@@ -238,7 +256,7 @@ class TmuxLauncher:
 
             self._session_created = True
             logger.info(
-                f"Created tmux session '{TMUX_SESSION_NAME}' with node {node.id}"
+                f"Created tmux session '{self.session_name}' with node {node.id}"
             )
             return pane_id
         except BaseException:
@@ -258,7 +276,7 @@ class TmuxLauncher:
                 "tmux",
                 "split-window",
                 "-t",
-                TMUX_SESSION_NAME,
+                f"={self.session_name}",
                 "-c",
                 str(node.node_dir),
                 "-P",
@@ -275,7 +293,7 @@ class TmuxLauncher:
 
             # Rebalance panes to tiled layout
             subprocess.run(
-                ["tmux", "select-layout", "-t", TMUX_SESSION_NAME, "tiled"],
+                ["tmux", "select-layout", "-t", f"={self.session_name}", "tiled"],
                 check=True,
                 capture_output=True,
             )
@@ -443,7 +461,7 @@ class TmuxLauncher:
     def is_session_alive(self) -> bool:
         """Check if the tmux session is alive."""
         result = subprocess.run(
-            ["tmux", "has-session", "-t", TMUX_SESSION_NAME],
+            ["tmux", "has-session", "-t", f"={self.session_name}"],
             capture_output=True,
         )
         return result.returncode == 0
@@ -456,7 +474,7 @@ class TmuxLauncher:
                     "tmux",
                     "list-panes",
                     "-t",
-                    TMUX_SESSION_NAME,
+                    f"={self.session_name}",
                     "-F",
                     "#{pane_id}",
                 ],
@@ -731,8 +749,8 @@ class TmuxLauncher:
         # Headless by default — set TMUX_MODE=attach to open iTerm window
         if os.environ.get("TMUX_MODE", "").lower() != "attach":
             logger.info(
-                f"tmux session '{TMUX_SESSION_NAME}' running in background. "
-                f"Attach with: tmux attach -t {TMUX_SESSION_NAME}"
+                f"tmux session '{self.session_name}' running in background. "
+                f"Attach with: tmux attach -t {self.session_name}"
             )
             return
 
@@ -749,7 +767,7 @@ tell application "iTerm"
     set windowId to id of newWindow
     tell current session of newWindow
         delay 0.3
-        write text "tmux attach -t {TMUX_SESSION_NAME}"
+        write text "tmux attach -t {self.session_name}"
     end tell
     return windowId
 end tell
@@ -773,7 +791,7 @@ end tell
         else:
             # Just print instructions
             logger.info(
-                f"Attach to tmux session with: tmux attach -t {TMUX_SESSION_NAME}"
+                f"Attach to tmux session with: tmux attach -t {self.session_name}"
             )
 
     def shutdown(self, base_dir: Path, process_manager: ProcessManager) -> int:
@@ -786,6 +804,8 @@ end tell
         Returns:
             Number of processes killed (estimated from network.json)
         """
+        # the session is named after the network directory: bind it before any tmux call
+        self._base_dir = base_dir
         # Count nodes for return value
         killed = 0
         network_file = base_dir / "network.json"
@@ -800,17 +820,17 @@ end tell
         try:
             # Kill the entire tmux session - this terminates all panes and processes
             result = subprocess.run(
-                ["tmux", "kill-session", "-t", TMUX_SESSION_NAME],
+                ["tmux", "kill-session", "-t", f"={self.session_name}"],
                 capture_output=True,
             )
 
             if result.returncode == 0:
                 session_gone = True
-                logger.info(f"Killed tmux session '{TMUX_SESSION_NAME}'")
+                logger.info(f"Killed tmux session '{self.session_name}'")
             elif _tmux_session_is_missing(result):
                 session_gone = True
                 logger.debug(
-                    f"tmux session '{TMUX_SESSION_NAME}' not found or already killed"
+                    f"tmux session '{self.session_name}' not found or already killed"
                 )
                 killed = 0
             else:
