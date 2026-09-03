@@ -127,6 +127,58 @@ def _decode_node_public_key(value: str) -> str:
     return payload[1:].hex().upper()
 
 
+def _decode_classic_address(value: str) -> bytes:
+    """Decode an r… classic address to its 20-byte AccountID (checks the checksum)."""
+    n = 0
+    for c in value:
+        if c not in _XRPL_BASE58_REVERSE:
+            raise ValueError(f"invalid classic address: {value}")
+        n = n * 58 + _XRPL_BASE58_REVERSE[c]
+    raw = n.to_bytes(25, "big")
+    pad = len(value) - len(value.lstrip(_XRPL_BASE58_ALPHABET[0]))
+    raw = b"\x00" * pad + raw.lstrip(b"\x00") if pad else raw
+    raw = raw[-25:]
+    if raw[0] != 0 or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+        raise ValueError(f"invalid classic address: {value}")
+    return raw[1:-4]
+
+
+def _account_index(address: str) -> str:
+    """Compute keylet::account(id): sha512Half(uint16_be('a'), accountID)."""
+    return hashlib.sha512(struct.pack(">H", ord("a")) + _decode_classic_address(address)).digest()[:32].hex().upper()
+
+
+LSF_DISABLE_MASTER = 0x00100000
+
+
+def _make_account_root_entry(address: str, drops: int, regular_key: str | None = None) -> dict:
+    """Build a genesis AccountRoot. With a regular key the master key is disabled,
+    so the account is usable only by that key (a faucet whose master never existed)."""
+    entry = {
+        "Account": address,
+        "Balance": str(drops),
+        "Flags": LSF_DISABLE_MASTER if regular_key else 0,
+        "LedgerEntryType": "AccountRoot",
+        "OwnerCount": 0,
+        "PreviousTxnID": "0" * 64,
+        "PreviousTxnLgrSeq": 0,
+        "Sequence": 1,
+        "index": _account_index(address),
+    }
+    if regular_key:
+        _decode_classic_address(regular_key)
+        entry["RegularKey"] = regular_key
+    return entry
+
+
+def parse_seed_account(spec: str) -> tuple[str, int, str | None]:
+    """ADDRESS:DROPS[:REGULAR_KEY] → (address, drops, regular_key)."""
+    parts = spec.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(f"--seed-account wants ADDRESS:DROPS[:REGULAR_KEY], got {spec!r}")
+    return parts[0], int(parts[1]), (parts[2] if len(parts) == 3 else None)
+
+
 def _make_unl_report_entry(active_keys: list[str]) -> dict:
     """Build a test-bootstrap UNLReport SLE from validator public keys.
 
@@ -282,6 +334,7 @@ def prepare_genesis_file(
     start_ledger: int | None = None,
     majority_features: list[str] | None = None,
     unl_report_keys: list[str] | None = None,
+    seed_accounts: list[tuple[str, int, str | None]] | None = None,
 ) -> Path:
     """Create a modified genesis.json with custom amendments and/or start ledger.
 
@@ -309,6 +362,7 @@ def prepare_genesis_file(
         and start_ledger is None
         and not majority_features
         and not unl_report_keys
+        and not seed_accounts
     ):
         return base_genesis
 
@@ -364,6 +418,9 @@ def prepare_genesis_file(
     # directly. The normal NegativeUNL reporting path needs a full flag-ledger
     # validation history window, so start-ledger shortcuts cannot create this
     # SLE faithfully.
+    if seed_accounts:
+        for address, drops, regular_key in seed_accounts:
+            account_state.append(_make_account_root_entry(address, drops, regular_key))
     if unl_report_keys:
         account_state[:] = [
             e

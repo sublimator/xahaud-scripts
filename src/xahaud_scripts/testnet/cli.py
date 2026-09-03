@@ -34,6 +34,7 @@ from xahaud_scripts.testnet.config import (
     NetworkConfig,
     feature_name_to_hash,
     get_bundled_genesis_file,
+    parse_seed_account,
     prepare_genesis_file,
     resolve_feature_name,
 )
@@ -537,6 +538,14 @@ def generate(
     "will be cleared. Use with --start-ledger 255. Supports @Name or hex hash.",
 )
 @click.option(
+    "--seed-account",
+    "seed_accounts",
+    multiple=True,
+    help="Seed an AccountRoot into genesis: ADDRESS:DROPS[:REGULAR_KEY]. With a "
+    "regular key the master is disabled (lsfDisableMaster), so only that key can "
+    "sign — a faucet account whose master key never existed. Repeatable.",
+)
+@click.option(
     "--seed-unl-report",
     "seed_unl_report",
     is_flag=True,
@@ -578,6 +587,7 @@ def run(
     start_ledger: int | None,
     majority_features: tuple[str, ...],
     seed_unl_report: bool,
+    seed_accounts: tuple[str, ...],
     fast_bootstrap: bool,
     extra_args: tuple[str, ...],
 ) -> None:
@@ -634,11 +644,14 @@ def run(
         start_ledger=start_ledger,
         majority_features=list(majority_features) if majority_features else None,
         unl_report_keys=unl_report_keys,
+        seed_accounts=[parse_seed_account(a) for a in seed_accounts] or None,
     )
 
     # Log if modifications were made
     if start_ledger is not None:
         logger.info(f"Starting ledger sequence: {start_ledger}")
+    if seed_accounts:
+        logger.info(f"Seeding {len(seed_accounts)} account(s) into genesis")
     if unl_report_keys:
         logger.info(f"Seeding UNLReport with {len(unl_report_keys)} validator key(s)")
     if majority_features:
