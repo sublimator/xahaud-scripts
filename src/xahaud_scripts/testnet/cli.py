@@ -141,10 +141,16 @@ def _create_network(
     if node_count is None:
         node_count = ctx.obj.get("node_count", 5)
 
+    overrides = {
+        key: ctx.obj[key]
+        for key in ("network_id", "base_port_peer", "base_port_rpc", "base_port_ws")
+        if ctx.obj.get(key) is not None
+    }
     network_config = NetworkConfig(
         node_count=node_count,
         validators=validators,
         fixed_peers=fixed_peers,
+        **overrides,
     )
 
     return TestNetwork(
@@ -179,6 +185,34 @@ def _create_network(
     help="Directory for generated configs (env: X_TESTNET_DIR, default: $xahaud-root/testnet)",
 )
 @click.option(
+    "--network-id",
+    type=int,
+    default=None,
+    envvar="X_TESTNET_NETWORK_ID",
+    help="[network_id] for every node (env: X_TESTNET_NETWORK_ID, default: 99999)",
+)
+@click.option(
+    "--base-port-peer",
+    type=int,
+    default=None,
+    envvar="X_TESTNET_BASE_PORT_PEER",
+    help="Peer port base; node N listens on base+N (env: X_TESTNET_BASE_PORT_PEER)",
+)
+@click.option(
+    "--base-port-rpc",
+    type=int,
+    default=None,
+    envvar="X_TESTNET_BASE_PORT_RPC",
+    help="RPC port base; node N listens on base+N (env: X_TESTNET_BASE_PORT_RPC)",
+)
+@click.option(
+    "--base-port-ws",
+    type=int,
+    default=None,
+    envvar="X_TESTNET_BASE_PORT_WS",
+    help="WebSocket port base; node N listens on base+N (env: X_TESTNET_BASE_PORT_WS)",
+)
+@click.option(
     "--log-level",
     type=click.Choice(["debug", "info", "warning", "error"], case_sensitive=False),
     default="info",
@@ -190,6 +224,10 @@ def testnet(
     xahaud_root: Path | None,
     rippled_path: Path | None,
     testnet_dir: Path | None,
+    network_id: int | None,
+    base_port_peer: int | None,
+    base_port_rpc: int | None,
+    base_port_ws: int | None,
     log_level: str,
 ) -> None:
     """Manage a local xahaud test network.
@@ -223,6 +261,12 @@ def testnet(
     ctx.obj["xahaud_root"] = xahaud_root
     ctx.obj["rippled_path"] = rippled_path
     ctx.obj["testnet_dir"] = testnet_dir
+    # Fleet knobs: one process-wide value each, so several networks can share a
+    # host without colliding. Every subcommand rebuilds NetworkConfig from these.
+    ctx.obj["network_id"] = network_id
+    ctx.obj["base_port_peer"] = base_port_peer
+    ctx.obj["base_port_rpc"] = base_port_rpc
+    ctx.obj["base_port_ws"] = base_port_ws
 
 
 @testnet.command()
