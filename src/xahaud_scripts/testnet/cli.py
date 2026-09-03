@@ -622,6 +622,8 @@ def run(
     base_genesis = genesis_file or get_bundled_genesis_file()
     unl_report_keys = None
     if seed_unl_report:
+        if not network.nodes:
+            network.load_network_info()  # launch() loads lazily; genesis is built first
         validator_count = network.config.validator_count
         unl_report_keys = [
             node.public_key for node in network.nodes if node.id < validator_count

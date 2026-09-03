@@ -599,6 +599,10 @@ class TestNetwork:
 
         logger.debug(f"Saved network.json to {network_file}")
 
+    def load_network_info(self) -> None:
+        """Load network.json and populate the nodes list (idempotent)."""
+        self._load_network_info()
+
     def _load_network_info(self) -> None:
         """Load network.json and populate nodes list."""
         from xahaud_scripts.testnet.config import NetworkConfig
