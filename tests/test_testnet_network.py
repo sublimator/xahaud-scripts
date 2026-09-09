@@ -189,13 +189,14 @@ def test_wipe_wallet_db_refuses_while_process_is_running(
     assert wallet_db.read_text() == "live wallet state"
 
 
+@pytest.mark.parametrize("node_id", [0, 1], ids=["listed", "non-unl"])
 def test_rotate_validator_manifest_updates_generated_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, node_id: int
 ):
     net = _network(tmp_path, _NoBuilderLauncher())
     net._config = NetworkConfig(node_count=2, validators=1)
-    node = _node(tmp_path, 0)
-    net._nodes = [node, _node(tmp_path, 1)]
+    net._nodes = [_node(tmp_path, 0), _node(tmp_path, 1)]
+    node = net._nodes[node_id]
     node.node_dir.mkdir(parents=True)
     node.config_path.write_text("[validator_token]\nold-token\n\n[server]\npeer\n")
     keyfile = node.node_dir / "validator-keys.json"
@@ -212,25 +213,26 @@ def test_rotate_validator_manifest_updates_generated_token(
 
     monkeypatch.setattr(ValidatorKeysGenerator, "rotate", rotate)
 
-    result = net.rotate_validator_manifest(0)
+    result = net.rotate_validator_manifest(node_id)
 
-    assert result == {"node_id": 0, "public_key": "pk0", "sequence": 2}
+    assert result == {"node_id": node_id, "public_key": node.public_key, "sequence": 2}
     assert keyfile.read_text() == "rotated-keyfile"
     assert "[validator_token]\nrotated-token\n" in node.config_path.read_text()
     assert "old-token" not in node.config_path.read_text()
-    assert net.nodes[0].token == "rotated-token"
+    assert net.nodes[node_id].token == "rotated-token"
     network_info = json.loads((tmp_path / "network.json").read_text())
-    assert network_info["nodes"][0]["token"] == "rotated-token"
+    assert network_info["nodes"][node_id]["token"] == "rotated-token"
 
 
+@pytest.mark.parametrize("master_id", [0, 1], ids=["listed", "non-unl"])
 def test_revoke_validator_installs_revocation_on_via_node(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, master_id: int
 ):
     net = _network(tmp_path, _NoBuilderLauncher())
     net._config = NetworkConfig(node_count=2, validators=1)
-    master = _node(tmp_path, 0)
-    via = _node(tmp_path, 1)
-    net._nodes = [master, via]
+    net._nodes = [_node(tmp_path, 0), _node(tmp_path, 1)]
+    master = net._nodes[master_id]
+    via = net._nodes[1 - master_id]
     master.node_dir.mkdir(parents=True)
     via.node_dir.mkdir(parents=True)
     master.config_path.write_text("[validator_token]\nmaster-token\n")
@@ -251,12 +253,12 @@ def test_revoke_validator_installs_revocation_on_via_node(
 
     monkeypatch.setattr(ValidatorKeysGenerator, "revoke", revoke)
 
-    result = net.revoke_validator(0, 1)
+    result = net.revoke_validator(master.id, via.id)
 
     assert result == {
-        "master_node_id": 0,
-        "via_node_id": 1,
-        "public_key": "pk0",
+        "master_node_id": master.id,
+        "via_node_id": via.id,
+        "public_key": master.public_key,
         "recovery_file": str(master.node_dir / "validator-key-revocation.cfg"),
     }
     assert keyfile.read_text() == "revoked-keyfile"
@@ -265,12 +267,12 @@ def test_revoke_validator_installs_revocation_on_via_node(
     )
 
 
-def test_rotate_validator_manifest_rejects_non_validator(tmp_path: Path):
+def test_rotate_validator_manifest_rejects_missing_credentials(tmp_path: Path):
     net = _network(tmp_path, _NoBuilderLauncher())
     net._config = NetworkConfig(node_count=2, validators=1)
     net._nodes = [_node(tmp_path, 0), _node(tmp_path, 1)]
 
-    with pytest.raises(ValueError, match="is not a validator"):
+    with pytest.raises(ValueError, match="no generated validator credentials"):
         net.rotate_validator_manifest(1)
 
 

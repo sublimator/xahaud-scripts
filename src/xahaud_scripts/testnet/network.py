@@ -966,17 +966,16 @@ class TestNetwork:
         }
 
     def _validator_node(self, node_id: int) -> NodeInfo:
-        """Return a generated UNL validator node or raise a precise error."""
+        """Return a node with generated validator credentials, listed or not."""
         if not self._nodes:
             self._load_network_info()
         node = self._get_node(node_id)
         if node is None:
             raise ValueError(f"Unknown node: n{node_id}")
-        if node_id >= self._config.validator_count:
-            raise ValueError(
-                f"n{node_id} is not a validator in this network "
-                f"(validators are n0..n{self._config.validator_count - 1})"
-            )
+        # validator_count controls the common UNL, not who owns signing keys.
+        # The generator also gives non-UNL validators tokens for lifecycle tests.
+        if not node.token or not (node.node_dir / "validator-keys.json").is_file():
+            raise ValueError(f"n{node_id} has no generated validator credentials")
         return node
 
     def rebuild_launch_command(self, node_id: int, binary_path: Path) -> str:
