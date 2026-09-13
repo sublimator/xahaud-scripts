@@ -40,6 +40,7 @@ from xahaud_scripts.testnet.config import (
     DEFAULT_NETWORK_ID,
     DEFAULT_NODE_COUNT,
     ConfigBuilder,
+    FeeVote,
     LaunchConfig,
     NetworkConfig,
     NodeInfo,
@@ -74,6 +75,7 @@ __all__ = [
     "ConfigBuilder",
     # Config dataclasses
     "NetworkConfig",
+    "FeeVote",
     "LaunchConfig",
     "NodeInfo",
     # Constants

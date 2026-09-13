@@ -469,6 +469,31 @@ def prepare_genesis_file(
     return Path(temp_path)
 
 
+@dataclass(frozen=True)
+class FeeVote:
+    """Validator fee-vote preferences, in drops.
+
+    Written to `[voting]` as `reference_fee`, `account_reserve`, and
+    `owner_reserve`. Those are the keys `setup_FeeVote` reads (xahaud
+    `Config.cpp`). Omitting `NetworkConfig.fee_vote` emits no `[voting]`
+    section, so xahaud uses its built-in `FeeSetup` defaults (10 drops /
+    10 XAH / 2 XAH) at the first flag ledger.
+    """
+
+    reference_fee: int
+    account_reserve: int
+    owner_reserve: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("reference_fee", self.reference_fee),
+            ("account_reserve", self.account_reserve),
+            ("owner_reserve", self.owner_reserve),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative int (drops), got {value!r}")
+
+
 @dataclass
 class NetworkConfig:
     """Immutable network-wide configuration.
@@ -484,6 +509,7 @@ class NetworkConfig:
         fixed_peers: If True, generated configs include full-mesh [ips_fixed].
         node_seed_namespace: Private per-instance entropy used to derive stable
             node identities without making their private seeds predictable.
+        fee_vote: Optional `[voting]` values. Default None emits no section.
     """
 
     network_id: int = DEFAULT_NETWORK_ID
@@ -498,6 +524,7 @@ class NetworkConfig:
         repr=False,
         compare=False,
     )
+    fee_vote: FeeVote | None = None
 
     @property
     def validator_count(self) -> int:

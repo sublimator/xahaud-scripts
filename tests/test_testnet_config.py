@@ -20,6 +20,7 @@ from xahaud_scripts.testnet.config import (
     DEFAULT_NODE_COUNT,
     SKIP_LIST_INTERVAL,
     ConfigBuilder,
+    FeeVote,
     LaunchConfig,
     NetworkConfig,
     NodeInfo,
@@ -579,6 +580,60 @@ def test_generate_node_config_can_omit_fixed_peers(tmp_path: Path):
     assert "\n[ips_fixed]\n" not in text
     assert "[port_peer]" in text
     assert "[peers_max]" in text
+
+
+def test_generate_node_config_omits_voting_by_default(tmp_path: Path):
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    validators_file = node_dir / "validators.txt"
+    validators_file.write_text("")
+
+    cfg_path = generate_node_config(
+        node_id=0,
+        node_dir=node_dir,
+        validator_token="token",
+        validators_file=validators_file,
+        network_config=NetworkConfig(node_count=1, fixed_peers=False),
+    )
+
+    assert "[voting]" not in cfg_path.read_text()
+
+
+def test_generate_node_config_emits_voting_when_fee_vote_set(tmp_path: Path):
+    node_dir = tmp_path / "n0"
+    node_dir.mkdir()
+    validators_file = node_dir / "validators.txt"
+    validators_file.write_text("")
+    vote = FeeVote(reference_fee=10, account_reserve=1_000_000, owner_reserve=200_000)
+
+    cfg_path = generate_node_config(
+        node_id=0,
+        node_dir=node_dir,
+        validator_token="token",
+        validators_file=validators_file,
+        network_config=NetworkConfig(node_count=1, fixed_peers=False, fee_vote=vote),
+    )
+
+    text = cfg_path.read_text()
+    assert "\n[voting]\nreference_fee = 10\naccount_reserve = 1000000\nowner_reserve = 200000\n" in text
+
+
+def test_fee_vote_rejects_negative():
+    with pytest.raises(ValueError, match="account_reserve"):
+        FeeVote(reference_fee=10, account_reserve=-1, owner_reserve=200_000)
+
+
+def test_find_free_port_base_preserves_fee_vote():
+    vote = FeeVote(reference_fee=10, account_reserve=1_000_000, owner_reserve=200_000)
+    original = NetworkConfig(node_count=1, fee_vote=vote)
+
+    class BusyFirstPort:
+        def get_port_state(self, port: int):
+            return [{"process": "busy"}] if port == original.base_port_peer else []
+
+    adjusted = find_free_port_base(original, BusyFirstPort())
+    assert adjusted is not original
+    assert adjusted.fee_vote == vote
 
 
 # --- NodeInfo ---

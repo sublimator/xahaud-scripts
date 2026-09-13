@@ -438,6 +438,16 @@ def generate_node_config(
 {chr(10).join(ips_entries)}
 """
 
+    voting_section = ""
+    if network_config.fee_vote is not None:
+        vote = network_config.fee_vote
+        voting_section = f"""
+[voting]
+reference_fee = {vote.reference_fee}
+account_reserve = {vote.account_reserve}
+owner_reserve = {vote.owner_reserve}
+"""
+
     config = f"""# Node {node_id} Configuration
 
 # peers_max must be > minOutCount (10) to have inbound slots available.
@@ -523,7 +533,7 @@ time.apple.com
 
 [peer_private]
 0
-{fixed_peers_section}
+{voting_section}{fixed_peers_section}
 
 [rpc_startup]
 {_build_rpc_startup_section(log_levels)}
@@ -588,6 +598,7 @@ def find_free_port_base(
                     base_port_rpc=network_config.base_port_rpc + offset,
                     base_port_ws=network_config.base_port_ws + offset,
                     node_seed_namespace=network_config.node_seed_namespace,
+                    fee_vote=network_config.fee_vote,
                 )
             return network_config
 
