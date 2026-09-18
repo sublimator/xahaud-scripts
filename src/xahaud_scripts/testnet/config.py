@@ -138,20 +138,30 @@ def _decode_classic_address(value: str) -> bytes:
     pad = len(value) - len(value.lstrip(_XRPL_BASE58_ALPHABET[0]))
     raw = b"\x00" * pad + raw.lstrip(b"\x00") if pad else raw
     raw = raw[-25:]
-    if raw[0] != 0 or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+    if (
+        raw[0] != 0
+        or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]
+    ):
         raise ValueError(f"invalid classic address: {value}")
     return raw[1:-4]
 
 
 def _account_index(address: str) -> str:
     """Compute keylet::account(id): sha512Half(uint16_be('a'), accountID)."""
-    return hashlib.sha512(struct.pack(">H", ord("a")) + _decode_classic_address(address)).digest()[:32].hex().upper()
+    return (
+        hashlib.sha512(struct.pack(">H", ord("a")) + _decode_classic_address(address))
+        .digest()[:32]
+        .hex()
+        .upper()
+    )
 
 
 LSF_DISABLE_MASTER = 0x00100000
 
 
-def _make_account_root_entry(address: str, drops: int, regular_key: str | None = None) -> dict:
+def _make_account_root_entry(
+    address: str, drops: int, regular_key: str | None = None
+) -> dict:
     """Build a genesis AccountRoot. With a regular key the master key is disabled,
     so the account is usable only by that key (a faucet whose master never existed)."""
     entry = {
@@ -175,7 +185,9 @@ def parse_seed_account(spec: str) -> tuple[str, int, str | None]:
     """ADDRESS:DROPS[:REGULAR_KEY] → (address, drops, regular_key)."""
     parts = spec.split(":")
     if len(parts) not in (2, 3):
-        raise ValueError(f"--seed-account wants ADDRESS:DROPS[:REGULAR_KEY], got {spec!r}")
+        raise ValueError(
+            f"--seed-account wants ADDRESS:DROPS[:REGULAR_KEY], got {spec!r}"
+        )
     return parts[0], int(parts[1]), (parts[2] if len(parts) == 3 else None)
 
 
@@ -491,7 +503,9 @@ class FeeVote:
             ("owner_reserve", self.owner_reserve),
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"{name} must be a non-negative int (drops), got {value!r}")
+                raise ValueError(
+                    f"{name} must be a non-negative int (drops), got {value!r}"
+                )
 
 
 @dataclass

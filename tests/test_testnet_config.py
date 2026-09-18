@@ -615,7 +615,10 @@ def test_generate_node_config_emits_voting_when_fee_vote_set(tmp_path: Path):
     )
 
     text = cfg_path.read_text()
-    assert "\n[voting]\nreference_fee = 10\naccount_reserve = 1000000\nowner_reserve = 200000\n" in text
+    assert (
+        "\n[voting]\nreference_fee = 10\naccount_reserve = 1000000\nowner_reserve = 200000\n"
+        in text
+    )
 
 
 def test_fee_vote_rejects_negative():
